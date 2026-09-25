@@ -1,0 +1,64 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/lanflare-proto",
+    "crates/lanflare-core",
+    "crates/lanflare-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["LanFlare Authors"]
+license = "Apache-2.0"
+
+[workspace.dependencies]
+# Async Runtime & Utilities
+tokio = { version = "1.43", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+tokio-stream = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["alloc", "sink"] }
+bytes = "1.10"
+
+# Error handling & Logging
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Networking & Web
+hyper = { version = "1.6", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-manual-roots"] }
+socket2 = { version = "0.5", features = ["all"] }
+if-addrs = "0.13"
+
+# Cryptography & Security
+rcgen = { version = "0.13", features = ["pem", "ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+sha2 = "0.10"
+ring = "0.17"
+x509-parser = "0.17"
+rand = "0.9"
+
+# Identifiers & Systems
+uuid = { version = "1.14", features = ["serde", "v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+indicatif = { version = "0.17", features = ["tokio"] }
+dirs = "6.0"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
