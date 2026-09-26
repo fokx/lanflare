@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 0: Project Inception, Architectural Documentation & Scaffolding
-- **Overall Status**: Scaffolding initialized, ready for Phase 1.1 implementation.
+- **Current Milestone**: Phase 1: Protocol Foundations & Core Cryptography
+- **Overall Status**: Phase 1.1 complete. Ready for Phase 1.2 implementation.
 
 ---
 
@@ -14,6 +14,11 @@
 - [x] Create granular phased development roadmap with verification commands ([`ROADMAP.md`](file:///f/lanflare/ROADMAP.md)).
 - [x] Initialize operational progress tracker ([`PROGRESS.md`](file:///f/lanflare/PROGRESS.md)).
 - [x] Initialize Cargo workspace and crate scaffolding passing `cargo check`.
+- [x] Implement LocalSend v2.2 protocol DTOs in `lanflare-proto`:
+  - Discovery models: `MulticastMessageV2`, `RegisterDtoV2`, `RegisterResponseDtoV2`, `InfoResponseDtoV2`, `ProtocolType`, `DeviceType`.
+  - Transfer models: `FileDto`, `FileMetadataDto`, `PrepareUploadRequestDtoV2`, `PrepareUploadResponseDtoV2`, `PrepareDownloadResponseDtoV2`.
+  - Resilient serde deserialization with Section 7.1 `DeviceType` fallback to `Desktop` on unknown types and case-insensitive matching.
+  - Unit tests and integration test suite (`crates/lanflare-proto/tests/spec_vectors.rs`) validating exact round-tripping against official LocalSend v2.2 specification test vectors.
 
 ---
 
@@ -40,16 +45,22 @@
   - *Context*: Remote peers specify `fileName` in `prepare-upload`.
   - *Decision*: Sanitize all received filenames by extracting strictly the basename, stripping illegal path characters and path separators (`/`, `\`, null bytes, control codes), and confining outputs strictly within the configured download directory.
 
+- **ADR-006: LocalSend v2.2 Wire Schema & Unknown Enum Fallback**
+  - *Context*: Heterogeneous device ecosystems running varying versions of LocalSend or third-party clients may send unknown device types or optional fields.
+  - *Decision*: Implement custom deserialization for `Option<DeviceType>` in `lanflare-proto::discovery::device_type_serde` that maps unknown strings to `DeviceType::Desktop` as required by Section 7.1 of the LocalSend protocol specification. All wire fields use camelCase naming, with lowercase protocol and device types.
+
 ---
 
 ## Known Debt & Blockers
-- *None at present (scaffolding stage).*
+- *None at present.*
 
 ---
 
 ## Next Session Target
-- **Target**: **Phase 1.1: Protocol DTOs & Serialization (`lanflare-proto`)**
+- **Target**: **Phase 1.2: Crypto Primitives & Ephemeral TLS Identities (`lanflare-core::crypto`)**
 - **Action Items**:
-  1. Populate `lanflare-proto/src/discovery.rs` and `lanflare-proto/src/transfer.rs` with LocalSend v2.2 JSON models.
-  2. Implement unit tests verifying serialization and deserialization against LocalSend specification test vectors.
-  3. Verify with `cargo test -p lanflare-proto`.
+  1. Implement self-signed X.509 certificate and private key generation using `rcgen` in `lanflare-core/src/crypto/cert.rs`.
+  2. Implement SHA-256 certificate fingerprint computation (uppercase hex formatted) matching LocalSend conventions.
+  3. Implement custom `rustls` server and client certificate verifiers (`lanflare-core/src/crypto/verifier.rs`) that authenticate peers against pinned fingerprints without CA trust roots.
+  4. Write unit tests in `lanflare-core` verifying certificate generation, parsing via `x509-parser`, and fingerprint verification.
+  5. Verify with `cargo test -p lanflare-core --lib crypto`.
