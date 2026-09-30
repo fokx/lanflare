@@ -2,7 +2,7 @@
 
 ## Current Phase & Milestone
 - **Current Milestone**: Phase 2: Local Discovery Engines & Peer Registry
-- **Overall Status**: Phase 2.1 complete. Ready for Phase 2.2 implementation.
+- **Overall Status**: Phase 2.2 complete. Ready for Phase 2.3 implementation.
 
 ---
 
@@ -30,6 +30,12 @@
   - Multicast announcement engine with randomized jitter (+50ms) and backoff burst (`100ms`, `500ms`, `2000ms`), plus loopback suppression by self-fingerprint.
   - Graceful cancellation and port release with Tokio cancellation tokens and JoinSets.
   - Unit and integration tests covering configuration defaults, DTO wire generation, multi-node announcement exchange, loopback suppression, and port re-binding.
+- [x] Implement Modern mDNS (DNS-SD) Discovery Engine in `lanflare-core::discovery::mdns`:
+  - Zero-configuration mDNS responder and browser advertising and browsing `_lanflare._tcp.local.` via `mdns-sd`.
+  - RFC 6763 TXT record encoding containing `alias`, `version`, `model`, `devtype`, `fingerprint`, `protocol`, `port`, and `download`.
+  - Full support for auto address binding, TTL expiration, graceful unregistration (`unregister`), and daemon shutdown (`stop`).
+  - Multicast loopback suppression filtering out self TLS certificate fingerprints.
+  - Unit and integration tests (6 tests in [`crates/lanflare-core/src/discovery/mdns.rs`](file:///f/lanflare/crates/lanflare-core/src/discovery/mdns.rs)) verifying TXT property serialization, `ServiceInfo` / `ResolvedService` conversion, single-node registration/shutdown, loopback suppression, and multi-node discovery/peer removal.
 
 ---
 
@@ -68,6 +74,10 @@
   - *Context*: Multi-homed machines (e.g. WiFi + Ethernet + VPN adapters) require separate sockets per interface to ensure outgoing multicast announcements egress through each physical adapter, and loopback packets must be received by peers on the same machine without self-discovery.
   - *Decision*: Bind one IPv4 UDP socket per valid IPv4 interface address and one IPv6 socket per interface index. Enable `multicast_loop_v4/v6(true)` to permit multiple local testing or client processes to see each other, but filter out datagrams carrying the local node's fingerprint in the receive loop.
 
+- **ADR-008: mDNS Service Type and TXT Attribute Standardization**
+  - *Context*: LanFlare native zero-configuration discovery must co-exist with existing local DNS-SD networks without conflict, and communicate all necessary peer metadata prior to HTTP handshake.
+  - *Decision*: Standardize service type on `_lanflare._tcp.local.`. Standardize TXT keys on lowercase RFC 6763 attributes: `alias`, `version`, `model`, `devtype`, `fingerprint`, `protocol`, `port`, and `download`. Instance names use unique device alias or configured instance identifier. The engine suppresses self-discovered instances matching local certificate fingerprint.
+
 ---
 
 ## Known Debt & Blockers
@@ -76,11 +86,12 @@
 ---
 
 ## Next Session Target
-- **Target**: **Phase 2.2: Modern mDNS (DNS-SD) Discovery Engine (`lanflare-core::discovery::mdns`)**
+- **Target**: **Phase 2.3: Peer Aggregator & Registry (`lanflare-core::discovery::registry`)**
 - **Action Items**:
-  1. Inspect existing mDNS dependency setup or evaluate `mdns-sd` / zero-conf crates.
-  2. Implement zero-configuration mDNS responder & browser advertising `_lanflare._tcp.local.`.
-  3. Encode TXT records containing device alias, protocol (`http`/`https`), port, and TLS SHA-256 fingerprint.
-  4. Implement service browsing, TTL/expiration handling, and background task cancellation.
-  5. Add unit and integration tests verifying registration and query over local interfaces.
-  6. Verify with `cargo test -p lanflare-core --lib discovery::mdns` and `cargo clippy --all-targets -- -D warnings`.
+  1. Inspect existing [`crates/lanflare-core/src/discovery/registry.rs`](file:///f/lanflare/crates/lanflare-core/src/discovery/registry.rs) and design unified `DiscoveredPeer` representation unifying UDP multicast and mDNS discoveries.
+  2. Implement thread-safe `PeerRegistry` (backed by `tokio::sync::RwLock` or concurrent map) keyed and deduplicated by device TLS certificate fingerprint.
+  3. Implement address merging: consolidate IP addresses and discovery channels (Multicast vs. mDNS) for the same peer device.
+  4. Implement heartbeat tracking and configurable stale peer timeout eviction.
+  5. Provide event streams or callbacks for peer discovery, update, and expiration.
+  6. Add unit and integration tests verifying peer deduplication across both discovery sources, address aggregation, and timeout eviction.
+  7. Verify with `cargo test -p lanflare-core --lib discovery::registry` and `cargo clippy --all-targets -- -D warnings`.
