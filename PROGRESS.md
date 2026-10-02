@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 2: Local Discovery Engines & Peer Registry
-- **Overall Status**: Phase 2.2 complete. Ready for Phase 2.3 implementation.
+- **Current Milestone**: Phase 3: Transfer Engine & HTTP Server/Client
+- **Overall Status**: Phase 2.3 complete. Ready for Phase 3.1 implementation.
 
 ---
 
@@ -36,6 +36,13 @@
   - Full support for auto address binding, TTL expiration, graceful unregistration (`unregister`), and daemon shutdown (`stop`).
   - Multicast loopback suppression filtering out self TLS certificate fingerprints.
   - Unit and integration tests (6 tests in [`crates/lanflare-core/src/discovery/mdns.rs`](file:///f/lanflare/crates/lanflare-core/src/discovery/mdns.rs)) verifying TXT property serialization, `ServiceInfo` / `ResolvedService` conversion, single-node registration/shutdown, loopback suppression, and multi-node discovery/peer removal.
+- [x] Implement Peer Aggregator & Registry in `lanflare-core::discovery::registry`:
+  - Unified [`DiscoveredPeer`](file:///f/lanflare/crates/lanflare-core/src/discovery/registry.rs) representation unifying UDP Multicast, mDNS (DNS-SD), and direct HTTP registration.
+  - Canonical uppercase SHA-256 fingerprint deduplication with case-insensitive lookup.
+  - Multi-endpoint IP consolidation sorting addresses deterministically (IPv4 prioritized before IPv6) and tracking observation sources per endpoint.
+  - Reactive `broadcast` event stream (`RegistryEvent::PeerAdded`, `RegistryEvent::PeerUpdated`, `RegistryEvent::PeerExpired`, `RegistryEvent::PeerRemoved`) with specific update reasons (`NewEndpoint`, `Heartbeat`, `MetadataChanged`, `NewDiscoverySource`).
+  - Configurable inactivity timeout eviction and automated background sweep worker with capacity bounds.
+  - Unit test suite (9 tests in [`crates/lanflare-core/src/discovery/registry.rs`](file:///f/lanflare/crates/lanflare-core/src/discovery/registry.rs)) verifying discovery ingestion, deduplication, address merging, case-insensitivity, timeout eviction, max capacity eviction, and background sweep.
 
 ---
 
@@ -78,6 +85,14 @@
   - *Context*: LanFlare native zero-configuration discovery must co-exist with existing local DNS-SD networks without conflict, and communicate all necessary peer metadata prior to HTTP handshake.
   - *Decision*: Standardize service type on `_lanflare._tcp.local.`. Standardize TXT keys on lowercase RFC 6763 attributes: `alias`, `version`, `model`, `devtype`, `fingerprint`, `protocol`, `port`, and `download`. Instance names use unique device alias or configured instance identifier. The engine suppresses self-discovered instances matching local certificate fingerprint.
 
+- **ADR-009: Peer Deduplication and Multi-Homing Consolidation**
+  - *Context*: A single physical peer may be discovered across both Multicast and mDNS, and may possess multiple IP addresses (e.g. Ethernet and Wi-Fi, dual-stack IPv4/IPv6).
+  - *Decision*: All discovery sources feed into `PeerRegistry`, keyed canonicalized uppercase SHA-256 fingerprint. Incoming announcements merge IP endpoints into a sorted list (IPv4 before IPv6), update heartbeat timestamps, and unify discovery source bitflags without losing historical endpoint metadata.
+  - *Invariants*:
+    - Primary IP selection prefers active IPv4 endpoints before IPv6 endpoints.
+    - Capacity is bounded by `max_peers`, evicting the least recently seen peer if full.
+    - Event channel broadcasts fine-grained lifecycle notifications (`PeerAdded`, `PeerUpdated`, `PeerExpired`, `PeerRemoved`).
+
 ---
 
 ## Known Debt & Blockers
@@ -86,12 +101,11 @@
 ---
 
 ## Next Session Target
-- **Target**: **Phase 2.3: Peer Aggregator & Registry (`lanflare-core::discovery::registry`)**
+- **Target**: **Phase 3.1: Secure Storage & Streaming I/O (`lanflare-core::storage`)**
 - **Action Items**:
-  1. Inspect existing [`crates/lanflare-core/src/discovery/registry.rs`](file:///f/lanflare/crates/lanflare-core/src/discovery/registry.rs) and design unified `DiscoveredPeer` representation unifying UDP multicast and mDNS discoveries.
-  2. Implement thread-safe `PeerRegistry` (backed by `tokio::sync::RwLock` or concurrent map) keyed and deduplicated by device TLS certificate fingerprint.
-  3. Implement address merging: consolidate IP addresses and discovery channels (Multicast vs. mDNS) for the same peer device.
-  4. Implement heartbeat tracking and configurable stale peer timeout eviction.
-  5. Provide event streams or callbacks for peer discovery, update, and expiration.
-  6. Add unit and integration tests verifying peer deduplication across both discovery sources, address aggregation, and timeout eviction.
-  7. Verify with `cargo test -p lanflare-core --lib discovery::registry` and `cargo clippy --all-targets -- -D warnings`.
+  1. Inspect [`crates/lanflare-core/src/storage`](file:///f/lanflare/crates/lanflare-core/src/storage) modules (`path.rs`, `writer.rs`, `mod.rs`).
+  2. Implement path sanitization engine in `storage::path` preventing path traversal (`../`, absolute paths, Windows alternate data streams `::`, null bytes, reserved OS device names like `CON`, `PRN`, `NUL`).
+  3. Implement streaming disk writer in `storage::writer` with concurrent SHA-256 hashing writing to `.lanflare-part` temporary files.
+  4. Implement atomic rename on hash match and cleanup / deletion on abort or failure.
+  5. Add unit and integration tests verifying traversal attack rejections, checksum verification, and cleanup.
+  6. Verify with `cargo test -p lanflare-core --lib storage` and `cargo clippy --all-targets -- -D warnings`.
