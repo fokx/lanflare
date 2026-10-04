@@ -2,7 +2,7 @@
 
 ## Current Phase & Milestone
 - **Current Milestone**: Phase 3: Transfer Engine & HTTP Server/Client
-- **Overall Status**: Phase 2.3 complete. Ready for Phase 3.1 implementation.
+- **Overall Status**: Phase 3.1 complete. Ready for Phase 3.2 implementation.
 
 ---
 
@@ -43,6 +43,12 @@
   - Reactive `broadcast` event stream (`RegistryEvent::PeerAdded`, `RegistryEvent::PeerUpdated`, `RegistryEvent::PeerExpired`, `RegistryEvent::PeerRemoved`) with specific update reasons (`NewEndpoint`, `Heartbeat`, `MetadataChanged`, `NewDiscoverySource`).
   - Configurable inactivity timeout eviction and automated background sweep worker with capacity bounds.
   - Unit test suite (9 tests in [`crates/lanflare-core/src/discovery/registry.rs`](file:///f/lanflare/crates/lanflare-core/src/discovery/registry.rs)) verifying discovery ingestion, deduplication, address merging, case-insensitivity, timeout eviction, max capacity eviction, and background sweep.
+- [x] Implement Secure Storage & Streaming I/O in `lanflare-core::storage`:
+  - Path sanitization and directory traversal defense in [`crates/lanflare-core/src/storage/path.rs`](file:///f/lanflare/crates/lanflare-core/src/storage/path.rs) (`sanitize_filename`, `validate_filename`, `is_reserved_windows_name`, `resolve_destination_path`, `resolve_unique_destination_path`) neutralizing directory traversal (`../`), stripping control characters, rejecting null bytes, Windows Alternate Data Streams (`:`), forbidden characters (`<`, `>`, `"`, `|`, `?`, `*`), reserved OS device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`), trailing spaces/dots, and enforcing the 255-byte component limit.
+  - Streaming disk writer in [`crates/lanflare-core/src/storage/writer.rs`](file:///f/lanflare/crates/lanflare-core/src/storage/writer.rs) (`StreamingFileWriter`) with 64KB buffering and concurrent in-memory SHA-256 hash calculation, writing to isolated temporary `.{filename}.{uuid}.lanflare-part` files on the same filesystem.
+  - Atomic rename (`tokio::fs::rename`) on checksum and size match upon `commit()`.
+  - Early size-exceeded bombing defense, explicit `abort()`, and automatic synchronous cleanup in `Drop` deleting uncommitted `.lanflare-part` temporary files on task failure, panic, or cancellation.
+  - Comprehensive unit test suite (15 unit tests in `storage::path` and `storage::writer`) covering valid inputs, traversal attack neutralizations and rejections, collision resolution, 1-bit checksum corruption detection, size verification, early abort, drop cleanup, reader piping, and stream chunk piping.
 
 ---
 
@@ -93,6 +99,28 @@
     - Capacity is bounded by `max_peers`, evicting the least recently seen peer if full.
     - Event channel broadcasts fine-grained lifecycle notifications (`PeerAdded`, `PeerUpdated`, `PeerExpired`, `PeerRemoved`).
 
+- **ADR-010: Path Sanitization & Anti-Traversal Defense**
+  - *Context*: Remote peers transmit untrusted file names via `PrepareUploadRequestDtoV2`. Unsanitized strings could overwrite critical operating system files, escape download directories, or exploit Windows-specific file system semantics (ADS, reserved DOS names).
+  - *Decision*: Enforce dual layers: `validate_filename` for strict upfront rejection and `sanitize_filename` for safe normalization.
+  - *Invariants*:
+    - Null bytes (`\0`) and ASCII control characters are rejected immediately.
+    - Directory separators (`/`, `\`) trigger basename extraction; pure traversal sequences (`.`, `..`) are rejected with `PathSanitizeError::PathTraversal`.
+    - Windows Alternate Data Streams (`:`) are rejected with `PathSanitizeError::AlternateDataStream`.
+    - Reserved DOS device stems (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`) regardless of extension or casing are rejected with `PathSanitizeError::ReservedDeviceName`.
+    - Forbidden characters (`<`, `>`, `"`, `|`, `?`, `*`) are replaced with `_`.
+    - Trailing spaces and dots are stripped to prevent Windows filesystem quirks.
+    - Resolved destination paths must have `base_dir` as their immediate parent.
+
+- **ADR-011: Streaming Disk Writer Lifecycle & RAII Temporary Part Cleanup**
+  - *Context*: High-throughput streaming writes must protect system memory, verify cryptographic hashes, and prevent partial/corrupted files from lingering on disk upon transfer failure, cancellation, or crash.
+  - *Decision*: Implement `StreamingFileWriter` with 64KB asynchronous buffering.
+  - *Invariants*:
+    - Temporary files are created in the same parent directory as the final target under the naming convention `.{filename}.{uuid}.lanflare-part`, guaranteeing that `tokio::fs::rename` is an atomic, same-filesystem inode swap.
+    - Incoming chunks incrementally update `Sha256` digest in RAM without re-reading bytes from disk.
+    - If `expected_size` is exceeded during writes, writing aborts immediately with `StorageError::SizeExceeded` to prevent disk bombing.
+    - If either size or SHA-256 hash mismatches on `commit()`, the temporary file is deleted and `commit()` errors out.
+    - Uncommitted writer instances automatically delete their `.lanflare-part` file in `Drop`, ensuring clean recovery on async cancellation or error propagation.
+
 ---
 
 ## Known Debt & Blockers
@@ -101,11 +129,16 @@
 ---
 
 ## Next Session Target
-- **Target**: **Phase 3.1: Secure Storage & Streaming I/O (`lanflare-core::storage`)**
+- **Target**: **Phase 3.2: Hyper v1 Server Implementation (`lanflare-core::server`)**
 - **Action Items**:
-  1. Inspect [`crates/lanflare-core/src/storage`](file:///f/lanflare/crates/lanflare-core/src/storage) modules (`path.rs`, `writer.rs`, `mod.rs`).
-  2. Implement path sanitization engine in `storage::path` preventing path traversal (`../`, absolute paths, Windows alternate data streams `::`, null bytes, reserved OS device names like `CON`, `PRN`, `NUL`).
-  3. Implement streaming disk writer in `storage::writer` with concurrent SHA-256 hashing writing to `.lanflare-part` temporary files.
-  4. Implement atomic rename on hash match and cleanup / deletion on abort or failure.
-  5. Add unit and integration tests verifying traversal attack rejections, checksum verification, and cleanup.
-  6. Verify with `cargo test -p lanflare-core --lib storage` and `cargo clippy --all-targets -- -D warnings`.
+  1. Inspect [`crates/lanflare-core/src/server`](file:///f/lanflare/crates/lanflare-core/src/server) modules (`mod.rs`, `router.rs`, `handlers.rs`, `session.rs`).
+  2. Implement Hyper v1 HTTP/HTTPS server with TLS termination via `tokio-rustls` and certificate verifiers from `lanflare-core::crypto`.
+  3. Implement endpoint router supporting LocalSend v2.2 specification:
+     - `POST /api/localsend/v2/register`
+     - `POST /api/localsend/v2/prepare-upload`
+     - `POST /api/localsend/v2/upload` (integrating `StreamingFileWriter`)
+     - `POST /api/localsend/v2/cancel`
+     - `GET  /api/localsend/v2/info`
+  4. Implement session management (`session.rs`) tracking pending file tokens, transfer state machines, PIN protection (`?pin=...`), and concurrency throttling.
+  5. Add unit and integration tests covering endpoint routing, PIN validation, prepare-upload session tokens, streaming upload with hash verification, and session cancellation cleanup.
+  6. Verify with `cargo test -p lanflare-core --lib server` and `cargo clippy --all-targets -- -D warnings`.
