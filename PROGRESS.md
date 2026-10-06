@@ -2,7 +2,7 @@
 
 ## Current Phase & Milestone
 - **Current Milestone**: Phase 3: Transfer Engine & HTTP Server/Client
-- **Overall Status**: Phase 3.1 complete. Ready for Phase 3.2 implementation.
+- **Overall Status**: Phase 3.2 complete. Ready for Phase 3.3 implementation.
 
 ---
 
@@ -49,6 +49,16 @@
   - Atomic rename (`tokio::fs::rename`) on checksum and size match upon `commit()`.
   - Early size-exceeded bombing defense, explicit `abort()`, and automatic synchronous cleanup in `Drop` deleting uncommitted `.lanflare-part` temporary files on task failure, panic, or cancellation.
   - Comprehensive unit test suite (15 unit tests in `storage::path` and `storage::writer`) covering valid inputs, traversal attack neutralizations and rejections, collision resolution, 1-bit checksum corruption detection, size verification, early abort, drop cleanup, reader piping, and stream chunk piping.
+- [x] Implement Hyper v1 HTTP/HTTPS Server in `lanflare-core::server`:
+  - Session state machine and PIN defense in [`crates/lanflare-core/src/server/session.rs`](file:///f/lanflare/crates/lanflare-core/src/server/session.rs) (`SessionManager`, `PinTracker`, `ActiveUploadSession`, `SessionFile`, `FileTransferStatus`) enforcing single-session concurrency bounds (409 Conflict), per-file upload tokens, sender IP pinning, and 3-attempt brute-force rate-limiting lockout (429 Too Many Requests).
+  - LocalSend v2.2 endpoint router in [`crates/lanflare-core/src/server/router.rs`](file:///f/lanflare/crates/lanflare-core/src/server/router.rs) (`route_request`, `ClientConnectionInfo`) dispatching:
+    - `GET  /api/localsend/v2/info` (and `/api/localsend/v1/info`)
+    - `POST /api/localsend/v2/register` (two-way discovery registration)
+    - `POST /api/localsend/v2/prepare-upload` (session negotiation, PIN validation, file token generation)
+    - `POST /api/localsend/v2/upload` (direct binary chunk streaming with `StreamingFileWriter` SHA-256 verification and atomic commit)
+    - `POST /api/localsend/v2/cancel` (sender or receiver session abort with cleanup)
+  - Hyper v1 HTTP/1.1 server engine in [`crates/lanflare-core/src/server/mod.rs`](file:///f/lanflare/crates/lanflare-core/src/server/mod.rs) (`start_server`, `ServerHandle`, `ServerState`, `ServerTransferEvent`) supporting optional TLS termination via `tokio-rustls` and client certificate verification (`PinnedClientCertVerifier`).
+  - Unit and integration test suite (11 tests in `server::session` and `server::tests`) validating plain HTTP lifecycle, discovery registration events, prepare-upload token generation, streaming upload integrity, PIN lockout protection, session cancellation, and HTTPS mTLS client authentication.
 
 ---
 
@@ -121,6 +131,16 @@
     - If either size or SHA-256 hash mismatches on `commit()`, the temporary file is deleted and `commit()` errors out.
     - Uncommitted writer instances automatically delete their `.lanflare-part` file in `Drop`, ensuring clean recovery on async cancellation or error propagation.
 
+- **ADR-012: LocalSend v2 Server Session State & PIN Throttling Architecture**
+  - *Context*: The receiver must accept incoming transfers without allowing simultaneous conflicting transfer streams to corrupt memory or disk, while preventing PIN brute-forcing over LAN.
+  - *Decision*: Implement a dedicated `SessionManager` and `PinTracker` integrated with Hyper v1.
+  - *Invariants*:
+    - Transfer concurrency follows LocalSend v2 spec Section 4.1: exactly one transfer session can be pending or active in the slot at any time. Any overlapping `prepare-upload` yields HTTP 409 Conflict.
+    - Upload security strictly binds the `sessionId`, `fileId`, `token`, and client remote IP address. Any mismatch yields HTTP 403 Forbidden.
+    - PIN validation limits consecutive failed attempts per IP to 3 (`MAX_PIN_ATTEMPTS`). After 3 failed attempts, requests from that IP receive HTTP 429 Too Many Requests until reset.
+    - Streaming uploads write directly to disk with `StreamingFileWriter`, failing with HTTP 422 Unprocessable Entity on checksum mismatch, or HTTP 400 Bad Request on size mismatch.
+    - Cancellation via `POST /api/localsend/v2/cancel` immediately revokes pending tokens, unarms active session guards, and drops any active streams.
+
 ---
 
 ## Known Debt & Blockers
@@ -129,16 +149,12 @@
 ---
 
 ## Next Session Target
-- **Target**: **Phase 3.2: Hyper v1 Server Implementation (`lanflare-core::server`)**
+- **Target**: **Phase 3.3: HTTP/HTTPS Client & Transfer Orchestrator (`lanflare-core::client`)**
 - **Action Items**:
-  1. Inspect [`crates/lanflare-core/src/server`](file:///f/lanflare/crates/lanflare-core/src/server) modules (`mod.rs`, `router.rs`, `handlers.rs`, `session.rs`).
-  2. Implement Hyper v1 HTTP/HTTPS server with TLS termination via `tokio-rustls` and certificate verifiers from `lanflare-core::crypto`.
-  3. Implement endpoint router supporting LocalSend v2.2 specification:
-     - `POST /api/localsend/v2/register`
-     - `POST /api/localsend/v2/prepare-upload`
-     - `POST /api/localsend/v2/upload` (integrating `StreamingFileWriter`)
-     - `POST /api/localsend/v2/cancel`
-     - `GET  /api/localsend/v2/info`
-  4. Implement session management (`session.rs`) tracking pending file tokens, transfer state machines, PIN protection (`?pin=...`), and concurrency throttling.
-  5. Add unit and integration tests covering endpoint routing, PIN validation, prepare-upload session tokens, streaming upload with hash verification, and session cancellation cleanup.
-  6. Verify with `cargo test -p lanflare-core --lib server` and `cargo clippy --all-targets -- -D warnings`.
+  1. Inspect [`crates/lanflare-core/src/client`](file:///f/lanflare/crates/lanflare-core/src/client).
+  2. Implement async client (`LsClient`) using `reqwest` for LocalSend v2.2 endpoints (`register`, `info`, `prepare-upload`, `upload`, `cancel`).
+  3. Support TLS client configuration with mutual TLS identity (`TlsIdentity`) and custom pinned certificate verifier (`PinnedServerCertVerifier`).
+  4. Implement transfer orchestrator with progress reporting (emitting bytes sent, instantaneous speed, ETA) and parallel file uploads for multiple files within a session.
+  5. Add end-to-end integration test (`transfer_e2e`) verifying inter-node multi-file upload between client and server.
+  6. Verify with `cargo test -p lanflare-core --lib client` and `cargo clippy --all-targets -- -D warnings`.
+
