@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 3: Transfer Engine & HTTP Server/Client
-- **Overall Status**: Phase 3.2 complete. Ready for Phase 3.3 implementation.
+- **Current Milestone**: Phase 4: Standalone CLI Application (`lanflare-cli`)
+- **Overall Status**: Phase 3 (3.1, 3.2, 3.3) complete. Ready for Phase 4.1 implementation.
 
 ---
 
@@ -59,6 +59,12 @@
     - `POST /api/localsend/v2/cancel` (sender or receiver session abort with cleanup)
   - Hyper v1 HTTP/1.1 server engine in [`crates/lanflare-core/src/server/mod.rs`](file:///f/lanflare/crates/lanflare-core/src/server/mod.rs) (`start_server`, `ServerHandle`, `ServerState`, `ServerTransferEvent`) supporting optional TLS termination via `tokio-rustls` and client certificate verification (`PinnedClientCertVerifier`).
   - Unit and integration test suite (11 tests in `server::session` and `server::tests`) validating plain HTTP lifecycle, discovery registration events, prepare-upload token generation, streaming upload integrity, PIN lockout protection, session cancellation, and HTTPS mTLS client authentication.
+- [x] Implement HTTP/HTTPS Client & Transfer Orchestrator in `lanflare-core::client`:
+  - Asynchronous client ([`LsClient`](file:///f/lanflare/crates/lanflare-core/src/client/mod.rs), `LsClientConfig`, `ClientError`) using `reqwest` implementing LocalSend v2.2 endpoints (`get_info`, `register`, `prepare_upload`, `upload_file`, `cancel_session`).
+  - Pre-configured `rustls::ClientConfig` integration with [`PinnedServerCertVerifier`](file:///f/lanflare/crates/lanflare-core/src/crypto/verifier.rs) enabling strict receiver SHA-256 fingerprint pinning and client mTLS identity presentation (`with_client_auth_cert`).
+  - File preparation abstraction ([`OutgoingFile`](file:///f/lanflare/crates/lanflare-core/src/client/transfer.rs#L34-L100)) with asynchronous size probing, MIME type guessing, lazy SHA-256 pre-calculation, and conversion into `FileDto`.
+  - Parallel transfer orchestrator ([`TransferOrchestrator`](file:///f/lanflare/crates/lanflare-core/src/client/transfer.rs#L218-L435), `TransferOptions`, `TransferProgress`) streaming file chunks directly from disk with rate-limited progress monitoring (`ProgressStream`), instantaneous speed calculations, ETA estimations, session cancellation propagation, and semaphore-bounded concurrency.
+  - End-to-end integration test suite ([`crates/lanflare-core/tests/transfer_e2e.rs`](file:///f/lanflare/crates/lanflare-core/tests/transfer_e2e.rs)) verifying multi-file transfer over plain HTTP and mTLS with PIN protection between `TransferOrchestrator` and `start_server`.
 
 ---
 
@@ -141,6 +147,17 @@
     - Streaming uploads write directly to disk with `StreamingFileWriter`, failing with HTTP 422 Unprocessable Entity on checksum mismatch, or HTTP 400 Bad Request on size mismatch.
     - Cancellation via `POST /api/localsend/v2/cancel` immediately revokes pending tokens, unarms active session guards, and drops any active streams.
 
+- **ADR-013: Client Transfer Pipeline, Fingerprint Pinning & Parallel Stream Dispatch**
+  - *Context*: File senders must reliably discover receiver capabilities, authenticate untrusted receiver self-signed certificates without external CA hierarchies, handle optional PIN codes, and stream multi-gigabyte payloads concurrently without buffering entire files in memory.
+  - *Decision*: Implement `LsClient` and `TransferOrchestrator` using `reqwest` backed by `rustls::ClientConfig::use_preconfigured_tls` with `PinnedServerCertVerifier`.
+  - *Invariants*:
+    - In mTLS mode, client presents its `TlsIdentity` certificate and private key (`CertificateDer`, `PrivateKeyDer`) and verifies receiver's certificate SHA-256 fingerprint against the pinned target. Handshakes terminate immediately if the receiver's fingerprint does not match.
+    - `TransferOrchestrator` negotiates `POST /api/localsend/v2/prepare-upload` first. If receiver returns 401/403 (invalid PIN), 429 (PIN rate limit), or 409 (busy slot), the client yields specific, actionable typed errors (`ClientError::UnauthorizedPin`, `ClientError::PinRateLimited`, `ClientError::SessionConflict`).
+    - Accepted files are transferred concurrently with a semaphore bounding parallelism (`max_concurrency`).
+    - File bodies are streamed directly from `tokio::fs::File` using `ReaderStream` wrapped with `ProgressStream`.
+    - Progress reports emit bytes sent, instantaneous speed, and estimated time of arrival (ETA) throttled by `progress_interval` to prevent UI thread flooding.
+    - Cancellation via cancellation token or failure of any upload stream triggers `POST /api/localsend/v2/cancel?sessionId=...` to ensure receiver immediately releases pending locks and cleans up incomplete parts.
+
 ---
 
 ## Known Debt & Blockers
@@ -149,12 +166,11 @@
 ---
 
 ## Next Session Target
-- **Target**: **Phase 3.3: HTTP/HTTPS Client & Transfer Orchestrator (`lanflare-core::client`)**
+- **Target**: **Phase 4.1: Command-Line Interface & Scanner (`lanflare-cli`)**
 - **Action Items**:
-  1. Inspect [`crates/lanflare-core/src/client`](file:///f/lanflare/crates/lanflare-core/src/client).
-  2. Implement async client (`LsClient`) using `reqwest` for LocalSend v2.2 endpoints (`register`, `info`, `prepare-upload`, `upload`, `cancel`).
-  3. Support TLS client configuration with mutual TLS identity (`TlsIdentity`) and custom pinned certificate verifier (`PinnedServerCertVerifier`).
-  4. Implement transfer orchestrator with progress reporting (emitting bytes sent, instantaneous speed, ETA) and parallel file uploads for multiple files within a session.
-  5. Add end-to-end integration test (`transfer_e2e`) verifying inter-node multi-file upload between client and server.
-  6. Verify with `cargo test -p lanflare-core --lib client` and `cargo clippy --all-targets -- -D warnings`.
+  1. Inspect [`crates/lanflare-cli`](file:///f/lanflare/crates/lanflare-cli).
+  2. Implement CLI argument structure using `clap` (commands: `status`, `scan`, `send`, `receive`).
+  3. Wire `scan` to active discovery engines (UDP multicast and mDNS) displaying pretty-printed peer table with OS icons, IP, protocol mode, and fingerprint.
+  4. Verify with `cargo run -p lanflare-cli -- --help` and `cargo test -p lanflare-cli`.
+
 
