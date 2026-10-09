@@ -4,6 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "lanflare_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lanflare-cli"
+path = "src/main.rs"
+
 [dependencies]
 lanflare-proto = { path = "../lanflare-proto" }
 lanflare-core = { path = "../lanflare-core" }

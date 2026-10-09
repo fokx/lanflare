@@ -339,10 +339,11 @@ impl MulticastEngineState {
 }
 
 /// Handle to a running multicast discovery engine.
+#[derive(Clone)]
 pub struct MulticastHandle {
     state: Arc<MulticastEngineState>,
     cancel: CancellationToken,
-    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl MulticastHandle {
@@ -460,7 +461,7 @@ pub async fn start_multicast_engine(
     Ok(MulticastHandle {
         state,
         cancel,
-        task: Mutex::new(Some(task)),
+        task: Arc::new(Mutex::new(Some(task))),
     })
 }
 

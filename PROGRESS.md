@@ -66,6 +66,13 @@
   - Parallel transfer orchestrator ([`TransferOrchestrator`](file:///f/lanflare/crates/lanflare-core/src/client/transfer.rs#L218-L435), `TransferOptions`, `TransferProgress`) streaming file chunks directly from disk with rate-limited progress monitoring (`ProgressStream`), instantaneous speed calculations, ETA estimations, session cancellation propagation, and semaphore-bounded concurrency.
   - End-to-end integration test suite ([`crates/lanflare-core/tests/transfer_e2e.rs`](file:///f/lanflare/crates/lanflare-core/tests/transfer_e2e.rs)) verifying multi-file transfer over plain HTTP and mTLS with PIN protection between `TransferOrchestrator` and `start_server`.
 
+- [x] Implement Command-Line Interface & Scanner in `lanflare-cli` (Phase 4.1):
+  - Structured CLI CLI/subcommand argument parser using `clap` in [`crates/lanflare-cli/src/lib.rs`](file:///f/lanflare/crates/lanflare-cli/src/lib.rs) and [`crates/lanflare-cli/src/main.rs`](file:///f/lanflare/crates/lanflare-cli/src/main.rs): `status`, `scan`, `send`, `receive`.
+  - Pretty-printed peer table formatting in [`crates/lanflare-cli/src/tui.rs`](file:///f/lanflare/crates/lanflare-cli/src/tui.rs) with OS/device icons (🐧 Linux, 🪟 Windows, 🍎 macOS, 🤖 Android, 📱 iOS), IP address, port, transport mode, and shortened fingerprint.
+  - Active scanning command handler (`lanflare scan`) in [`crates/lanflare-cli/src/commands.rs`](file:///f/lanflare/crates/lanflare-cli/src/commands.rs) wiring dual discovery engines (UDP multicast and mDNS) with `PeerRegistry` aggregation and burst announcement triggers.
+  - Local node status reporter (`lanflare status`) enumerating active IPv4/IPv6 network interfaces and ephemeral/configured cryptographic TLS fingerprints.
+  - Unit and integration tests (10 tests in `lanflare-cli`) validating command argument parsing, device icon heuristics, peer table formatting, fingerprint shortening, and status command execution.
+
 ---
 
 ## Architecture Decisions & Invariants (ADRs)
@@ -158,6 +165,14 @@
     - Progress reports emit bytes sent, instantaneous speed, and estimated time of arrival (ETA) throttled by `progress_interval` to prevent UI thread flooding.
     - Cancellation via cancellation token or failure of any upload stream triggers `POST /api/localsend/v2/cancel?sessionId=...` to ensure receiver immediately releases pending locks and cleans up incomplete parts.
 
+- **ADR-014: CLI Dual-Engine Discovery Orchestration & Terminal Presentation**
+  - *Context*: CLI users require rapid zero-configuration scanning of local networks to identify peers before transferring files, with clear visibility into operating system, IP address, encryption mode, and port.
+  - *Decision*: Standardize CLI commands on `status`, `scan`, `send`, `receive`.
+  - *Invariants*:
+    - `lanflare scan` starts both `start_multicast_engine` and `start_mdns_engine` in parallel, triggers an announcement burst, feeds inbound events into `PeerRegistry`, and terminates engines cleanly within the specified timeout.
+    - Formatting heuristics in `tui` detect device type and OS model keywords to output platform glyphs (Linux, Windows, macOS, Android, iOS).
+    - `lanflare-cli` exports both binary `lanflare-cli` and library `lanflare_cli` targets to support integration testing of CLI arg parsing and handler execution without shell spawning.
+
 ---
 
 ## Known Debt & Blockers
@@ -166,11 +181,13 @@
 ---
 
 ## Next Session Target
-- **Target**: **Phase 4.1: Command-Line Interface & Scanner (`lanflare-cli`)**
+- **Target**: **Phase 4.2: Interactive TUI & Transfer Progress (`lanflare-cli`)**
 - **Action Items**:
-  1. Inspect [`crates/lanflare-cli`](file:///f/lanflare/crates/lanflare-cli).
-  2. Implement CLI argument structure using `clap` (commands: `status`, `scan`, `send`, `receive`).
-  3. Wire `scan` to active discovery engines (UDP multicast and mDNS) displaying pretty-printed peer table with OS icons, IP, protocol mode, and fingerprint.
-  4. Verify with `cargo run -p lanflare-cli -- --help` and `cargo test -p lanflare-cli`.
+  1. Implement multi-bar transfer progress display using `indicatif` integrated with `TransferOrchestrator` progress callbacks in [`crates/lanflare-cli/src/commands.rs`](file:///f/lanflare/crates/lanflare-cli/src/commands.rs) and [`crates/lanflare-cli/src/tui.rs`](file:///f/lanflare/crates/lanflare-cli/src/tui.rs).
+  2. Implement interactive target peer selection for `lanflare send` when `--to` is omitted.
+  3. Wire `lanflare send` to `TransferOrchestrator` for streaming uploads to remote LocalSend / LanFlare instances.
+  4. Wire `lanflare receive` to `start_server` daemon loop with incoming transfer notification and auto-accept / interactive acceptance.
+  5. Verify end-to-end CLI transfer with `cargo test -p lanflare-cli`.
+
 
 
