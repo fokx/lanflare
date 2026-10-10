@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 4: Standalone CLI Application (`lanflare-cli`)
-- **Overall Status**: Phase 3 (3.1, 3.2, 3.3) complete. Ready for Phase 4.1 implementation.
+- **Current Milestone**: Phase 5: Desktop GUI with Tauri v2 + SvelteKit 2 (`lanflare-desktop`)
+- **Overall Status**: Phase 4 (4.1, 4.2) complete. Ready for Phase 5.1 implementation.
 
 ---
 
@@ -72,6 +72,12 @@
   - Active scanning command handler (`lanflare scan`) in [`crates/lanflare-cli/src/commands.rs`](file:///f/lanflare/crates/lanflare-cli/src/commands.rs) wiring dual discovery engines (UDP multicast and mDNS) with `PeerRegistry` aggregation and burst announcement triggers.
   - Local node status reporter (`lanflare status`) enumerating active IPv4/IPv6 network interfaces and ephemeral/configured cryptographic TLS fingerprints.
   - Unit and integration tests (10 tests in `lanflare-cli`) validating command argument parsing, device icon heuristics, peer table formatting, fingerprint shortening, and status command execution.
+- [x] Implement Interactive TUI & Transfer Progress in `lanflare-cli` (Phase 4.2):
+  - Multi-bar progress display using `indicatif` (`TransferProgressTracker`) in [`crates/lanflare-cli/src/tui.rs`](file:///f/lanflare/crates/lanflare-cli/src/tui.rs) rendering overall and per-file transfer progress, elapsed time, transfer speed, and ETA.
+  - Target peer resolution and interactive terminal picker (`match_target_peer`, `discover_or_select_target`) supporting query by canonical fingerprint prefix, direct IP address, exact alias, or case-insensitive substring.
+  - Wired `lanflare send` to `TransferOrchestrator` with pre-flight file metadata extraction, SHA-256 pre-calculation, `LsClient` with pinned receiver TLS fingerprint verification, and reactive progress pump.
+  - Wired `lanflare receive` to `start_server` daemon loop handling incoming transfer requests (`ServerTransferEvent::PrepareUpload`) with auto-accept or interactive terminal confirmation prompt (`[Y/n]`), PIN validation, and streaming disk persistence.
+  - Unit and end-to-end integration test suite (`tests/cli_tests.rs`) covering peer matching heuristics, transfer progress tracker state machine, and full client-server transfer orchestration over loopback HTTPS mTLS.
 
 ---
 
@@ -173,6 +179,14 @@
     - Formatting heuristics in `tui` detect device type and OS model keywords to output platform glyphs (Linux, Windows, macOS, Android, iOS).
     - `lanflare-cli` exports both binary `lanflare-cli` and library `lanflare_cli` targets to support integration testing of CLI arg parsing and handler execution without shell spawning.
 
+- **ADR-015: CLI Multi-Bar Progress & Interactive Transfer Negotiation**
+  - *Context*: CLI file transfers involve multiple files with varying sizes streaming in parallel. Terminal users require real-time visibility into overall progress, per-file throughput, and ETA without terminal corruption, while retaining interactive peer selection and approval prompts.
+  - *Decision*: Implement `TransferProgressTracker` via `indicatif::MultiProgress` and interactive handlers in `commands.rs`.
+  - *Invariants*:
+    - `match_target_peer` queries target peers in priority order: canonical SHA-256 fingerprint prefix, exact parsed IP address matching an endpoint, exact case-insensitive alias match, and substring alias match. Direct IP inputs create ad-hoc peers.
+    - `TransferProgressTracker` manages one overall progress bar and dynamically attaches per-file progress bars upon receiving `TransferProgress::FileProgress`, concluding with completion or cancellation statuses without leaking memory. Supports a non-interactive mode for headless or unit test execution.
+    - `lanflare receive` acts as an event pump listening for `ServerTransferEvent::PrepareUpload`, rendering sender and file metadata, prompting the user (`[Y/n]`) when `auto_accept` is false, and sending `PrepareUploadDecision` via Tokio oneshot channels.
+
 ---
 
 ## Known Debt & Blockers
@@ -181,13 +195,11 @@
 ---
 
 ## Next Session Target
-- **Target**: **Phase 4.2: Interactive TUI & Transfer Progress (`lanflare-cli`)**
+- **Target**: **Phase 5.1: Tauri v2 Core Integration (`lanflare-desktop`)**
 - **Action Items**:
-  1. Implement multi-bar transfer progress display using `indicatif` integrated with `TransferOrchestrator` progress callbacks in [`crates/lanflare-cli/src/commands.rs`](file:///f/lanflare/crates/lanflare-cli/src/commands.rs) and [`crates/lanflare-cli/src/tui.rs`](file:///f/lanflare/crates/lanflare-cli/src/tui.rs).
-  2. Implement interactive target peer selection for `lanflare send` when `--to` is omitted.
-  3. Wire `lanflare send` to `TransferOrchestrator` for streaming uploads to remote LocalSend / LanFlare instances.
-  4. Wire `lanflare receive` to `start_server` daemon loop with incoming transfer notification and auto-accept / interactive acceptance.
-  5. Verify end-to-end CLI transfer with `cargo test -p lanflare-cli`.
+  1. Initialize `crates/lanflare-desktop` crate scaffolding with Tauri v2 dependencies and system tray configuration.
+  2. Implement Tauri IPC commands bridging GUI to `lanflare-core` (discovery triggers, peer registry queries, transfer orchestrator, and server daemon).
+  3. Verify crate compilation with `cargo check -p lanflare-desktop`.
 
 
 

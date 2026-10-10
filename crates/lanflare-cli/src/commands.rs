@@ -212,6 +212,144 @@ pub async fn scan(
     Ok(peers)
 }
 
+use std::io::Write;
+use std::net::IpAddr;
+use lanflare_core::client::transfer::{
+    OutgoingFile, TransferOptions, TransferOrchestrator, TransferProgress,
+};
+use lanflare_core::client::{LsClient, LsClientConfig};
+use lanflare_core::server::{start_server, PrepareUploadDecision, ServerTransferEvent};
+use lanflare_proto::discovery::RegisterDtoV2;
+
+use crate::tui::{shorten_fingerprint, TransferProgressTracker};
+
+/// Prompt user in terminal synchronously or read from reader.
+pub fn prompt_user_input(prompt: &str) -> anyhow::Result<String> {
+    print!("{prompt}");
+    std::io::stdout().flush().context("Failed to flush stdout")?;
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .context("Failed to read user input from stdin")?;
+    Ok(input.trim().to_string())
+}
+
+/// Resolves target peer from query string (IP, alias, or fingerprint) against registry.
+pub fn match_target_peer<'a>(
+    query: &str,
+    peers: &'a [DiscoveredPeer],
+) -> Option<&'a DiscoveredPeer> {
+    let q = query.trim();
+    if q.is_empty() {
+        return None;
+    }
+
+    // 1. Exact canonical fingerprint match (or prefix)
+    let q_upper = q.to_ascii_uppercase();
+    if let Some(p) = peers.iter().find(|p| p.fingerprint == q_upper || p.fingerprint.starts_with(&q_upper)) {
+        return Some(p);
+    }
+
+    // 2. Exact IP match
+    if let Ok(ip) = q.parse::<IpAddr>()
+        && let Some(p) = peers.iter().find(|p| p.endpoints.iter().any(|ep| ep.ip == ip))
+    {
+        return Some(p);
+    }
+
+    // 3. Exact alias match (case-insensitive)
+    if let Some(p) = peers.iter().find(|p| p.alias.eq_ignore_ascii_case(q)) {
+        return Some(p);
+    }
+
+    // 4. Substring alias match
+    peers.iter().find(|p| p.alias.to_ascii_lowercase().contains(&q.to_ascii_lowercase()))
+}
+
+/// Discovers peers and presents an interactive selection if multiple are found.
+pub async fn discover_or_select_target(
+    config: &AppConfig,
+    identity: &TlsIdentity,
+    query: Option<&str>,
+) -> anyhow::Result<DiscoveredPeer> {
+    if let Some(q) = query {
+        // Fast-path: Check if user provided direct IP address (e.g. 192.168.1.50 or http://...)
+        let trimmed = q.trim();
+        if let Ok(ip) = trimmed.parse::<IpAddr>() {
+            let ep = lanflare_core::discovery::registry::PeerEndpoint::new(
+                ip,
+                None,
+                lanflare_core::discovery::DiscoverySource::ManualScan,
+                0,
+            );
+            return Ok(DiscoveredPeer {
+                fingerprint: String::new(),
+                alias: format!("Direct Peer ({ip})"),
+                version: "2.0".to_string(),
+                device_model: None,
+                device_type: None,
+                port: config.port,
+                protocol: ProtocolType::Https,
+                download: false,
+                endpoints: vec![ep],
+                discovery_sources: std::collections::HashSet::new(),
+                first_seen_ms: 0,
+                last_seen_ms: 0,
+                metadata: std::collections::HashMap::new(),
+            });
+        }
+    }
+
+    // Run network scan
+    println!("Scanning network to find target peer...");
+    let scan_opts = ScanOptions {
+        duration_secs: 2,
+        multicast: true,
+        mdns: true,
+    };
+    let peers = scan(config, identity, &scan_opts).await?;
+
+    if peers.is_empty() {
+        if let Some(q) = query {
+            // If query is an IP or host, fall back to direct attempt
+            anyhow::bail!("No peers found matching query '{q}'. Use explicit IP if known.");
+        } else {
+            anyhow::bail!("No peers discovered on local network.");
+        }
+    }
+
+    if let Some(q) = query {
+        if let Some(matched) = match_target_peer(q, &peers) {
+            return Ok(matched.clone());
+        }
+        anyhow::bail!("No discovered peer matched query '{q}'.");
+    }
+
+    // Interactive picker when query is None
+    if peers.len() == 1 {
+        let p = &peers[0];
+        println!("Single peer found: {} ({})", p.alias, p.primary_ip().map(|ip| ip.to_string()).unwrap_or_default());
+        return Ok(p.clone());
+    }
+
+    println!("\nSelect a peer to send files to:");
+    for (idx, p) in peers.iter().enumerate() {
+        let ip_str = p.primary_ip().map(|ip| ip.to_string()).unwrap_or_else(|| "-".to_string());
+        let fp_str = shorten_fingerprint(&p.fingerprint);
+        println!("  [{}] {} | IP: {} | Port: {} | FP: {}", idx + 1, p.alias, ip_str, p.port, fp_str);
+    }
+
+    loop {
+        let choice_str = prompt_user_input(&format!("Enter peer number (1-{}): ", peers.len()))?;
+        if let Ok(choice) = choice_str.parse::<usize>()
+            && (1..=peers.len()).contains(&choice)
+        {
+            return Ok(peers[choice - 1].clone());
+        }
+        println!("Invalid choice. Please enter a number between 1 and {}.", peers.len());
+    }
+}
+
 /// Options for the `lanflare send` command.
 #[derive(Clone, Debug)]
 pub struct SendOptions {
@@ -221,28 +359,117 @@ pub struct SendOptions {
 }
 
 /// Handles the `lanflare send` command.
+///
+/// Discovers or resolves target peer, calculates file sizes & SHA-256 checksums,
+/// establishes transfer session with `TransferOrchestrator`, and displays real-time
+/// multi-progress bars.
 pub async fn send(
-    _config: &AppConfig,
-    _identity: &TlsIdentity,
+    config: &AppConfig,
+    identity: &TlsIdentity,
     options: &SendOptions,
 ) -> anyhow::Result<()> {
     if options.files.is_empty() {
         anyhow::bail!("No files specified to send");
     }
 
+    // 1. Verify and prepare all files
+    let mut outgoing_files = Vec::with_capacity(options.files.len());
+    let mut total_bytes = 0u64;
+
     for f in &options.files {
         if !f.exists() {
             anyhow::bail!("File not found: {}", f.display());
         }
+        println!("Preparing file: {}...", f.display());
+        let outgoing = OutgoingFile::from_path(f)
+            .await
+            .with_context(|| format!("Failed to read file metadata for: {}", f.display()))?
+            .with_computed_sha256()
+            .await
+            .with_context(|| format!("Failed to compute SHA-256 for: {}", f.display()))?;
+
+        total_bytes += outgoing.size;
+        outgoing_files.push(outgoing);
     }
 
     println!(
-        "Preparing to send {} file(s) to target: {:?}",
-        options.files.len(),
-        options.to.as_deref().unwrap_or("(interactive picker)")
+        "Prepared {} file(s) ({:.2} MB total).",
+        outgoing_files.len(),
+        total_bytes as f64 / (1024.0 * 1024.0)
     );
-    // Target transfer orchestrator execution will be expanded in Phase 4.2
-    Ok(())
+
+    // 2. Resolve destination peer
+    let target = discover_or_select_target(config, identity, options.to.as_deref()).await?;
+    let base_url = target
+        .primary_base_url()
+        .context("Target peer does not have a valid IP endpoint")?;
+
+    println!("Target resolved: {} at {}", target.alias, base_url);
+
+    // 3. Configure HTTP client
+    let target_fp = if target.fingerprint.is_empty() {
+        None
+    } else {
+        Some(target.fingerprint.clone())
+    };
+
+    let client_config = LsClientConfig {
+        timeout: Duration::from_secs(60),
+        connect_timeout: Duration::from_secs(5),
+        tls_identity: Some(identity.clone()),
+        target_fingerprint: target_fp,
+    };
+    let client = LsClient::new(client_config)
+        .context("Failed to initialize LocalSend client with TLS identity")?;
+
+    let sender_info = RegisterDtoV2 {
+        alias: config.alias.clone(),
+        version: "2.0".to_string(),
+        device_model: Some("LanFlare CLI".to_string()),
+        device_type: Some(DeviceType::Desktop),
+        fingerprint: identity.fingerprint.clone(),
+        port: config.port,
+        protocol: ProtocolType::Https,
+        download: false,
+    };
+
+    let orchestrator = TransferOrchestrator::new(client, sender_info);
+
+    // 4. Setup progress channel and progress tracker
+    let (progress_tx, mut progress_rx) = mpsc::channel::<TransferProgress>(100);
+    let mut tracker = TransferProgressTracker::new(true);
+
+    let transfer_opts = TransferOptions {
+        max_concurrency: 4,
+        pin: options.pin.clone().or_else(|| config.pin.clone()),
+        cancel_token: None,
+        progress_interval: Duration::from_millis(50),
+    };
+
+    // Spawn orchestrator task
+    let orchestrator_task = tokio::spawn(async move {
+        orchestrator
+            .transfer(&base_url, outgoing_files, transfer_opts, Some(progress_tx))
+            .await
+    });
+
+    // Event pump for progress bars
+    while let Some(ev) = progress_rx.recv().await {
+        tracker.handle_event(&ev);
+    }
+
+    match orchestrator_task.await {
+        Ok(Ok(())) => {
+            println!("All files transferred successfully!");
+            Ok(())
+        }
+        Ok(Err(err)) => {
+            anyhow::bail!("Transfer failed: {err}");
+        }
+        Err(join_err) => {
+            anyhow::bail!("Transfer task panicked or aborted: {join_err}");
+        }
+    }
 }
 
 /// Options for the `lanflare receive` command.
@@ -255,9 +482,13 @@ pub struct ReceiveOptions {
 }
 
 /// Handles the `lanflare receive` command.
+///
+/// Starts Hyper HTTP/HTTPS server daemon with optional PIN protection,
+/// receives file upload sessions, supports auto-accept or interactive approval,
+/// and saves incoming files directly to the download directory.
 pub async fn receive(
     config: &AppConfig,
-    _identity: &TlsIdentity,
+    identity: &TlsIdentity,
     options: &ReceiveOptions,
 ) -> anyhow::Result<()> {
     let dest_dir = options
@@ -270,8 +501,110 @@ pub async fn receive(
         .with_context(|| format!("Failed to create download directory: {}", dest_dir.display()))?;
 
     let port = options.port.unwrap_or(config.port);
-    println!("Listening for incoming files on port {port}...");
+    let auto_accept = options.auto_accept || config.auto_accept;
+    let pin = options.pin.clone().or_else(|| config.pin.clone());
+
+    let server_config = AppConfig {
+        alias: config.alias.clone(),
+        port,
+        download_dir: dest_dir.clone(),
+        auto_accept,
+        pin: pin.clone(),
+    };
+
+    let registry = PeerRegistry::new();
+    let (event_tx, mut event_rx) = mpsc::channel::<ServerTransferEvent>(100);
+
+    let server_handle = start_server(
+        server_config,
+        Some(identity.clone()),
+        registry.clone(),
+        Some(event_tx),
+    )
+    .await
+    .with_context(|| format!("Failed to start receive server on port {port}"))?;
+
+    let bound_port = server_handle.bound_port();
+    println!("Receiver active and listening on port {bound_port}");
     println!("Saving files to: {}", dest_dir.display());
-    // Daemon server loop will be expanded in Phase 4.2
+    println!("Auto-accept transfers: {}", if auto_accept { "Enabled" } else { "Disabled (interactive prompt)" });
+    if let Some(ref p) = pin {
+        println!("PIN protection enabled: required PIN is '{p}'");
+    }
+    println!("Certificate Fingerprint: {}", identity.fingerprint);
+    println!("Press Ctrl+C to terminate receiver daemon.\n");
+
+    // Event loop handling transfer events
+    while let Some(event) = event_rx.recv().await {
+        match event {
+            ServerTransferEvent::DeviceRegistered { ip, info } => {
+                println!("Device registered: {} ({}) at {}", info.alias, info.version, ip);
+            }
+            ServerTransferEvent::PrepareUpload {
+                session_id,
+                sender_ip,
+                sender_info,
+                files,
+                decision_tx,
+                ..
+            } => {
+                println!("\n[Incoming Transfer Request]");
+                println!("  From:       {} ({})", sender_info.alias, sender_ip);
+                println!("  Session ID: {session_id}");
+                println!("  Files ({}) :", files.len());
+
+                let mut total_size = 0u64;
+                for (id, file) in &files {
+                    total_size += file.size;
+                    println!(
+                        "    - {} ({:.2} MB) [ID: {}]",
+                        file.file_name,
+                        file.size as f64 / (1024.0 * 1024.0),
+                        id
+                    );
+                }
+                println!("  Total Size: {:.2} MB", total_size as f64 / (1024.0 * 1024.0));
+
+                if auto_accept {
+                    println!("Auto-accepting incoming transfer...");
+                    let all_ids = files.keys().cloned().collect();
+                    let _ = decision_tx.send(PrepareUploadDecision::Accept(all_ids));
+                } else {
+                    let ans = prompt_user_input("Accept this transfer? [Y/n]: ")
+                        .unwrap_or_else(|_| "n".to_string());
+                    if ans.is_empty() || ans.eq_ignore_ascii_case("y") || ans.eq_ignore_ascii_case("yes") {
+                        let all_ids = files.keys().cloned().collect();
+                        let _ = decision_tx.send(PrepareUploadDecision::Accept(all_ids));
+                        println!("Accepted transfer.");
+                    } else {
+                        let _ = decision_tx.send(PrepareUploadDecision::Decline);
+                        println!("Declined transfer.");
+                    }
+                }
+            }
+            ServerTransferEvent::FileStarted { file_name, total_bytes, .. } => {
+                println!(
+                    "Receiving file: {} ({:.2} MB)...",
+                    file_name,
+                    total_bytes as f64 / (1024.0 * 1024.0)
+                );
+            }
+            ServerTransferEvent::FileCompleted { result, .. } => {
+                println!(
+                    "File saved successfully: {} (SHA-256: {}) ✓",
+                    result.target_path.display(),
+                    result.sha256
+                );
+            }
+            ServerTransferEvent::FileFailed { file_id, error, .. } => {
+                eprintln!("File transfer failed [ID: {file_id}]: {error}");
+            }
+            ServerTransferEvent::SessionEnded { session_id, reason } => {
+                println!("Transfer session ended [ID: {session_id}]: {reason:?}\n");
+            }
+        }
+    }
+
+    server_handle.wait().await;
     Ok(())
 }
