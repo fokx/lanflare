@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 5: Desktop GUI with Tauri v2 + SvelteKit 2 (`lanflare-desktop`)
-- **Overall Status**: Phase 4 (4.1, 4.2) complete. Ready for Phase 5.1 implementation.
+- **Current Milestone**: Phase 6: E2E Compatibility, Performance & Hardening
+- **Overall Status**: Phase 5 (5.1, 5.2) complete. Ready for Phase 6.1 implementation.
 
 ---
 
@@ -76,7 +76,6 @@
   - Target peer resolution and interactive terminal picker (`match_target_peer`, `discover_or_select_target`) supporting query by canonical fingerprint prefix, direct IP address, exact alias, or case-insensitive substring.
   - Wired `lanflare send` to `TransferOrchestrator` with pre-flight file metadata extraction, SHA-256 pre-calculation, `LsClient` with pinned receiver TLS fingerprint verification, and reactive progress pump.
   - Wired `lanflare receive` to `start_server` daemon loop handling incoming transfer requests (`ServerTransferEvent::PrepareUpload`) with auto-accept or interactive terminal confirmation prompt (`[Y/n]`), PIN validation, and streaming disk persistence.
-  - Unit and end-to-end integration test suite (`tests/cli_tests.rs`) covering peer matching heuristics, transfer progress tracker state machine, and full client-server transfer orchestration over loopback HTTPS mTLS.
 - [x] Implement Tauri v2 Core Integration in `lanflare-desktop` (Phase 5.1):
   - Desktop crate scaffolding initialized in [`crates/lanflare-desktop`](file:///f/lanflare/crates/lanflare-desktop) with Tauri v2 (`tauri` v2.12.3, `tauri-build` v2.7.2) and official plugins (`notification`, `dialog`, `fs`, `opener`, `shell`).
   - System tray icon and context menu implementation in [`crates/lanflare-desktop/src/tray.rs`](file:///f/lanflare/crates/lanflare-desktop/src/tray.rs) with window toggle, show/hide, and graceful exit handlers.
@@ -88,6 +87,17 @@
     - Sender orchestration: `send_files`, `cancel_outgoing_transfer`.
   - Tauri configuration ([`tauri.conf.json`](file:///f/lanflare/crates/lanflare-desktop/tauri.conf.json)) configured for SvelteKit 2 frontend output distribution (`../../web/build`).
   - Unit and integration test suite (`tests/desktop_tests.rs`) validating state generation and thread-safe configuration mutation.
+- [x] Implement SvelteKit 2 + Svelte 5 Frontend in `web/` (Phase 5.2):
+  - Initialized SvelteKit 2 and Svelte 5 frontend with Vite, TypeScript, TailwindCSS, `@sveltejs/adapter-static` for Tauri single-page export (`web/build/index.html`), and `lucide-svelte` icons.
+  - Implemented reactive app state class (`AppState` in [`web/src/lib/state.svelte.ts`](file:///f/lanflare/web/src/lib/state.svelte.ts)) using modern Svelte 5 runes (`$state`, `$derived.by`) with typed IPC bridge wrappers (`web/src/lib/api.ts`) supporting both native Tauri webview and browser mock fallbacks.
+  - Subscribed to real-time Tauri IPC events: `lanflare://peers-updated`, `lanflare://incoming-transfer-request`, `lanflare://incoming-transfer`, `lanflare://file-started`, `lanflare://file-received`, and `lanflare://transfer-progress`.
+  - Built responsive views and modals:
+    - Radar / Discovered Devices Grid ([`DeviceGrid.svelte`](file:///f/lanflare/web/src/lib/components/DeviceGrid.svelte)) displaying peers with device icons, endpoint badges, mTLS verification tags, search filter, and quick file send triggers.
+    - Transfer Queue ([`TransferQueue.svelte`](file:///f/lanflare/web/src/lib/components/TransferQueue.svelte)) with per-file and session-level progress bars, speedometer indicators, ETA estimations, and session cancellation handlers.
+    - Incoming Transfer Approval Modal ([`IncomingTransferModal.svelte`](file:///f/lanflare/web/src/lib/components/IncomingTransferModal.svelte)) with file review, total size calculation, and accept/decline actions.
+    - Settings Modal ([`SettingsModal.svelte`](file:///f/lanflare/web/src/lib/components/SettingsModal.svelte)) configuring alias, port, download folder path, auto-accept toggle, and security PIN code.
+    - Outgoing File Picker Dialog ([`SendFileDialog.svelte`](file:///f/lanflare/web/src/lib/components/SendFileDialog.svelte)) using `@tauri-apps/plugin-dialog` file open picker.
+  - Verified static asset generation and compilation passing `pnpm build`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all`.
 
 ---
 
@@ -206,6 +216,14 @@
     - Incoming transfers (`ServerTransferEvent::PrepareUpload`) either auto-accept when configured or park a Tokio `oneshot::Sender<PrepareUploadDecision>` in `DesktopState::pending_incoming`, emitting `lanflare://incoming-transfer-request` to prompt the GUI user. The user's response invokes `respond_incoming_transfer` to unblock the server.
     - Outgoing file uploads spawn an async background task streaming `TransferProgress` updates directly to the webview via `lanflare://transfer-progress` events without blocking UI IPC threads.
     - Window close or hide actions minimize cleanly to the system tray (`TrayIconBuilder`), keeping background transfer and discovery listeners active unless explicitly quit.
+- **ADR-017: SvelteKit 2 + Svelte 5 Runes Reactive Architecture & Offline Static Prerendering**
+  - *Context*: The desktop GUI requires instant local performance, zero SSR server dependencies, real-time streaming reactivity without old Svelte 4 store ceremony, and graceful fallbacks for browser-only development.
+  - *Decision*: Implement the web frontend in `web/` using SvelteKit 2, Svelte 5 runes (`$state`, `$derived.by`, `$effect`), TailwindCSS, and `@sveltejs/adapter-static` writing to `web/build`.
+  - *Invariants*:
+    - Static single-page application is configured with `ssr = false`, `prerender = true`, and fallback `index.html`, matching `tauri.conf.json` `frontendDist: "../../web/build"`.
+    - Central reactivity resides in `AppState` ([`web/src/lib/state.svelte.ts`](file:///f/lanflare/web/src/lib/state.svelte.ts)) using class properties decorated with `$state` and `$derived.by`.
+    - IPC layer in [`web/src/lib/api.ts`](file:///f/lanflare/web/src/lib/api.ts) detects `window.__TAURI_INTERNALS__`. When invoked outside Tauri (e.g. standalone Vite dev server), it returns mock models with zero console errors.
+    - Form accessibility guidelines (e.g., associating form labels to input controls) are strictly enforced to guarantee zero Svelte compiler warnings.
 
 ---
 
@@ -215,16 +233,12 @@
 ---
 
 ## Next Session Target
-- **Target**: **Phase 5.2: SvelteKit 2 + Svelte 5 Frontend (`web/`)**
+- **Target**: **Phase 6.1: Cross-Protocol Interoperability Suite (`tests/localsend_compat.rs`)**
 - **Action Items**:
-  1. Scaffold SvelteKit 2 and Svelte 5 frontend in `web/` with Vite and TailwindCSS.
-  2. Implement reactive frontend stores/runes subscribing to Tauri IPC events (`lanflare://peers-updated`, `lanflare://transfer-progress`, `lanflare://incoming-transfer-request`).
-  3. Build responsive GUI views:
-     - Radar / Discovered Devices Grid.
-     - Transfer Queue with real-time speedometers and progress bars.
-     - Incoming transfer approval modal dialog.
-     - Settings dialog for alias, port, download directory, and PIN.
-  4. Verify frontend compilation cleanly with `pnpm build` (`npm run build`).
+  1. Build an end-to-end integration test harness simulating official LocalSend v2 client and server interactions.
+  2. Implement reverse file transfer (browser download API: `GET /api/localsend/v2/prepare-download` and `GET /api/localsend/v2/download`).
+  3. Verify protocol parity across bidirectional HTTP transfers, PIN negotiation, and SHA-256 fingerprint validation.
+  4. Run verification with `cargo test --test localsend_compat` and `cargo test --all`.
 
 
 
