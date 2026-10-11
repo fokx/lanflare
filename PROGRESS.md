@@ -71,13 +71,23 @@
   - Pretty-printed peer table formatting in [`crates/lanflare-cli/src/tui.rs`](file:///f/lanflare/crates/lanflare-cli/src/tui.rs) with OS/device icons (🐧 Linux, 🪟 Windows, 🍎 macOS, 🤖 Android, 📱 iOS), IP address, port, transport mode, and shortened fingerprint.
   - Active scanning command handler (`lanflare scan`) in [`crates/lanflare-cli/src/commands.rs`](file:///f/lanflare/crates/lanflare-cli/src/commands.rs) wiring dual discovery engines (UDP multicast and mDNS) with `PeerRegistry` aggregation and burst announcement triggers.
   - Local node status reporter (`lanflare status`) enumerating active IPv4/IPv6 network interfaces and ephemeral/configured cryptographic TLS fingerprints.
-  - Unit and integration tests (10 tests in `lanflare-cli`) validating command argument parsing, device icon heuristics, peer table formatting, fingerprint shortening, and status command execution.
 - [x] Implement Interactive TUI & Transfer Progress in `lanflare-cli` (Phase 4.2):
   - Multi-bar progress display using `indicatif` (`TransferProgressTracker`) in [`crates/lanflare-cli/src/tui.rs`](file:///f/lanflare/crates/lanflare-cli/src/tui.rs) rendering overall and per-file transfer progress, elapsed time, transfer speed, and ETA.
   - Target peer resolution and interactive terminal picker (`match_target_peer`, `discover_or_select_target`) supporting query by canonical fingerprint prefix, direct IP address, exact alias, or case-insensitive substring.
   - Wired `lanflare send` to `TransferOrchestrator` with pre-flight file metadata extraction, SHA-256 pre-calculation, `LsClient` with pinned receiver TLS fingerprint verification, and reactive progress pump.
   - Wired `lanflare receive` to `start_server` daemon loop handling incoming transfer requests (`ServerTransferEvent::PrepareUpload`) with auto-accept or interactive terminal confirmation prompt (`[Y/n]`), PIN validation, and streaming disk persistence.
   - Unit and end-to-end integration test suite (`tests/cli_tests.rs`) covering peer matching heuristics, transfer progress tracker state machine, and full client-server transfer orchestration over loopback HTTPS mTLS.
+- [x] Implement Tauri v2 Core Integration in `lanflare-desktop` (Phase 5.1):
+  - Desktop crate scaffolding initialized in [`crates/lanflare-desktop`](file:///f/lanflare/crates/lanflare-desktop) with Tauri v2 (`tauri` v2.12.3, `tauri-build` v2.7.2) and official plugins (`notification`, `dialog`, `fs`, `opener`, `shell`).
+  - System tray icon and context menu implementation in [`crates/lanflare-desktop/src/tray.rs`](file:///f/lanflare/crates/lanflare-desktop/src/tray.rs) with window toggle, show/hide, and graceful exit handlers.
+  - Desktop state management in [`crates/lanflare-desktop/src/state.rs`](file:///f/lanflare/crates/lanflare-desktop/src/state.rs) managing thread-safe runtime instances of `AppConfig`, `TlsIdentity`, `PeerRegistry`, `ServerHandle`, and active/pending transfer sessions.
+  - Tauri IPC commands bridging GUI to `lanflare-core` in [`crates/lanflare-desktop/src/commands.rs`](file:///f/lanflare/crates/lanflare-desktop/src/commands.rs):
+    - Node status & configuration: `get_node_status`, `update_config`.
+    - Discovery orchestration: `get_discovered_peers`, `start_discovery`, `announce_presence`, `stop_discovery`.
+    - Receiver daemon: `start_receiver_server`, `respond_incoming_transfer`, `stop_receiver_server`.
+    - Sender orchestration: `send_files`, `cancel_outgoing_transfer`.
+  - Tauri configuration ([`tauri.conf.json`](file:///f/lanflare/crates/lanflare-desktop/tauri.conf.json)) configured for SvelteKit 2 frontend output distribution (`../../web/build`).
+  - Unit and integration test suite (`tests/desktop_tests.rs`) validating state generation and thread-safe configuration mutation.
 
 ---
 
@@ -187,6 +197,16 @@
     - `TransferProgressTracker` manages one overall progress bar and dynamically attaches per-file progress bars upon receiving `TransferProgress::FileProgress`, concluding with completion or cancellation statuses without leaking memory. Supports a non-interactive mode for headless or unit test execution.
     - `lanflare receive` acts as an event pump listening for `ServerTransferEvent::PrepareUpload`, rendering sender and file metadata, prompting the user (`[Y/n]`) when `auto_accept` is false, and sending `PrepareUploadDecision` via Tokio oneshot channels.
 
+- **ADR-016: Tauri v2 Desktop IPC Bridge & Reactive State Architecture**
+  - *Context*: The desktop GUI requires bi-directional communication with `lanflare-core`: invoking actions (start discovery, send transfer, update config, respond to incoming transfer requests) and reacting to async events (peers discovered, incoming transfer approval prompt, real-time file upload speed & byte progress).
+  - *Decision*: Implement a dedicated `lanflare-desktop` crate using Tauri v2 (`tauri` 2.12.3) with standard plugins (`notification`, `dialog`, `fs`, `opener`, `shell`).
+  - *Invariants*:
+    - App state `DesktopState` is wrapped in `std::sync::Arc` and managed by Tauri state injection (`State<'_, Arc<DesktopState>>`), with fine-grained asynchronous locks (`RwLock` for configuration and server handle, `Mutex` for active sessions and discovery handles).
+    - Peer discovery feeds incoming packets (`MulticastDiscoveryEvent`, `MdnsDiscoveryEvent`) into `PeerRegistry` and emits reactive Tauri events (`lanflare://peers-updated`) to the webview.
+    - Incoming transfers (`ServerTransferEvent::PrepareUpload`) either auto-accept when configured or park a Tokio `oneshot::Sender<PrepareUploadDecision>` in `DesktopState::pending_incoming`, emitting `lanflare://incoming-transfer-request` to prompt the GUI user. The user's response invokes `respond_incoming_transfer` to unblock the server.
+    - Outgoing file uploads spawn an async background task streaming `TransferProgress` updates directly to the webview via `lanflare://transfer-progress` events without blocking UI IPC threads.
+    - Window close or hide actions minimize cleanly to the system tray (`TrayIconBuilder`), keeping background transfer and discovery listeners active unless explicitly quit.
+
 ---
 
 ## Known Debt & Blockers
@@ -195,11 +215,17 @@
 ---
 
 ## Next Session Target
-- **Target**: **Phase 5.1: Tauri v2 Core Integration (`lanflare-desktop`)**
+- **Target**: **Phase 5.2: SvelteKit 2 + Svelte 5 Frontend (`web/`)**
 - **Action Items**:
-  1. Initialize `crates/lanflare-desktop` crate scaffolding with Tauri v2 dependencies and system tray configuration.
-  2. Implement Tauri IPC commands bridging GUI to `lanflare-core` (discovery triggers, peer registry queries, transfer orchestrator, and server daemon).
-  3. Verify crate compilation with `cargo check -p lanflare-desktop`.
+  1. Scaffold SvelteKit 2 and Svelte 5 frontend in `web/` with Vite and TailwindCSS.
+  2. Implement reactive frontend stores/runes subscribing to Tauri IPC events (`lanflare://peers-updated`, `lanflare://transfer-progress`, `lanflare://incoming-transfer-request`).
+  3. Build responsive GUI views:
+     - Radar / Discovered Devices Grid.
+     - Transfer Queue with real-time speedometers and progress bars.
+     - Incoming transfer approval modal dialog.
+     - Settings dialog for alias, port, download directory, and PIN.
+  4. Verify frontend compilation cleanly with `pnpm build` (`npm run build`).
+
 
 
 
