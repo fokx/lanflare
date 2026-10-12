@@ -2,7 +2,7 @@
 
 ## Current Phase & Milestone
 - **Current Milestone**: Phase 6: E2E Compatibility, Performance & Hardening
-- **Overall Status**: Phase 5 (5.1, 5.2) complete. Ready for Phase 6.1 implementation.
+- **Overall Status**: Phase 6.1 complete. Ready for Phase 6.2 (High-Throughput Benchmarking & Stress Hardening).
 
 ---
 
@@ -98,6 +98,21 @@
     - Settings Modal ([`SettingsModal.svelte`](file:///f/lanflare/web/src/lib/components/SettingsModal.svelte)) configuring alias, port, download folder path, auto-accept toggle, and security PIN code.
     - Outgoing File Picker Dialog ([`SendFileDialog.svelte`](file:///f/lanflare/web/src/lib/components/SendFileDialog.svelte)) using `@tauri-apps/plugin-dialog` file open picker.
   - Verified static asset generation and compilation passing `pnpm build`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all`.
+- [x] Implement Reverse File Transfer & Cross-Protocol Interoperability Suite (Phase 6.1):
+  - Implemented reverse file transfer / browser download API in `lanflare-core::server` (`DownloadManager`, `DownloadFile`, `DownloadSession`):
+    - `POST /api/localsend/v2/prepare-download`: session negotiation with optional PIN validation and cached session re-fetch for page reloads without re-entering PIN.
+    - `GET /api/localsend/v2/download`: binary chunk streaming with `Content-Disposition`, MIME header, and session validation.
+    - Updated `GET /api/localsend/v2/info` and `POST /api/localsend/v2/register` to advertise `download: true` when files are offered.
+  - Extended `lanflare-core::client` (`LsClient`):
+    - Added `prepare_download` calling `POST /api/localsend/v2/prepare-download`.
+    - Added `download_file` calling `GET /api/localsend/v2/download?sessionId=...&fileId=...`.
+  - Created automated cross-protocol interoperability test harness in [`crates/lanflare-core/tests/localsend_compat.rs`](file:///f/lanflare/crates/lanflare-core/tests/localsend_compat.rs):
+    - `MockLocalSendServer` simulating official LocalSend v2 mobile/desktop app endpoints.
+    - `test_lanflare_sender_to_official_localsend_receiver_interop`: verified multi-file transfer to official LocalSend mock receiver with exact bit-for-bit payload match.
+    - `test_lanflare_sender_to_official_localsend_pin_negotiation`: verified PIN rejection (HTTP 401 UnauthorizedPin) and successful session execution upon correct PIN entry.
+    - `test_lanflare_reverse_file_transfer_browser_download_api`: tested reverse download API round-trip, PIN protection, session re-fetch, SHA-256 verification, invalid token rejection, and clearing offered files.
+    - `test_https_mtls_fingerprint_validation_parity`: validated strict certificate SHA-256 fingerprint verification and instant rejection of rogue certificates.
+  - Verified test pass rate: 100% (78 unit/integration tests passing across workspace).
 
 ---
 
@@ -225,6 +240,14 @@
     - IPC layer in [`web/src/lib/api.ts`](file:///f/lanflare/web/src/lib/api.ts) detects `window.__TAURI_INTERNALS__`. When invoked outside Tauri (e.g. standalone Vite dev server), it returns mock models with zero console errors.
     - Form accessibility guidelines (e.g., associating form labels to input controls) are strictly enforced to guarantee zero Svelte compiler warnings.
 
+- **ADR-018: Reverse File Transfer (Browser Download API) Architecture & Session Re-entrancy**
+  - *Context*: In reverse file transfer mode, a sender offers files on local endpoints for web browsers or receiver clients (`POST /api/localsend/v2/prepare-download` and `GET /api/localsend/v2/download`). Browsers often refresh or request multiple assets concurrently, and optional PIN security must protect file metadata without re-prompting users on page reload.
+  - *Decision*: Implement `DownloadManager` in `lanflare-core::server::session` maintaining registered offered files and active client sessions.
+  - *Invariants*:
+    - `POST /api/localsend/v2/prepare-download` validates optional PIN. If query includes an existing `sessionId` that has already been accepted for the client's IP address, the request is accepted immediately without re-validating the PIN.
+    - `GET /api/localsend/v2/download` validates both `sessionId` and `fileId`, ensuring the client IP matches the session's recorded IP. Files stream as raw binary with `application/octet-stream` and sanitized `Content-Disposition`.
+    - Both `GET /api/localsend/v2/info` and `POST /api/localsend/v2/register` dynamically advertise `download: true` if and only if offered download files are actively registered in the `DownloadManager`.
+
 ---
 
 ## Known Debt & Blockers
@@ -233,12 +256,12 @@
 ---
 
 ## Next Session Target
-- **Target**: **Phase 6.1: Cross-Protocol Interoperability Suite (`tests/localsend_compat.rs`)**
+- **Target**: **Phase 6.2: High-Throughput Stress Testing & Optimization (`benches/transfer_benchmark.rs`)**
 - **Action Items**:
-  1. Build an end-to-end integration test harness simulating official LocalSend v2 client and server interactions.
-  2. Implement reverse file transfer (browser download API: `GET /api/localsend/v2/prepare-download` and `GET /api/localsend/v2/download`).
-  3. Verify protocol parity across bidirectional HTTP transfers, PIN negotiation, and SHA-256 fingerprint validation.
-  4. Run verification with `cargo test --test localsend_compat` and `cargo test --all`.
+  1. Create high-throughput local loopback benchmark suite (`crates/lanflare-core/benches/transfer_benchmark.rs`) benchmarking multi-gigabit streaming transfers.
+  2. Profile buffer sizing (`StreamingFileWriter` chunk buffers and reqwest stream chunking) and explore zero-copy optimizations.
+  3. Implement fuzz testing / boundary verification for malformed HTTP and UDP datagrams.
+  4. Run verification with `cargo test -p lanflare-core --bench transfer_benchmark` and `cargo clippy --all-targets -- -D warnings`.
 
 
 

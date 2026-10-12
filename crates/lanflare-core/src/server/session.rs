@@ -378,6 +378,124 @@ impl SessionManager {
     }
 }
 
+/// A download file registered with the download manager.
+#[derive(Clone, Debug)]
+pub struct DownloadFile {
+    /// File metadata DTO.
+    pub dto: FileDto,
+    /// Absolute path to the source file on disk.
+    pub file_path: PathBuf,
+}
+
+/// An active or accepted reverse transfer download session for a client IP.
+#[derive(Debug, Clone)]
+pub struct DownloadSession {
+    /// Unique session identifier (often client IP string or UUID).
+    pub session_id: String,
+    /// Client remote IP.
+    pub client_ip: IpAddr,
+    /// Whether this session has been approved / accepted.
+    pub accepted: bool,
+    /// When this session was created.
+    pub created_at: Instant,
+}
+
+/// Manager maintaining registered files and sessions for the reverse transfer / browser download API.
+#[derive(Debug, Default)]
+pub struct DownloadManager {
+    /// Registered files available for downloading, keyed by fileId.
+    files: Mutex<HashMap<String, DownloadFile>>,
+    /// Active/accepted download sessions keyed by sessionId.
+    sessions: Mutex<HashMap<String, DownloadSession>>,
+}
+
+impl DownloadManager {
+    pub fn new() -> Self {
+        Self {
+            files: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Registers a set of files available for downloading.
+    pub async fn set_files(&self, files: Vec<DownloadFile>) {
+        let mut map = self.files.lock().await;
+        map.clear();
+        for file in files {
+            map.insert(file.dto.id.clone(), file);
+        }
+    }
+
+    /// Clears all offered download files and resets download sessions.
+    pub async fn clear_files(&self) {
+        self.files.lock().await.clear();
+        self.sessions.lock().await.clear();
+    }
+
+    /// Returns a map of all offered file DTOs.
+    pub async fn get_file_dtos(&self) -> HashMap<String, FileDto> {
+        let map = self.files.lock().await;
+        map.iter()
+            .map(|(k, v)| (k.clone(), v.dto.clone()))
+            .collect()
+    }
+
+    /// Checks if a session with given ID is currently valid and accepted for the given remote IP.
+    pub async fn is_session_valid(&self, session_id: &str, client_ip: IpAddr) -> bool {
+        let sessions = self.sessions.lock().await;
+        sessions
+            .get(session_id)
+            .is_some_and(|s| s.accepted && s.client_ip == client_ip)
+    }
+
+    /// Prepares or accepts a download session for a client.
+    /// Returns the session ID.
+    pub async fn prepare_session(
+        &self,
+        requested_session_id: Option<&str>,
+        client_ip: IpAddr,
+        accepted: bool,
+    ) -> String {
+        let session_id = requested_session_id
+            .map(str::to_string)
+            .unwrap_or_else(|| client_ip.to_string());
+
+        let mut sessions = self.sessions.lock().await;
+        sessions.insert(
+            session_id.clone(),
+            DownloadSession {
+                session_id: session_id.clone(),
+                client_ip,
+                accepted,
+                created_at: Instant::now(),
+            },
+        );
+        session_id
+    }
+
+    /// Retrieves the local filesystem path for a valid file in an authorized session.
+    pub async fn get_file_path(
+        &self,
+        session_id: &str,
+        file_id: &str,
+        client_ip: IpAddr,
+    ) -> Result<PathBuf, hyper::StatusCode> {
+        let sessions = self.sessions.lock().await;
+        let valid = sessions
+            .get(session_id)
+            .is_some_and(|s| s.accepted && s.client_ip == client_ip);
+        if !valid {
+            return Err(hyper::StatusCode::FORBIDDEN);
+        }
+
+        let files = self.files.lock().await;
+        match files.get(file_id) {
+            Some(f) => Ok(f.file_path.clone()),
+            None => Err(hyper::StatusCode::NOT_FOUND),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

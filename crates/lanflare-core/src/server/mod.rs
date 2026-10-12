@@ -18,7 +18,8 @@ use tokio_util::task::TaskTracker;
 pub use handlers::{ServerState, ServerTransferEvent};
 pub use router::{route_request, ClientConnectionInfo};
 pub use session::{
-    FileTransferStatus, PrepareUploadDecision, SessionEndReason, SessionFile, SessionManager,
+    DownloadFile, DownloadManager, DownloadSession, FileTransferStatus, PrepareUploadDecision,
+    SessionEndReason, SessionFile, SessionManager,
 };
 
 use crate::config::AppConfig;
@@ -34,12 +35,19 @@ pub struct ServerHandle {
     cancel_token: CancellationToken,
     /// Join handle of the background server task.
     join_handle: tokio::task::JoinHandle<()>,
+    /// Download manager for registering/unregistering reverse transfer files.
+    download_manager: Arc<DownloadManager>,
 }
 
 impl ServerHandle {
     /// Returns the port the server is listening on.
     pub fn bound_port(&self) -> u16 {
         self.bound_port
+    }
+
+    /// Returns a reference to the download manager.
+    pub fn download_manager(&self) -> &Arc<DownloadManager> {
+        &self.download_manager
     }
 
     /// Signals the server to stop accepting connections and terminate.
@@ -91,10 +99,13 @@ pub async fn start_server(
         None => None,
     };
 
+    let download_manager = Arc::new(DownloadManager::new());
+
     let state = ServerState {
         config: Arc::new(config),
         cert_fingerprint,
         session_manager: Arc::new(SessionManager::new()),
+        download_manager: download_manager.clone(),
         registry,
         event_tx,
     };
@@ -143,6 +154,7 @@ pub async fn start_server(
         bound_port,
         cancel_token,
         join_handle,
+        download_manager,
     })
 }
 

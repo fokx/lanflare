@@ -8,7 +8,9 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use lanflare_proto::discovery::{InfoResponseDtoV2, ProtocolType, RegisterDtoV2, RegisterResponseDtoV2, PROTOCOL_VERSION_V2};
-use lanflare_proto::transfer::{PrepareUploadRequestDtoV2, PrepareUploadResponseDtoV2};
+use lanflare_proto::transfer::{
+    PrepareDownloadResponseDtoV2, PrepareUploadRequestDtoV2, PrepareUploadResponseDtoV2,
+};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -16,7 +18,8 @@ use uuid::Uuid;
 use crate::config::AppConfig;
 use crate::discovery::registry::PeerRegistry;
 use crate::server::session::{
-    FileTransferStatus, PrepareUploadDecision, SessionEndReason, SessionFile, SessionManager,
+    DownloadManager, FileTransferStatus, PrepareUploadDecision, SessionEndReason, SessionFile,
+    SessionManager,
 };
 use crate::storage::path::{resolve_unique_destination_path, sanitize_filename};
 use crate::storage::writer::{StorageCommitResult, StreamingFileWriter};
@@ -70,6 +73,7 @@ pub struct ServerState {
     pub config: Arc<AppConfig>,
     pub cert_fingerprint: String,
     pub session_manager: Arc<SessionManager>,
+    pub download_manager: Arc<DownloadManager>,
     pub registry: Arc<PeerRegistry>,
     pub event_tx: Option<mpsc::Sender<ServerTransferEvent>>,
 }
@@ -121,6 +125,7 @@ pub fn parse_query(query_str: Option<&str>) -> HashMap<String, String> {
 
 /// Handler for `GET /api/localsend/v2/info` and `GET /api/localsend/v1/info`.
 pub async fn handle_info(state: &ServerState) -> Response<Full<Bytes>> {
+    let files = state.download_manager.get_file_dtos().await;
     let resp = InfoResponseDtoV2 {
         alias: state.config.alias.clone(),
         version: PROTOCOL_VERSION_V2.to_string(),
@@ -129,7 +134,7 @@ pub async fn handle_info(state: &ServerState) -> Response<Full<Bytes>> {
         fingerprint: state.cert_fingerprint.clone(),
         port: Some(state.config.port),
         protocol: Some(ProtocolType::Https),
-        download: false,
+        download: !files.is_empty(),
     };
     json_response(StatusCode::OK, &resp)
 }
@@ -173,13 +178,14 @@ pub async fn handle_register(
             .await;
     }
 
+    let files = state.download_manager.get_file_dtos().await;
     let resp = RegisterResponseDtoV2 {
         alias: state.config.alias.clone(),
         version: PROTOCOL_VERSION_V2.to_string(),
         device_model: Some(std::env::consts::OS.to_string()),
         device_type: Some(lanflare_proto::discovery::DeviceType::Desktop),
         fingerprint: state.cert_fingerprint.clone(),
-        download: false,
+        download: !files.is_empty(),
     };
     json_response(StatusCode::OK, &resp)
 }
@@ -538,4 +544,120 @@ pub async fn handle_cancel(
     }
 
     empty_response(StatusCode::OK)
+}
+
+/// Handler for `POST /api/localsend/v2/prepare-download` (Reverse file transfer / browser download metadata).
+pub async fn handle_prepare_download(
+    req: Request<Incoming>,
+    remote_ip: IpAddr,
+    state: &ServerState,
+) -> Response<Full<Bytes>> {
+    let query = parse_query(req.uri().query());
+    let provided_pin = query.get("pin").map(|s| s.as_str());
+
+    // Check if client is already accepted for this session
+    if let Some(session_id) = query.get("sessionId")
+        && state
+            .download_manager
+            .is_session_valid(session_id, remote_ip)
+            .await
+    {
+        let files = state.download_manager.get_file_dtos().await;
+        let resp = PrepareDownloadResponseDtoV2 {
+            info: InfoResponseDtoV2 {
+                alias: state.config.alias.clone(),
+                version: PROTOCOL_VERSION_V2.to_string(),
+                device_model: Some(std::env::consts::OS.to_string()),
+                device_type: Some(lanflare_proto::discovery::DeviceType::Desktop),
+                fingerprint: state.cert_fingerprint.clone(),
+                port: Some(state.config.port),
+                protocol: Some(ProtocolType::Https),
+                download: true,
+            },
+            session_id: session_id.clone(),
+            files,
+        };
+        return json_response(StatusCode::OK, &resp);
+    }
+
+    // Validate PIN
+    if let Err(status) = state
+        .session_manager
+        .pin_tracker()
+        .check_pin(state.config.pin.as_deref(), provided_pin, remote_ip)
+        .await
+    {
+        return empty_response(status);
+    }
+
+    let files = state.download_manager.get_file_dtos().await;
+    if files.is_empty() {
+        return empty_response(StatusCode::FORBIDDEN);
+    }
+
+    let session_id = state
+        .download_manager
+        .prepare_session(query.get("sessionId").map(|s| s.as_str()), remote_ip, true)
+        .await;
+
+    let resp = PrepareDownloadResponseDtoV2 {
+        info: InfoResponseDtoV2 {
+            alias: state.config.alias.clone(),
+            version: PROTOCOL_VERSION_V2.to_string(),
+            device_model: Some(std::env::consts::OS.to_string()),
+            device_type: Some(lanflare_proto::discovery::DeviceType::Desktop),
+            fingerprint: state.cert_fingerprint.clone(),
+            port: Some(state.config.port),
+            protocol: Some(ProtocolType::Https),
+            download: true,
+        },
+        session_id,
+        files,
+    };
+    json_response(StatusCode::OK, &resp)
+}
+
+/// Handler for `GET /api/localsend/v2/download?sessionId=...&fileId=...`.
+pub async fn handle_download(
+    req: Request<Incoming>,
+    remote_ip: IpAddr,
+    state: &ServerState,
+) -> Response<Full<Bytes>> {
+    let query = parse_query(req.uri().query());
+    let (Some(session_id), Some(file_id)) = (query.get("sessionId"), query.get("fileId")) else {
+        return empty_response(StatusCode::BAD_REQUEST);
+    };
+
+    let file_path = match state
+        .download_manager
+        .get_file_path(session_id, file_id, remote_ip)
+        .await
+    {
+        Ok(p) => p,
+        Err(status) => return empty_response(status),
+    };
+
+    let content = match tokio::fs::read(&file_path).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to read download file {:?}: {e}", file_path);
+            return empty_response(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    let file_name = file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download.bin");
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(hyper::header::CONTENT_TYPE, "application/octet-stream")
+        .header(
+            hyper::header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{file_name}\""),
+        )
+        .header(hyper::header::CONTENT_LENGTH, content.len())
+        .body(Full::new(Bytes::from(content)))
+        .unwrap()
 }

@@ -7,8 +7,8 @@ use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode};
 
 use crate::server::handlers::{
-    empty_response, handle_cancel, handle_info, handle_prepare_upload, handle_register,
-    handle_upload, ServerState,
+    empty_response, handle_cancel, handle_download, handle_info, handle_prepare_download,
+    handle_prepare_upload, handle_register, handle_upload, ServerState,
 };
 
 /// Client connection metadata extracted from the underlying TLS / TCP stream.
@@ -48,6 +48,16 @@ pub async fn route_request(
         // Binary file upload stream: POST /api/localsend/v2/upload
         (&Method::POST, "/api/localsend/v2/upload") => {
             handle_upload(req, client.remote_ip, state).await
+        }
+
+        // Reverse file transfer (Browser download metadata): POST /api/localsend/v2/prepare-download
+        (&Method::POST, "/api/localsend/v2/prepare-download") => {
+            handle_prepare_download(req, client.remote_ip, state).await
+        }
+
+        // Reverse file transfer binary stream: GET /api/localsend/v2/download
+        (&Method::GET, "/api/localsend/v2/download") => {
+            handle_download(req, client.remote_ip, state).await
         }
 
         // Transfer cancellation: POST /api/localsend/v2/cancel

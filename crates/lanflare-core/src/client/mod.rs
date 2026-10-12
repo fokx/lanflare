@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use lanflare_proto::discovery::{InfoResponseDtoV2, RegisterDtoV2, RegisterResponseDtoV2};
 use lanflare_proto::transfer::{
-    PrepareUploadRequestDtoV2, PrepareUploadResponseDtoV2,
+    PrepareDownloadResponseDtoV2, PrepareUploadRequestDtoV2, PrepareUploadResponseDtoV2,
 };
 use crate::crypto::cert::TlsIdentity;
 use crate::crypto::verifier::PinnedServerCertVerifier;
@@ -278,6 +278,72 @@ impl LsClient {
         let status = resp.status();
         if status.is_success() {
             Ok(())
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            Err(ClientError::ServerError { status, body })
+        }
+    }
+
+    /// Prepares to download files from a sender hosting them (Browser Download / Reverse Transfer API).
+    /// Calls `POST /api/localsend/v2/prepare-download`.
+    pub async fn prepare_download(
+        &self,
+        base_url: &str,
+        session_id: Option<&str>,
+        pin: Option<&str>,
+    ) -> Result<PrepareDownloadResponseDtoV2, ClientError> {
+        let mut url = format!("{}/api/localsend/v2/prepare-download", base_url.trim_end_matches('/'));
+        let mut params = Vec::new();
+        if let Some(sid) = session_id {
+            params.push(format!("sessionId={}", urlencoding(sid)));
+        }
+        if let Some(p) = pin {
+            params.push(format!("pin={}", urlencoding(p)));
+        }
+        if !params.is_empty() {
+            url.push('?');
+            url.push_str(&params.join("&"));
+        }
+
+        let resp = self.client.post(&url).send().await?;
+        let status = resp.status();
+
+        match status {
+            reqwest::StatusCode::OK => {
+                let prep_resp: PrepareDownloadResponseDtoV2 = resp.json().await?;
+                Ok(prep_resp)
+            }
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+                Err(ClientError::UnauthorizedPin)
+            }
+            reqwest::StatusCode::TOO_MANY_REQUESTS => Err(ClientError::PinRateLimited),
+            _ => {
+                let body = resp.text().await.unwrap_or_default();
+                Err(ClientError::ServerError { status, body })
+            }
+        }
+    }
+
+    /// Downloads a file binary stream from a sender hosting it (Reverse Transfer API).
+    /// Calls `GET /api/localsend/v2/download?sessionId=...&fileId=...`.
+    pub async fn download_file(
+        &self,
+        base_url: &str,
+        session_id: &str,
+        file_id: &str,
+    ) -> Result<reqwest::Response, ClientError> {
+        let url = format!(
+            "{}/api/localsend/v2/download?sessionId={}&fileId={}",
+            base_url.trim_end_matches('/'),
+            urlencoding(session_id),
+            urlencoding(file_id)
+        );
+
+        let resp = self.client.get(&url).send().await?;
+        let status = resp.status();
+
+        if status.is_success() {
+            Ok(resp)
         } else {
             let body = resp.text().await.unwrap_or_default();
             Err(ClientError::ServerError { status, body })
