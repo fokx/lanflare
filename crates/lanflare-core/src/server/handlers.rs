@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use lanflare_proto::discovery::{InfoResponseDtoV2, ProtocolType, RegisterDtoV2, RegisterResponseDtoV2, PROTOCOL_VERSION_V2};
@@ -102,6 +102,26 @@ pub fn json_response<T: serde::Serialize>(status: StatusCode, data: &T) -> Respo
         .unwrap()
 }
 
+/// Maximum allowed size for JSON control bodies (10 MB).
+pub const MAX_JSON_BODY_SIZE: usize = 10 * 1024 * 1024;
+
+/// Helper to read and deserialize a bounded JSON request body, preventing memory exhaustion attacks.
+pub async fn read_json_body<T: serde::de::DeserializeOwned>(
+    body: Incoming,
+) -> Result<T, StatusCode> {
+    let limited = Limited::new(body, MAX_JSON_BODY_SIZE);
+    let collected = match limited.collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(err) => {
+            if err.downcast_ref::<http_body_util::LengthLimitError>().is_some() {
+                return Err(StatusCode::PAYLOAD_TOO_LARGE);
+            }
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    };
+    serde_json::from_slice(&collected).map_err(|_| StatusCode::BAD_REQUEST)
+}
+
 /// Helper parsing query parameters into a HashMap.
 pub fn parse_query(query_str: Option<&str>) -> HashMap<String, String> {
     let mut map = HashMap::new();
@@ -146,14 +166,9 @@ pub async fn handle_register(
     client_cert_fingerprint: Option<String>,
     state: &ServerState,
 ) -> Response<Full<Bytes>> {
-    let whole_body = match req.into_body().collect().await {
-        Ok(b) => b.to_bytes(),
-        Err(_) => return empty_response(StatusCode::BAD_REQUEST),
-    };
-
-    let dto: RegisterDtoV2 = match serde_json::from_slice(&whole_body) {
+    let dto: RegisterDtoV2 = match read_json_body(req.into_body()).await {
         Ok(d) => d,
-        Err(_) => return empty_response(StatusCode::BAD_REQUEST),
+        Err(status) => return empty_response(status),
     };
 
     // If client cert fingerprint is present (mTLS), ensure claimed fingerprint matches or log warning
@@ -210,14 +225,9 @@ pub async fn handle_prepare_upload(
         return empty_response(status);
     }
 
-    let whole_body = match req.into_body().collect().await {
-        Ok(b) => b.to_bytes(),
-        Err(_) => return empty_response(StatusCode::BAD_REQUEST),
-    };
-
-    let payload: PrepareUploadRequestDtoV2 = match serde_json::from_slice(&whole_body) {
+    let payload: PrepareUploadRequestDtoV2 = match read_json_body(req.into_body()).await {
         Ok(p) => p,
-        Err(_) => return empty_response(StatusCode::BAD_REQUEST),
+        Err(status) => return empty_response(status),
     };
 
     if payload.files.is_empty() {

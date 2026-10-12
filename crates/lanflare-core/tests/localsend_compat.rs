@@ -299,6 +299,7 @@ async fn test_lanflare_sender_to_official_localsend_receiver_interop() {
         pin: None,
         cancel_token: None,
         progress_interval: Duration::from_millis(10),
+        ..Default::default()
     };
 
     orchestrator
@@ -357,6 +358,7 @@ async fn test_lanflare_sender_to_official_localsend_pin_negotiation() {
         pin: Some("wrong-pin".to_string()),
         cancel_token: None,
         progress_interval: Duration::from_millis(10),
+        ..Default::default()
     };
     let err = orchestrator
         .transfer(
@@ -378,6 +380,7 @@ async fn test_lanflare_sender_to_official_localsend_pin_negotiation() {
         pin: Some(required_pin),
         cancel_token: None,
         progress_interval: Duration::from_millis(10),
+        ..Default::default()
     };
     orchestrator
         .transfer(

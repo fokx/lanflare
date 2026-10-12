@@ -28,8 +28,8 @@ use lanflare_proto::transfer::{FileDto, FileMetadataDto, PrepareUploadRequestDto
 
 use crate::client::{ClientError, LsClient};
 
-/// Chunk size used when streaming files from disk to the network (64 KB).
-const STREAM_BUFFER_SIZE: usize = 64 * 1024;
+/// Default chunk size used when streaming files from disk to the network (128 KB).
+pub const DEFAULT_STREAM_CHUNK_SIZE: usize = 128 * 1024;
 
 /// Specification for a file to be sent to a remote peer.
 #[derive(Clone, Debug)]
@@ -78,7 +78,7 @@ impl OutgoingFile {
     pub async fn with_computed_sha256(mut self) -> Result<Self, ClientError> {
         let mut file = File::open(&self.path).await?;
         let mut hasher = Sha256::new();
-        let mut buffer = vec![0u8; STREAM_BUFFER_SIZE];
+        let mut buffer = vec![0u8; DEFAULT_STREAM_CHUNK_SIZE];
 
         loop {
             let n = file.read(&mut buffer).await?;
@@ -197,6 +197,8 @@ pub enum TransferProgress {
 pub struct TransferOptions {
     /// Maximum number of files to upload in parallel (default: 4).
     pub max_concurrency: usize,
+    /// Chunk size in bytes when streaming from disk to network (default: 128 KB).
+    pub chunk_size: usize,
     /// Optional PIN code for recipient authentication.
     pub pin: Option<String>,
     /// Optional cancellation token.
@@ -209,6 +211,7 @@ impl Default for TransferOptions {
     fn default() -> Self {
         Self {
             max_concurrency: 4,
+            chunk_size: DEFAULT_STREAM_CHUNK_SIZE,
             pin: None,
             cancel_token: None,
             progress_interval: Duration::from_millis(100),
@@ -277,6 +280,7 @@ impl TransferOrchestrator {
                     files_by_id,
                     options.max_concurrency,
                     options.progress_interval,
+                    options.chunk_size,
                     cancel_token,
                     progress_tx,
                 ).await
@@ -293,6 +297,7 @@ impl TransferOrchestrator {
         mut files_by_id: HashMap<String, OutgoingFile>,
         concurrency: usize,
         progress_interval: Duration,
+        chunk_size: usize,
         cancel_token: CancellationToken,
         progress_tx: Option<mpsc::Sender<TransferProgress>>,
     ) -> Result<(), ClientError> {
@@ -351,6 +356,7 @@ impl TransferOrchestrator {
                     session_total_bytes,
                     start_time,
                     progress_interval,
+                    chunk_size,
                     cancel,
                     tx,
                 )
@@ -435,6 +441,7 @@ async fn upload_single_file(
     session_total_bytes: u64,
     session_start_time: Instant,
     progress_interval: Duration,
+    chunk_size: usize,
     cancel_token: CancellationToken,
     progress_tx: Option<mpsc::Sender<TransferProgress>>,
 ) -> Result<(), ClientError> {
@@ -443,7 +450,7 @@ async fn upload_single_file(
     let file_size = file.size;
 
     let fs_file = File::open(&file.path).await.map_err(ClientError::Io)?;
-    let reader_stream = ReaderStream::with_capacity(fs_file, STREAM_BUFFER_SIZE);
+    let reader_stream = ReaderStream::with_capacity(fs_file, chunk_size);
 
     let progress_stream = ProgressStream::new(
         reader_stream,

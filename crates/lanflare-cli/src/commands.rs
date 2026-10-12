@@ -444,6 +444,7 @@ pub async fn send(
         pin: options.pin.clone().or_else(|| config.pin.clone()),
         cancel_token: None,
         progress_interval: Duration::from_millis(50),
+        ..Default::default()
     };
 
     // Spawn orchestrator task

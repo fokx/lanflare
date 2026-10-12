@@ -10,8 +10,8 @@ use super::path::PathSanitizeError;
 /// Temporary file extension for ongoing downloads.
 pub const TEMP_FILE_EXTENSION: &str = "lanflare-part";
 
-/// Buffer capacity for the async disk writer (64 KB for high-throughput LAN transfers).
-const BUFFER_CAPACITY: usize = 64 * 1024;
+/// Default buffer capacity for the async disk writer (128 KB for high-throughput LAN transfers).
+pub const DEFAULT_BUFFER_CAPACITY: usize = 128 * 1024;
 
 /// Errors that can occur during streaming storage operations.
 #[derive(Debug, Error)]
@@ -83,6 +83,40 @@ impl StreamingFileWriter {
         expected_sha256: Option<String>,
         allow_overwrite: bool,
     ) -> Result<Self, StorageError> {
+        Self::create_internal(
+            target_path,
+            expected_size,
+            expected_sha256,
+            allow_overwrite,
+            DEFAULT_BUFFER_CAPACITY,
+        )
+        .await
+    }
+
+    /// Creates a new streaming file writer with custom buffer capacity.
+    pub async fn create_with_capacity(
+        target_path: impl Into<PathBuf>,
+        expected_size: Option<u64>,
+        expected_sha256: Option<String>,
+        buffer_capacity: usize,
+    ) -> Result<Self, StorageError> {
+        Self::create_internal(
+            target_path,
+            expected_size,
+            expected_sha256,
+            true,
+            buffer_capacity,
+        )
+        .await
+    }
+
+    async fn create_internal(
+        target_path: impl Into<PathBuf>,
+        expected_size: Option<u64>,
+        expected_sha256: Option<String>,
+        allow_overwrite: bool,
+        buffer_capacity: usize,
+    ) -> Result<Self, StorageError> {
         let target_path = target_path.into();
 
         if !allow_overwrite && target_path.exists() {
@@ -105,7 +139,7 @@ impl StreamingFileWriter {
         let temp_path = parent.join(temp_name);
 
         let file = tokio::fs::File::create(&temp_path).await?;
-        let writer = BufWriter::with_capacity(BUFFER_CAPACITY, file);
+        let writer = BufWriter::with_capacity(buffer_capacity, file);
 
         Ok(Self {
             target_path,
@@ -198,7 +232,7 @@ impl StreamingFileWriter {
     where
         R: AsyncRead + Unpin,
     {
-        let mut buffer = [0u8; 16 * 1024];
+        let mut buffer = vec![0u8; DEFAULT_BUFFER_CAPACITY];
         loop {
             let n = reader.read(&mut buffer).await?;
             if n == 0 {

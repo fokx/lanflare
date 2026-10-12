@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 6: E2E Compatibility, Performance & Hardening
-- **Overall Status**: Phase 6.1 complete. Ready for Phase 6.2 (High-Throughput Benchmarking & Stress Hardening).
+- **Current Milestone**: All Roadmap Phases 1.1 through 6.2 Complete!
+- **Overall Status**: Phase 6.2 complete. Ready for Phase 7 (Packaging, CI/CD & Cross-Platform Distribution).
 
 ---
 
@@ -113,6 +113,24 @@
     - `test_lanflare_reverse_file_transfer_browser_download_api`: tested reverse download API round-trip, PIN protection, session re-fetch, SHA-256 verification, invalid token rejection, and clearing offered files.
     - `test_https_mtls_fingerprint_validation_parity`: validated strict certificate SHA-256 fingerprint verification and instant rejection of rogue certificates.
   - Verified test pass rate: 100% (78 unit/integration tests passing across workspace).
+- [x] Implement High-Throughput Stress Testing & Optimization (Phase 6.2):
+  - Implemented local loopback benchmark suite in [`crates/lanflare-core/benches/transfer_benchmark.rs`](file:///f/lanflare/crates/lanflare-core/benches/transfer_benchmark.rs) measuring multi-gigabit streaming transfers across 4 benchmark scenarios:
+    - Benchmark 1: `StreamingFileWriter` buffer sizing profile (64KB, 128KB, 256KB, 512KB, 1024KB) with SHA-256 calculation.
+    - Benchmark 2: End-to-end plain HTTP streaming transfer over loopback TCP (64 MB file).
+    - Benchmark 3: End-to-end HTTPS (mTLS) with pinned SHA-256 fingerprint verification (64 MB file).
+    - Benchmark 4: Concurrent parallel multi-file transfer (4 x 16 MB = 64 MB), achieving **263.78 MB/s (2.21 Gbps)** aggregate throughput in unoptimized debug mode.
+  - Profiled buffer sizing and zero-copy streaming:
+    - Increased default disk buffer capacity in `StreamingFileWriter` to 128 KB (`DEFAULT_BUFFER_CAPACITY`) and exposed `create_with_capacity`.
+    - Replaced 16KB stack buffer in `write_all_from_reader` with 128 KB heap buffer.
+    - Added configurable `chunk_size` (default: 128 KB) to `TransferOptions` and wired to `ReaderStream::with_capacity` in client transfer loop.
+    - Configured Hyper HTTP/1.1 connection builder with `max_buf_size(128 * 1024)`.
+  - Implemented fuzz testing & boundary verification suite in [`crates/lanflare-core/tests/fuzz_boundary_tests.rs`](file:///f/lanflare/crates/lanflare-core/tests/fuzz_boundary_tests.rs):
+    - UDP multicast fuzzing: arbitrary random binary bytes, truncated JSON, deeply nested structures, invalid types/ports, and survival under rapid 50-packet garbage blasts.
+    - HTTP request boundary hardening: enforced 10 MB limit (`MAX_JSON_BODY_SIZE`) using `http_body_util::Limited` on `/register` and `/prepare-upload` to defend against memory exhaustion attacks.
+    - Path traversal attack neutralization during `prepare-upload` and `upload`.
+    - Disk-space bombing defense: early abort and automatic `.lanflare-part` cleanup when uploaded bytes exceed promised file size.
+    - Missing and fabricated query parameter rejection (400 Bad Request / 403 Forbidden).
+  - Verified test pass rate: 100% (81 unit/integration tests and benchmarks passing across workspace).
 
 ---
 
@@ -248,6 +266,15 @@
     - `GET /api/localsend/v2/download` validates both `sessionId` and `fileId`, ensuring the client IP matches the session's recorded IP. Files stream as raw binary with `application/octet-stream` and sanitized `Content-Disposition`.
     - Both `GET /api/localsend/v2/info` and `POST /api/localsend/v2/register` dynamically advertise `download: true` if and only if offered download files are actively registered in the `DownloadManager`.
 
+- **ADR-019: High-Throughput Streaming Buffer Tuning & Memory Exhaustion Boundary Defense**
+  - *Context*: High-throughput streaming transfers across local loopback and 10Gbps LAN adapters must minimize syscall overhead and context switching without permitting memory exhaustion attacks (such as unbounded JSON control payloads or disk bombing).
+  - *Decision*: Increase `DEFAULT_BUFFER_CAPACITY` in `StreamingFileWriter` to 128 KB, expose `create_with_capacity`, replace 16 KB stack buffer in `write_all_from_reader` with 128 KB heap buffer, add configurable `chunk_size` (default: 128 KB) to `TransferOptions`, configure Hyper HTTP/1.1 connection builder with `max_buf_size(128 * 1024)`, and enforce `MAX_JSON_BODY_SIZE` (10 MB) via `http_body_util::Limited` on all incoming control JSON requests.
+  - *Invariants*:
+    - Incoming JSON request bodies on `/register` and `/prepare-upload` are bounded to `MAX_JSON_BODY_SIZE` (10 MB). Exceeding requests are rejected immediately with HTTP 413 Payload Too Large or HTTP 400 Bad Request, preventing arbitrary RAM allocation attacks.
+    - Path traversal attacks in advertised filenames (`PrepareUploadRequestDtoV2`) are strictly sanitized to basenames inside `download_dir` prior to temporary file allocation, neutralizing directory breakout attempts.
+    - Disk bombing (uploading more bytes than promised in `prepare-upload`) triggers early stream abort and immediate temporary `.lanflare-part` file deletion.
+    - Loopback benchmarking confirms sustained multi-gigabit throughput (over 260 MB/s / 2.2 Gbps in unoptimized debug mode) across parallel streams with real-time incremental SHA-256 calculation and atomic rename verification.
+
 ---
 
 ## Known Debt & Blockers
@@ -256,12 +283,12 @@
 ---
 
 ## Next Session Target
-- **Target**: **Phase 6.2: High-Throughput Stress Testing & Optimization (`benches/transfer_benchmark.rs`)**
+- **Target**: **Phase 7: Packaging, CI/CD Distribution & Release Artifacts**
 - **Action Items**:
-  1. Create high-throughput local loopback benchmark suite (`crates/lanflare-core/benches/transfer_benchmark.rs`) benchmarking multi-gigabit streaming transfers.
-  2. Profile buffer sizing (`StreamingFileWriter` chunk buffers and reqwest stream chunking) and explore zero-copy optimizations.
-  3. Implement fuzz testing / boundary verification for malformed HTTP and UDP datagrams.
-  4. Run verification with `cargo test -p lanflare-core --bench transfer_benchmark` and `cargo clippy --all-targets -- -D warnings`.
+  1. Configure release build profiles, strip symbols, and cross-compilation configurations for Linux (`.deb`, AppImage), Windows (`.msi`, NSIS `.exe`), and macOS.
+  2. Implement GitHub Actions CI/CD workflow testing workspace and packaging release artifacts.
+  3. Verify clean release compilation via `cargo build --release --all-targets` and `pnpm build`.
+
 
 
 

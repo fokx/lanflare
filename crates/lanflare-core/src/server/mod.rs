@@ -205,6 +205,7 @@ where
     });
 
     if let Err(err) = hyper::server::conn::http1::Builder::new()
+        .max_buf_size(128 * 1024)
         .serve_connection(io, service)
         .await
     {

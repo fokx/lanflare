@@ -46,3 +46,7 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
 mdns-sd = { workspace = true }
+
+[[bench]]
+name = "transfer_benchmark"
+harness = false

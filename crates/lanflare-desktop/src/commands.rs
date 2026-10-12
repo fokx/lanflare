@@ -585,6 +585,7 @@ pub async fn send_files(
         pin: payload.pin,
         cancel_token: Some(cancel_token.clone()),
         progress_interval: Duration::from_millis(100),
+        ..Default::default()
     };
 
     let session_uuid = uuid::Uuid::new_v4().to_string();

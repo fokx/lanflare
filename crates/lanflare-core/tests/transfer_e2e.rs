@@ -106,6 +106,7 @@ async fn test_plain_http_multi_file_transfer_e2e() {
         pin: None,
         cancel_token: None,
         progress_interval: Duration::from_millis(10),
+        ..Default::default()
     };
 
     // 4. Run transfer
@@ -243,6 +244,7 @@ async fn test_https_mtls_pin_protected_transfer_e2e() {
         pin: Some("0000".to_string()),
         cancel_token: None,
         progress_interval: Duration::from_millis(50),
+        ..Default::default()
     };
 
     let res_bad_pin = orchestrator
@@ -256,6 +258,7 @@ async fn test_https_mtls_pin_protected_transfer_e2e() {
         pin: Some(pin_code),
         cancel_token: None,
         progress_interval: Duration::from_millis(50),
+        ..Default::default()
     };
 
     orchestrator
