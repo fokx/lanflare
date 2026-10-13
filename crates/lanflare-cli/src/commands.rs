@@ -195,8 +195,93 @@ pub async fn scan(
         }
     });
 
-    // Wait for the scan duration
-    tokio::time::sleep(Duration::from_secs(options.duration_secs)).await;
+    // 4. Escalation worker: if subnet scan requested or fallback enabled,
+    // escalate after a brief multicast grace period (500ms, matching official LocalSend)
+    let registry_subnet = registry.clone();
+    let identity_subnet = identity.clone();
+    let port_subnet = config.port;
+    let should_run_subnet = options.subnet || options.fallback_subnet;
+    let immediate_subnet = options.subnet;
+
+    let subnet_task = if should_run_subnet {
+        Some(tokio::spawn(async move {
+            if !immediate_subnet {
+                // Multicast grace delay before escalating to subnet scan
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                // If peers were already found via multicast/mDNS, skip subnet sweep
+                if !registry_subnet.get_all().await.is_empty() {
+                    return;
+                }
+            }
+
+            let filter = InterfaceFilter::default();
+            if let Ok(interfaces) = local_interfaces(&filter) {
+                let valid_ifaces: Vec<_> = interfaces
+                    .v4
+                    .into_iter()
+                    .filter(|iface| is_sweepable_interface(&iface.name, &iface.address))
+                    .collect();
+
+                if !valid_ifaces.is_empty() {
+                    let descs: Vec<String> = valid_ifaces
+                        .iter()
+                        .map(|i| format!("{}/24 via {}", i.address, i.name))
+                        .collect();
+                    println!("Probing subnets in parallel: {}...", descs.join(", "));
+
+                    let scan_tasks = valid_ifaces.into_iter().map(|iface| {
+                        let reg = registry_subnet.clone();
+                        let ident = identity_subnet.clone();
+                        async move {
+                            lanflare_core::discovery::scanner::scan_subnet(
+                                iface.address,
+                                port_subnet,
+                                &ident,
+                                &reg,
+                            )
+                            .await
+                        }
+                    });
+
+                    futures_util::future::join_all(scan_tasks).await;
+                }
+            }
+        }))
+    } else {
+        None
+    };
+
+    // Wait for discovery to complete:
+    // - Exits early as soon as peers are discovered (plus brief 250ms grace window for remaining packets)
+    // - If immediate subnet scan was requested (-s), exits as soon as the subnet scan completes
+    // - Otherwise waits for the configured scan duration
+    let start = std::time::Instant::now();
+    let scan_timeout = Duration::from_secs(options.duration_secs);
+
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        if !registry.get_all().await.is_empty() {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            break;
+        }
+
+        if let Some(ref st) = subnet_task {
+            if st.is_finished() && (immediate_subnet || start.elapsed() >= scan_timeout) {
+                break;
+            }
+        } else if start.elapsed() >= scan_timeout {
+            break;
+        }
+
+        if start.elapsed() >= scan_timeout.max(Duration::from_secs(5)) {
+            break;
+        }
+    }
+
+    if let Some(st) = subnet_task {
+        let _ = st.await;
+    }
 
     // Shutdown discovery engines
     let _ = mc_stop_tx.send(());
@@ -211,37 +296,40 @@ pub async fn scan(
 
     collector_task.abort();
 
-    // 4. Retrieve active peers
-    let mut peers = registry.get_all().await;
-
-    // 5. If subnet scan requested OR (fallback enabled and no peers found via multicast/mDNS)
-    if options.subnet || (options.fallback_subnet && peers.is_empty()) {
-        let filter = InterfaceFilter::default();
-        if let Ok(interfaces) = local_interfaces(&filter) {
-            for iface in interfaces.v4 {
-                // Skip loopback unless allowed
-                if iface.address.is_loopback() {
-                    continue;
-                }
-                println!(
-                    "Probing subnet {}/24 via {}...",
-                    iface.address, iface.name
-                );
-                let _ = lanflare_core::discovery::scanner::scan_subnet(
-                    iface.address,
-                    config.port,
-                    identity,
-                    &registry,
-                )
-                .await;
-            }
-        }
-        peers = registry.get_all().await;
-    }
+    // 5. Retrieve active peers
+    let peers = registry.get_all().await;
 
     print!("{}", render_peer_table(&peers));
 
     Ok(peers)
+}
+
+/// Determines if an interface is an active LAN subnet suitable for a /24 sweep.
+///
+/// Filters out loopback, virtual containers (docker, veth, vboxnet), and point-to-point
+/// VPN / CGNAT ranges (Tailscale `100.64.0.0/10`, wireguard, tun/tap) which do not carry /24 LANs.
+fn is_sweepable_interface(name: &str, ip: &std::net::Ipv4Addr) -> bool {
+    if ip.is_loopback() {
+        return false;
+    }
+
+    // Skip CGNAT / Carrier Grade NAT (100.64.0.0/10) used by Tailscale, VPNs, etc.
+    let octets = ip.octets();
+    if octets[0] == 100 && (octets[1] & 0xC0) == 64 {
+        return false;
+    }
+
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("tailscale")
+        || lower.starts_with("docker")
+        || lower.starts_with("vboxnet")
+        || lower.starts_with("veth")
+        || lower.starts_with("br-")
+    {
+        return false;
+    }
+
+    true
 }
 
 use std::io::Write;

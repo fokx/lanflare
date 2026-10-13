@@ -15,10 +15,13 @@ use crate::crypto::cert::TlsIdentity;
 use crate::discovery::registry::{DiscoveredPeer, PeerRegistry};
 
 /// Concurrency limit for parallel subnet probing.
-pub const SCAN_CONCURRENCY: usize = 64;
+pub const SCAN_CONCURRENCY: usize = 128;
 
 /// Timeout for probing individual IPs during a subnet scan.
-pub const SCAN_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
+pub const SCAN_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Connect timeout for probing individual IPs during a subnet scan.
+pub const SCAN_CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// Scans the `/24` subnet containing `interface_ip` and populates the given `PeerRegistry`.
 ///
@@ -33,7 +36,7 @@ pub async fn scan_subnet(
     let base = interface_ip.octets();
     let client_config = LsClientConfig {
         timeout: SCAN_PROBE_TIMEOUT,
-        connect_timeout: Duration::from_millis(400),
+        connect_timeout: SCAN_CONNECT_TIMEOUT,
         tls_identity: Some(identity.clone()),
         target_fingerprint: None, // TOFU unpinned probe
     };
@@ -72,7 +75,10 @@ pub async fn scan_subnet(
 
 /// Probes a single host for a LocalSend v2.2 info endpoint.
 ///
-/// Tries HTTPS first (the modern LocalSend default), then falls back to plain HTTP.
+/// Tries HTTPS first (the modern LocalSend default), then falls back to plain HTTP
+/// only if the failure was TLS-related (e.g. peer does not use TLS). If the host
+/// port is completely closed or timed out, HTTP is skipped immediately to avoid
+/// doubling scan latency on dead hosts.
 async fn probe_host(
     client: &LsClient,
     target_ip: Ipv4Addr,
@@ -104,8 +110,21 @@ async fn probe_host(
                     .await;
                 return peer;
             }
-            Err(_) => {
-                // Try next protocol
+            Err(err) => {
+                // If TCP connection could not be established (connection refused or timeout),
+                // trying plain HTTP on the exact same port is guaranteed to fail similarly.
+                // Only retry HTTP if the failure occurred after TCP connected (e.g. TLS handshake).
+                let should_retry_http = match &err {
+                    crate::client::ClientError::Reqwest(re) => {
+                        !re.is_connect() && !re.is_timeout()
+                    }
+                    crate::client::ClientError::Tls(_) => true,
+                    _ => false,
+                };
+
+                if !should_retry_http {
+                    return None;
+                }
                 continue;
             }
         }
