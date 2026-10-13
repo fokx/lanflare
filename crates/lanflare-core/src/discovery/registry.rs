@@ -516,6 +516,95 @@ impl PeerRegistry {
         self.merge_peer_internal(candidate, now_ms).await
     }
 
+    /// Integrates a peer confirmed via our outbound HTTP `/api/localsend/v2/register` response.
+    pub async fn handle_confirmed_register(
+        &self,
+        remote_ip: IpAddr,
+        port: u16,
+        protocol: ProtocolType,
+        fingerprint: String,
+        dto: &lanflare_proto::discovery::RegisterResponseDtoV2,
+    ) -> Option<DiscoveredPeer> {
+        let now_ms = current_time_ms();
+        let fingerprint = canonicalize_fingerprint(&fingerprint);
+        if fingerprint.is_empty() {
+            return None;
+        }
+
+        let mut sources = HashSet::new();
+        sources.insert(DiscoverySource::ManualScan);
+
+        let endpoint = PeerEndpoint {
+            ip: remote_ip,
+            scope_id: None,
+            sources: sources.clone(),
+            first_seen_ms: now_ms,
+            last_seen_ms: now_ms,
+        };
+
+        let candidate = DiscoveredPeer {
+            fingerprint,
+            alias: dto.alias.clone(),
+            version: dto.version.clone(),
+            device_model: dto.device_model.clone(),
+            device_type: dto.device_type,
+            port,
+            protocol,
+            download: dto.download,
+            endpoints: vec![endpoint],
+            discovery_sources: sources,
+            first_seen_ms: now_ms,
+            last_seen_ms: now_ms,
+            metadata: HashMap::new(),
+        };
+
+        self.merge_peer_internal(candidate, now_ms).await
+    }
+
+    /// Integrates a peer probed via direct HTTP `GET /api/localsend/v2/info`.
+    pub async fn handle_info(
+        &self,
+        remote_ip: IpAddr,
+        default_port: u16,
+        default_protocol: ProtocolType,
+        info: &lanflare_proto::discovery::InfoResponseDtoV2,
+    ) -> Option<DiscoveredPeer> {
+        let now_ms = current_time_ms();
+        let fingerprint = canonicalize_fingerprint(&info.fingerprint);
+        if fingerprint.is_empty() {
+            return None;
+        }
+
+        let mut sources = HashSet::new();
+        sources.insert(DiscoverySource::ManualScan);
+
+        let endpoint = PeerEndpoint {
+            ip: remote_ip,
+            scope_id: None,
+            sources: sources.clone(),
+            first_seen_ms: now_ms,
+            last_seen_ms: now_ms,
+        };
+
+        let candidate = DiscoveredPeer {
+            fingerprint,
+            alias: info.alias.clone(),
+            version: info.version.clone(),
+            device_model: info.device_model.clone(),
+            device_type: info.device_type,
+            port: info.port.unwrap_or(default_port),
+            protocol: info.protocol.unwrap_or(default_protocol),
+            download: info.download,
+            endpoints: vec![endpoint],
+            discovery_sources: sources,
+            first_seen_ms: now_ms,
+            last_seen_ms: now_ms,
+            metadata: HashMap::new(),
+        };
+
+        self.merge_peer_internal(candidate, now_ms).await
+    }
+
     /// Internal merge routine consolidating peer endpoints and attributes.
     async fn merge_peer_internal(
         &self,

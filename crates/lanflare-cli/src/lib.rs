@@ -51,6 +51,14 @@ pub struct ScanArgs {
     /// Disable mDNS discovery
     #[arg(long)]
     pub no_mdns: bool,
+
+    /// Force active /24 subnet IP scan
+    #[arg(long, short = 's')]
+    pub subnet: bool,
+
+    /// Disable fallback /24 subnet IP scan
+    #[arg(long)]
+    pub no_subnet: bool,
 }
 
 #[derive(Args, Debug)]

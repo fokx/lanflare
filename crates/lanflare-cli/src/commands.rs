@@ -64,6 +64,10 @@ pub struct ScanOptions {
     pub multicast: bool,
     /// Whether to enable mDNS discovery.
     pub mdns: bool,
+    /// Force active /24 subnet IP scan.
+    pub subnet: bool,
+    /// Fall back to /24 subnet scan if multicast/mDNS yield 0 peers.
+    pub fallback_subnet: bool,
 }
 
 impl Default for ScanOptions {
@@ -72,6 +76,8 @@ impl Default for ScanOptions {
             duration_secs: 3,
             multicast: true,
             mdns: true,
+            subnet: false,
+            fallback_subnet: true,
         }
     }
 }
@@ -205,8 +211,34 @@ pub async fn scan(
 
     collector_task.abort();
 
-    // 4. Retrieve and print active peers
-    let peers = registry.get_all().await;
+    // 4. Retrieve active peers
+    let mut peers = registry.get_all().await;
+
+    // 5. If subnet scan requested OR (fallback enabled and no peers found via multicast/mDNS)
+    if options.subnet || (options.fallback_subnet && peers.is_empty()) {
+        let filter = InterfaceFilter::default();
+        if let Ok(interfaces) = local_interfaces(&filter) {
+            for iface in interfaces.v4 {
+                // Skip loopback unless allowed
+                if iface.address.is_loopback() {
+                    continue;
+                }
+                println!(
+                    "Probing subnet {}/24 via {}...",
+                    iface.address, iface.name
+                );
+                let _ = lanflare_core::discovery::scanner::scan_subnet(
+                    iface.address,
+                    config.port,
+                    identity,
+                    &registry,
+                )
+                .await;
+            }
+        }
+        peers = registry.get_all().await;
+    }
+
     print!("{}", render_peer_table(&peers));
 
     Ok(peers)
@@ -273,9 +305,55 @@ pub async fn discover_or_select_target(
     query: Option<&str>,
 ) -> anyhow::Result<DiscoveredPeer> {
     if let Some(q) = query {
-        // Fast-path: Check if user provided direct IP address (e.g. 192.168.1.50 or http://...)
+        // Fast-path: Check if user provided direct IP address (e.g. 192.168.1.50)
         let trimmed = q.trim();
         if let Ok(ip) = trimmed.parse::<IpAddr>() {
+            println!("Probing direct IP address {ip}...");
+            let probe_config = LsClientConfig {
+                timeout: Duration::from_secs(3),
+                connect_timeout: Duration::from_secs(2),
+                tls_identity: Some(identity.clone()),
+                target_fingerprint: None,
+            };
+            if let Ok(probe_client) = LsClient::new(probe_config) {
+                for proto in [ProtocolType::Https, ProtocolType::Http] {
+                    let proto_str = match proto {
+                        ProtocolType::Https => "https",
+                        ProtocolType::Http => "http",
+                    };
+                    let base_url = match ip {
+                        IpAddr::V4(v4) => format!("{proto_str}://{v4}:{}", config.port),
+                        IpAddr::V6(v6) => format!("{proto_str}://[{v6}]:{}", config.port),
+                    };
+                    if let Ok(info) = probe_client.get_info(&base_url).await {
+                        let peer_port = info.port.unwrap_or(config.port);
+                        let peer_proto = info.protocol.unwrap_or(proto);
+                        let ep = lanflare_core::discovery::registry::PeerEndpoint::new(
+                            ip,
+                            None,
+                            lanflare_core::discovery::DiscoverySource::ManualScan,
+                            0,
+                        );
+                        return Ok(DiscoveredPeer {
+                            fingerprint: info.fingerprint,
+                            alias: info.alias,
+                            version: info.version,
+                            device_model: info.device_model,
+                            device_type: info.device_type,
+                            port: peer_port,
+                            protocol: peer_proto,
+                            download: info.download,
+                            endpoints: vec![ep],
+                            discovery_sources: std::collections::HashSet::new(),
+                            first_seen_ms: 0,
+                            last_seen_ms: 0,
+                            metadata: std::collections::HashMap::new(),
+                        });
+                    }
+                }
+            }
+
+            // Fallback unprobed direct peer
             let ep = lanflare_core::discovery::registry::PeerEndpoint::new(
                 ip,
                 None,
@@ -306,6 +384,8 @@ pub async fn discover_or_select_target(
         duration_secs: 2,
         multicast: true,
         mdns: true,
+        subnet: false,
+        fallback_subnet: true,
     };
     let peers = scan(config, identity, &scan_opts).await?;
 

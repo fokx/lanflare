@@ -25,6 +25,8 @@ async fn main() -> anyhow::Result<()> {
                 duration_secs: args.duration,
                 multicast: !args.no_multicast,
                 mdns: !args.no_mdns,
+                subnet: args.subnet,
+                fallback_subnet: !args.no_subnet,
             };
             commands::scan(&config, &identity, &scan_opts).await?;
         }

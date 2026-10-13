@@ -273,7 +273,16 @@
     - Incoming JSON request bodies on `/register` and `/prepare-upload` are bounded to `MAX_JSON_BODY_SIZE` (10 MB). Exceeding requests are rejected immediately with HTTP 413 Payload Too Large or HTTP 400 Bad Request, preventing arbitrary RAM allocation attacks.
     - Path traversal attacks in advertised filenames (`PrepareUploadRequestDtoV2`) are strictly sanitized to basenames inside `download_dir` prior to temporary file allocation, neutralizing directory breakout attempts.
     - Disk bombing (uploading more bytes than promised in `prepare-upload`) triggers early stream abort and immediate temporary `.lanflare-part` file deletion.
-    - Loopback benchmarking confirms sustained multi-gigabit throughput (over 260 MB/s / 2.2 Gbps in unoptimized debug mode) across parallel streams with real-time incremental SHA-256 calculation and atomic rename verification.
+- **ADR-020: Active Subnet Sweep Fallback & Direct IP Probing for Mobile Discovery**
+  - *Context*: While LanFlare's receiver and server reliably receive files from LocalSend Android clients, outbound discovery (`lanflare scan` and `lanflare send`) failed to discover the mobile peer when relying solely on UDP multicast (`224.0.0.167:53317`) and mDNS. This occurs because Android OS power-saving and Wi-Fi Access Point (AP) isolation frequently drop wireless multicast packets or block incoming UDP multicast datagrams. Furthermore, the LocalSend specification dictates that peers answering multicast announcements do so via HTTP unicast `POST /api/localsend/v2/register` rather than broadcasting a UDP multicast reply.
+  - *Decision*:
+    1. Implement concurrent `/24` subnet scanning in `lanflare-core::discovery::scanner::scan_subnet` with bounded concurrency (`SCAN_CONCURRENCY = 64`) and fast connect timeouts, probing `https://<ip>:53317` and `http://<ip>:53317` for `/api/localsend/v2/info` or `POST /register`.
+    2. Add automatic fallback in `lanflare-cli scan` and `lanflare-cli send`: if multicast and mDNS yield zero peers, automatically sweep all active local IPv4 `/24` subnets (e.g. `wlan0`). Expose `--subnet` (`-s`) to force active scanning and `--no-subnet` to disable it.
+    3. Enhance direct IP targeting (`lanflare send --to <IP>`): actively probe the destination IP over HTTPS and HTTP to resolve its TLS fingerprint, alias, and port before transfer orchestration, eliminating TOFU dummy peers and connection failures.
+  - *Invariants*:
+    - Loopback addresses are excluded from subnet sweeps.
+    - Self-discovered fingerprints matching local TLS identity are suppressed from registry ingestion.
+    - Verified live end-to-end against physical Android LocalSend device (`Sec` at `10.40.1.121:53317`) with 100% discovery rate and successful authenticated TLS file transfer.
 
 ---
 

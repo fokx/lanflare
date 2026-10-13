@@ -11,13 +11,15 @@ fn test_cli_parsing_status() {
 
 #[test]
 fn test_cli_parsing_scan() {
-    let cli = Cli::try_parse_from(["lanflare", "scan", "--duration", "5", "--no-mdns"])
+    let cli = Cli::try_parse_from(["lanflare", "scan", "--duration", "5", "--no-mdns", "-s"])
         .expect("parse scan");
     match cli.command {
         Some(Commands::Scan(args)) => {
             assert_eq!(args.duration, 5);
             assert!(!args.no_multicast);
             assert!(args.no_mdns);
+            assert!(args.subnet);
+            assert!(!args.no_subnet);
         }
         _ => panic!("expected Scan command"),
     }
