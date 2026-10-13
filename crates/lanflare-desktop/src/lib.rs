@@ -32,7 +32,10 @@ pub fn run() {
         .setup({
             let state_setup = state.clone();
             move |app| {
-                state_setup.registry.start_eviction_task();
+                let registry = state_setup.registry.clone();
+                tauri::async_runtime::spawn(async move {
+                    registry.start_eviction_task();
+                });
                 tray::setup_tray(app.handle(), state_setup)?;
                 Ok(())
             }
