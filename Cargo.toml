@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "crates/lanflare-proto",
     "crates/lanflare-core",
-    "crates/lanflare-cli",
+    "crates/lanflare",
     "crates/lanflare-desktop",
 ]
 
@@ -12,6 +12,10 @@ version = "0.1.0"
 edition = "2024"
 authors = ["LanFlare Authors"]
 license = "Apache-2.0"
+repository = "https://github.com/fokx/lanflare"
+homepage = "https://github.com/fokx/lanflare"
+documentation = "https://docs.rs/lanflare-core"
+readme = "README.md"
 
 [workspace.dependencies]
 # Async Runtime & Utilities

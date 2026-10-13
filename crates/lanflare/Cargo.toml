@@ -1,0 +1,38 @@
+[package]
+name = "lanflare"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Cross-platform CLI and TUI for fast local peer discovery and file transfer compatible with LocalSend"
+keywords = ["localsend", "cli", "file-transfer", "p2p", "lan"]
+categories = ["command-line-utilities", "network-programming"]
+
+[lib]
+name = "lanflare"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lanflare"
+path = "src/main.rs"
+
+[[bin]]
+name = "lanflare-cli"
+path = "src/bin/lanflare-cli.rs"
+
+[dependencies]
+lanflare-proto = { path = "../lanflare-proto", version = "0.1.0" }
+lanflare-core = { path = "../lanflare-core", version = "0.1.0" }
+
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+indicatif = { workspace = true }
+futures-util = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }

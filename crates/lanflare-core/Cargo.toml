@@ -3,9 +3,15 @@ name = "lanflare-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "High-performance LocalSend v2.2 core transfer engine with hybrid discovery, TLS, and streaming I/O"
+keywords = ["localsend", "network", "file-transfer", "p2p", "lan"]
+categories = ["network-programming", "asynchronous"]
 
 [dependencies]
-lanflare-proto = { path = "../lanflare-proto" }
+lanflare-proto = { path = "../lanflare-proto", version = "0.1.0" }
 
 # Async runtime & IO
 tokio = { workspace = true }

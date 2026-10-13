@@ -3,6 +3,12 @@ name = "lanflare-proto"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "LocalSend v2.2 compatible protocol types and data transfer objects for LanFlare"
+keywords = ["localsend", "protocol", "p2p", "file-sharing", "lan"]
+categories = ["network-programming", "data-structures"]
 
 [dependencies]
 serde = { workspace = true }

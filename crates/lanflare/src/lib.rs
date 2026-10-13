@@ -94,3 +94,54 @@ pub struct ReceiveArgs {
     #[arg(long)]
     pub pin: Option<String>,
 }
+
+/// Executes the CLI application lifecycle based on parsed command line arguments.
+pub async fn run() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    let mut config = lanflare_core::config::AppConfig::default();
+    if let Some(alias) = cli.alias {
+        config.alias = alias;
+    }
+    if let Some(port) = cli.port {
+        config.port = port;
+    }
+
+    // Generate or load TLS identity for this session
+    let identity = lanflare_core::crypto::cert::generate_self_signed()?;
+
+    match cli.command {
+        Some(Commands::Scan(args)) => {
+            let scan_opts = commands::ScanOptions {
+                duration_secs: args.duration,
+                multicast: !args.no_multicast,
+                mdns: !args.no_mdns,
+                subnet: args.subnet,
+                fallback_subnet: !args.no_subnet,
+            };
+            commands::scan(&config, &identity, &scan_opts).await?;
+        }
+        Some(Commands::Send(args)) => {
+            let send_opts = commands::SendOptions {
+                files: args.files,
+                to: args.to,
+                pin: args.pin,
+            };
+            commands::send(&config, &identity, &send_opts).await?;
+        }
+        Some(Commands::Receive(args)) => {
+            let receive_opts = commands::ReceiveOptions {
+                dir: args.dir,
+                port: args.port,
+                auto_accept: args.auto_accept,
+                pin: args.pin,
+            };
+            commands::receive(&config, &identity, &receive_opts).await?;
+        }
+        Some(Commands::Status) | None => {
+            commands::status(&config, &identity).await?;
+        }
+    }
+
+    Ok(())
+}

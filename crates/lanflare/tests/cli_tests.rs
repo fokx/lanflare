@@ -1,5 +1,5 @@
 use clap::Parser;
-use lanflare_cli::{Cli, Commands};
+use lanflare::{Cli, Commands};
 use lanflare_core::config::AppConfig;
 use lanflare_core::crypto::cert::generate_self_signed;
 
@@ -58,7 +58,7 @@ fn test_cli_parsing_receive() {
 async fn test_cli_status_handler() {
     let config = AppConfig::default();
     let identity = generate_self_signed().expect("generate identity");
-    let result = lanflare_cli::commands::status(&config, &identity).await;
+    let result = lanflare::commands::status(&config, &identity).await;
     assert!(result.is_ok());
 }
 
@@ -66,12 +66,12 @@ async fn test_cli_status_handler() {
 async fn test_cli_send_handler_file_not_found() {
     let config = AppConfig::default();
     let identity = generate_self_signed().expect("generate identity");
-    let send_opts = lanflare_cli::commands::SendOptions {
+    let send_opts = lanflare::commands::SendOptions {
         files: vec!["/nonexistent/path/to/random_file.bin".into()],
         to: Some("192.168.1.20".to_string()),
         pin: None,
     };
-    let result = lanflare_cli::commands::send(&config, &identity, &send_opts).await;
+    let result = lanflare::commands::send(&config, &identity, &send_opts).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("File not found"));
 }
@@ -134,16 +134,16 @@ fn test_match_target_peer() {
     let peers = vec![p1, p2];
 
     // Query by alias exact
-    assert_eq!(lanflare_cli::commands::match_target_peer("Bob's Workstation", &peers).unwrap().alias, "Bob's Workstation");
+    assert_eq!(lanflare::commands::match_target_peer("Bob's Workstation", &peers).unwrap().alias, "Bob's Workstation");
     // Query by alias lowercase substring
-    assert_eq!(lanflare_cli::commands::match_target_peer("phone", &peers).unwrap().alias, "Alice's Phone");
+    assert_eq!(lanflare::commands::match_target_peer("phone", &peers).unwrap().alias, "Alice's Phone");
     // Query by IP
-    assert_eq!(lanflare_cli::commands::match_target_peer("192.168.1.50", &peers).unwrap().alias, "Bob's Workstation");
+    assert_eq!(lanflare::commands::match_target_peer("192.168.1.50", &peers).unwrap().alias, "Bob's Workstation");
     // Query by fingerprint prefix
-    assert_eq!(lanflare_cli::commands::match_target_peer("12345678", &peers).unwrap().alias, "Alice's Phone");
+    assert_eq!(lanflare::commands::match_target_peer("12345678", &peers).unwrap().alias, "Alice's Phone");
     // Non-matching query
-    assert!(lanflare_cli::commands::match_target_peer("Nonexistent", &peers).is_none());
-    assert!(lanflare_cli::commands::match_target_peer("", &peers).is_none());
+    assert!(lanflare::commands::match_target_peer("Nonexistent", &peers).is_none());
+    assert!(lanflare::commands::match_target_peer("", &peers).is_none());
 }
 
 #[tokio::test]
@@ -211,7 +211,7 @@ async fn test_cli_transfer_orchestration_e2e() {
     let orchestrator = TransferOrchestrator::new(client, sender_info);
 
     let (progress_tx, mut progress_rx) = mpsc::channel(100);
-    let mut tracker = lanflare_cli::tui::TransferProgressTracker::new(false);
+    let mut tracker = lanflare::tui::TransferProgressTracker::new(false);
 
     let transfer_task = tokio::spawn(async move {
         orchestrator
