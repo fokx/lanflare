@@ -30,9 +30,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(state.clone())
         .setup({
-            let state_tray = state.clone();
+            let state_setup = state.clone();
             move |app| {
-                tray::setup_tray(app.handle(), state_tray)?;
+                state_setup.registry.start_eviction_task();
+                tray::setup_tray(app.handle(), state_setup)?;
                 Ok(())
             }
         })

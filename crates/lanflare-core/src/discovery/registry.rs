@@ -306,11 +306,38 @@ impl PeerRegistry {
             cancel: CancellationToken::new(),
         });
 
-        // Spawn background eviction loop
-        let reg_weak = Arc::downgrade(&registry);
-        let cancel = registry.cancel.clone();
+        // Spawn background eviction loop if called within an active Tokio runtime context
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let reg_weak = Arc::downgrade(&registry);
+            let cancel = registry.cancel.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(config.eviction_interval);
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        _ = interval.tick() => {
+                            if let Some(reg) = reg_weak.upgrade() {
+                                reg.sweep_stale_peers().await;
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        registry
+    }
+
+    /// Explicitly starts the background eviction task if not already running.
+    pub fn start_eviction_task(self: &Arc<Self>) {
+        let reg_weak = Arc::downgrade(self);
+        let cancel = self.cancel.clone();
+        let interval_duration = self.config.eviction_interval;
+
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(config.eviction_interval);
+            let mut interval = tokio::time::interval(interval_duration);
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
@@ -324,8 +351,6 @@ impl PeerRegistry {
                 }
             }
         });
-
-        registry
     }
 
     /// Subscribes to peer discovery, update, expiration, and removal events.
