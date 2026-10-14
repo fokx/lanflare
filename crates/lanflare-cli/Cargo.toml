@@ -1,0 +1,25 @@
+[package]
+name = "lanflare-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Command-line interface for LanFlare (alias package for lanflare)"
+keywords = ["localsend", "cli", "file-transfer", "p2p", "lan"]
+categories = ["command-line-utilities", "network-programming"]
+
+[lib]
+name = "lanflare_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lanflare-cli"
+path = "src/main.rs"
+
+[dependencies]
+lanflare = { path = "../lanflare", version = "0.2.0" }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }

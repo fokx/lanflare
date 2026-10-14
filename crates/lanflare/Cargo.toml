@@ -18,13 +18,9 @@ path = "src/lib.rs"
 name = "lanflare"
 path = "src/main.rs"
 
-[[bin]]
-name = "lanflare-cli"
-path = "src/bin/lanflare-cli.rs"
-
 [dependencies]
-lanflare-proto = { path = "../lanflare-proto", version = "0.1.0" }
-lanflare-core = { path = "../lanflare-core", version = "0.1.0" }
+lanflare-proto = { path = "../lanflare-proto", version = "0.2.0" }
+lanflare-core = { path = "../lanflare-core", version = "0.2.0" }
 
 tokio = { workspace = true }
 anyhow = { workspace = true }
