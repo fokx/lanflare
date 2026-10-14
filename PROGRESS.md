@@ -249,12 +249,13 @@
     - Incoming transfers (`ServerTransferEvent::PrepareUpload`) either auto-accept when configured or park a Tokio `oneshot::Sender<PrepareUploadDecision>` in `DesktopState::pending_incoming`, emitting `lanflare://incoming-transfer-request` to prompt the GUI user. The user's response invokes `respond_incoming_transfer` to unblock the server.
     - Outgoing file uploads spawn an async background task streaming `TransferProgress` updates directly to the webview via `lanflare://transfer-progress` events without blocking UI IPC threads.
     - Window close or hide actions minimize cleanly to the system tray (`TrayIconBuilder`), keeping background transfer and discovery listeners active unless explicitly quit.
-- **ADR-017: SvelteKit 2 + Svelte 5 Runes Reactive Architecture & Offline Static Prerendering**
-  - *Context*: The desktop GUI requires instant local performance, zero SSR server dependencies, real-time streaming reactivity without old Svelte 4 store ceremony, and graceful fallbacks for browser-only development.
-  - *Decision*: Implement the web frontend in `web/` using SvelteKit 2, Svelte 5 runes (`$state`, `$derived.by`, `$effect`), TailwindCSS, and `@sveltejs/adapter-static` writing to `web/build`.
+- **ADR-017: SvelteKit 2 + Svelte 5 Runes Reactive Architecture, Light/Dark Theming & Offline Static Prerendering**
+  - *Context*: The desktop GUI requires instant local performance, zero SSR server dependencies, real-time streaming reactivity without old Svelte 4 store ceremony, graceful fallbacks for browser-only development, and adaptive theme styling matching system dark preferences while defaulting to light theme.
+  - *Decision*: Implement the web frontend in `web/` using SvelteKit 2, Svelte 5 runes (`$state`, `$derived.by`, `$effect`), TailwindCSS, and `@sveltejs/adapter-static` writing to `web/build`. Add a reactive `ThemeManager` ([`web/src/lib/theme.svelte.ts`](file:///f/lanflare/web/src/lib/theme.svelte.ts)) supporting `system`, `light`, and `dark` modes with inline anti-flash script in `app.html`.
   - *Invariants*:
     - Static single-page application is configured with `ssr = false`, `prerender = true`, and fallback `index.html`, matching `tauri.conf.json` `frontendDist: "../../web/build"`.
     - Central reactivity resides in `AppState` ([`web/src/lib/state.svelte.ts`](file:///f/lanflare/web/src/lib/state.svelte.ts)) using class properties decorated with `$state` and `$derived.by`.
+    - Theme appearance auto-detects system `(prefers-color-scheme: dark)` setting dynamically. If detection fails or media queries are unavailable, it defaults strictly to light theme. Users can also explicitly override the theme to light or dark in preferences or via the sidebar quick toggle.
     - IPC layer in [`web/src/lib/api.ts`](file:///f/lanflare/web/src/lib/api.ts) detects `window.__TAURI_INTERNALS__`. When invoked outside Tauri (e.g. standalone Vite dev server), it returns mock models with zero console errors.
     - Form accessibility guidelines (e.g., associating form labels to input controls) are strictly enforced to guarantee zero Svelte compiler warnings.
 

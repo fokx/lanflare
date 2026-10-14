@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { appState } from '$lib/state.svelte';
+	import { themeManager } from '$lib/theme.svelte';
 	import DeviceGrid from '$lib/components/DeviceGrid.svelte';
 	import TransferQueue from '$lib/components/TransferQueue.svelte';
 	import IncomingTransferModal from '$lib/components/IncomingTransferModal.svelte';
@@ -13,7 +14,8 @@
 		Activity,
 		Settings,
 		RefreshCw,
-		ShieldCheck
+		Sun,
+		Moon
 	} from 'lucide-svelte';
 	import { announcePresence } from '$lib/api';
 
@@ -41,11 +43,19 @@
 		appState.selectedPeer = peer;
 		appState.showSendDialog = true;
 	}
+
+	function toggleTheme() {
+		if (themeManager.isDark) {
+			themeManager.setMode('light');
+		} else {
+			themeManager.setMode('dark');
+		}
+	}
 </script>
 
-<div class="flex h-screen w-screen overflow-hidden bg-slate-950 font-sans text-slate-100">
+<div class="flex h-screen w-screen overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-100 transition-colors duration-150">
 	<!-- Left Sidebar -->
-	<aside class="w-64 border-r border-slate-900 bg-slate-950/80 flex flex-col justify-between p-4">
+	<aside class="w-64 border-r border-slate-200 dark:border-slate-900 bg-white dark:bg-slate-950/80 flex flex-col justify-between p-4 shadow-sm dark:shadow-none transition-colors duration-150">
 		<!-- Brand & Logo -->
 		<div class="space-y-6">
 			<div class="flex items-center gap-3 px-2 py-1">
@@ -55,15 +65,15 @@
 					<Flame class="w-6 h-6 fill-white/20 stroke-[2.2]" />
 				</div>
 				<div>
-					<h1 class="font-bold text-base tracking-tight text-white flex items-center gap-1.5">
+					<h1 class="font-bold text-base tracking-tight text-slate-900 dark:text-white flex items-center gap-1.5">
 						LanFlare
 						<span
-							class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30"
+							class="text-[10px] font-mono px-1.5 py-0.2 rounded bg-indigo-50 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30"
 						>
 							v2.2
 						</span>
 					</h1>
-					<p class="text-[11px] text-slate-400">High-Performance LAN Share</p>
+					<p class="text-[11px] text-slate-500 dark:text-slate-400">High-Performance LAN Share</p>
 				</div>
 			</div>
 
@@ -73,17 +83,17 @@
 					onclick={() => (activeTab = 'radar')}
 					class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all {activeTab ===
 					'radar'
-						? 'bg-indigo-600/15 text-indigo-400 border border-indigo-500/30 shadow-sm'
-						: 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'}"
+						? 'bg-indigo-50 dark:bg-indigo-600/15 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 shadow-sm'
+						: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900'}"
 				>
 					<div class="flex items-center gap-2.5">
-						<Radio class="w-4 h-4 {activeTab === 'radar' ? 'text-indigo-400' : 'text-slate-500'}" />
+						<Radio class="w-4 h-4 {activeTab === 'radar' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}" />
 						<span>Discovered Devices</span>
 					</div>
 					<span
 						class="text-[10px] px-1.5 py-0.5 rounded-full font-mono {activeTab === 'radar'
-							? 'bg-indigo-500/20 text-indigo-300'
-							: 'bg-slate-800 text-slate-400'}"
+							? 'bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300'
+							: 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'}"
 					>
 						{appState.peers.length}
 					</span>
@@ -93,12 +103,12 @@
 					onclick={() => (activeTab = 'transfers')}
 					class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all {activeTab ===
 					'transfers'
-						? 'bg-indigo-600/15 text-indigo-400 border border-indigo-500/30 shadow-sm'
-						: 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'}"
+						? 'bg-indigo-50 dark:bg-indigo-600/15 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 shadow-sm'
+						: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900'}"
 				>
 					<div class="flex items-center gap-2.5">
 						<Activity
-							class="w-4 h-4 {activeTab === 'transfers' ? 'text-indigo-400' : 'text-slate-500'}"
+							class="w-4 h-4 {activeTab === 'transfers' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}"
 						/>
 						<span>Transfer Queue</span>
 					</div>
@@ -114,14 +124,14 @@
 		</div>
 
 		<!-- Bottom Status & Actions -->
-		<div class="space-y-3 pt-4 border-t border-slate-900">
+		<div class="space-y-3 pt-4 border-t border-slate-200 dark:border-slate-900">
 			<!-- Local Node Badge -->
-			<div class="bg-slate-900/80 border border-slate-800/80 rounded-xl p-3 space-y-1">
+			<div class="bg-slate-100 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800/80 rounded-xl p-3 space-y-1">
 				<div class="flex items-center justify-between">
-					<span class="text-[11px] font-semibold text-slate-300 truncate">
+					<span class="text-[11px] font-semibold text-slate-700 dark:text-slate-300 truncate">
 						{appState.status?.alias || 'This Device'}
 					</span>
-					<div class="flex items-center gap-1 text-[10px] text-emerald-400 font-medium">
+					<div class="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
 						<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
 						<span>Port {appState.status?.port || 53317}</span>
 					</div>
@@ -131,21 +141,33 @@
 				</p>
 			</div>
 
-			<!-- Refresh Discovery & Settings Buttons -->
+			<!-- Quick Actions: Scan, Theme Toggle & Settings Buttons -->
 			<div class="flex items-center gap-2">
 				<button
 					onclick={handleRefresh}
 					disabled={isRefreshing}
-					class="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-300 hover:text-white text-xs font-medium transition-colors cursor-pointer"
+					class="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-slate-100 dark:bg-slate-900 hover:bg-slate-200 dark:hover:bg-slate-850 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white text-xs font-medium transition-colors cursor-pointer"
 					title="Announce Presence Burst"
 				>
-					<RefreshCw class="w-3.5 h-3.5 {isRefreshing ? 'animate-spin text-indigo-400' : ''}" />
+					<RefreshCw class="w-3.5 h-3.5 {isRefreshing ? 'animate-spin text-indigo-600 dark:text-indigo-400' : ''}" />
 					<span>Scan</span>
 				</button>
 
 				<button
+					onclick={toggleTheme}
+					class="p-2 rounded-lg bg-slate-100 dark:bg-slate-900 hover:bg-slate-200 dark:hover:bg-slate-850 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white text-xs transition-colors cursor-pointer"
+					title={themeManager.isDark ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
+				>
+					{#if themeManager.isDark}
+						<Sun class="w-4 h-4 text-amber-400" />
+					{:else}
+						<Moon class="w-4 h-4 text-slate-600" />
+					{/if}
+				</button>
+
+				<button
 					onclick={() => (appState.showSettings = true)}
-					class="p-2 rounded-lg bg-slate-900 hover:bg-slate-850 border border-slate-800 text-slate-300 hover:text-white text-xs transition-colors cursor-pointer"
+					class="p-2 rounded-lg bg-slate-100 dark:bg-slate-900 hover:bg-slate-200 dark:hover:bg-slate-850 border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white text-xs transition-colors cursor-pointer"
 					title="Preferences & Settings"
 				>
 					<Settings class="w-4 h-4" />
@@ -155,7 +177,7 @@
 	</aside>
 
 	<!-- Main Content Canvas -->
-	<main class="flex-1 h-full overflow-hidden flex flex-col bg-slate-950">
+	<main class="flex-1 h-full overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-950 transition-colors duration-150">
 		{#if activeTab === 'radar'}
 			<DeviceGrid onSelectPeer={handleSelectPeer} />
 		{:else}
