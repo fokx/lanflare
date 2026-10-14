@@ -13,8 +13,8 @@
         "title": "LanFlare",
         "width": 960,
         "height": 680,
-        "minWidth": 720,
-        "minHeight": 520,
+        "minWidth": 360,
+        "minHeight": 500,
         "resizable": true,
         "fullscreen": false
       }

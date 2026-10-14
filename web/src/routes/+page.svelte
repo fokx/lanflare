@@ -53,9 +53,58 @@
 	}
 </script>
 
-<div class="flex h-screen w-screen overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-100 transition-colors duration-150">
-	<!-- Left Sidebar -->
-	<aside class="w-64 border-r border-slate-200 dark:border-slate-900 bg-white dark:bg-slate-950/80 flex flex-col justify-between p-4 shadow-sm dark:shadow-none transition-colors duration-150">
+<div class="flex flex-col md:flex-row h-screen w-screen overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-100 transition-colors duration-150">
+	<!-- Mobile Top Navigation Bar (Visible only on < md screens) -->
+	<header class="md:hidden flex-none flex items-center justify-between px-4 py-2.5 bg-white dark:bg-slate-950/90 border-b border-slate-200 dark:border-slate-900 z-20 shadow-xs">
+		<div class="flex items-center gap-2.5">
+			<div class="p-1.5 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-sm">
+				<Flame class="w-5 h-5 fill-white/20 stroke-[2.2]" />
+			</div>
+			<div>
+				<h1 class="font-bold text-sm tracking-tight text-slate-900 dark:text-white flex items-center gap-1.5 leading-none">
+					LanFlare
+					<span class="text-[9px] font-mono px-1 py-0.2 rounded bg-indigo-50 dark:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30">
+						v2.2
+					</span>
+				</h1>
+			</div>
+		</div>
+
+		<!-- Mobile Header Quick Actions -->
+		<div class="flex items-center gap-1.5">
+			<button
+				onclick={handleRefresh}
+				disabled={isRefreshing}
+				class="p-2 rounded-lg text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+				title="Scan LAN"
+			>
+				<RefreshCw class="w-4 h-4 {isRefreshing ? 'animate-spin text-indigo-600 dark:text-indigo-400' : ''}" />
+			</button>
+
+			<button
+				onclick={toggleTheme}
+				class="p-2 rounded-lg text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+				title={themeManager.isDark ? 'Switch to Light' : 'Switch to Dark'}
+			>
+				{#if themeManager.isDark}
+					<Sun class="w-4 h-4 text-amber-400" />
+				{:else}
+					<Moon class="w-4 h-4 text-slate-600" />
+				{/if}
+			</button>
+
+			<button
+				onclick={() => (appState.showSettings = true)}
+				class="p-2 rounded-lg text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+				title="Preferences & Settings"
+			>
+				<Settings class="w-4 h-4" />
+			</button>
+		</div>
+	</header>
+
+	<!-- Desktop Left Sidebar (Hidden on mobile < md) -->
+	<aside class="hidden md:flex w-64 border-r border-slate-200 dark:border-slate-900 bg-white dark:bg-slate-950/80 flex-col justify-between p-4 shadow-sm dark:shadow-none transition-colors duration-150 flex-none">
 		<!-- Brand & Logo -->
 		<div class="space-y-6">
 			<div class="flex items-center gap-3 px-2 py-1">
@@ -177,13 +226,48 @@
 	</aside>
 
 	<!-- Main Content Canvas -->
-	<main class="flex-1 h-full overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-950 transition-colors duration-150">
+	<main class="flex-1 min-w-0 h-full overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-950 transition-colors duration-150">
 		{#if activeTab === 'radar'}
 			<DeviceGrid onSelectPeer={handleSelectPeer} />
 		{:else}
 			<TransferQueue />
 		{/if}
 	</main>
+
+	<!-- Mobile Bottom Navigation Bar (Visible only on < md screens) -->
+	<nav class="md:hidden flex-none flex items-center justify-around bg-white dark:bg-slate-950/95 border-t border-slate-200 dark:border-slate-900 px-3 py-2 z-20 shadow-md">
+		<button
+			onclick={() => (activeTab = 'radar')}
+			class="flex flex-col items-center gap-1 px-4 py-1.5 rounded-xl transition-all {activeTab === 'radar'
+				? 'text-indigo-600 dark:text-indigo-400 font-semibold'
+				: 'text-slate-500 dark:text-slate-400'}"
+		>
+			<div class="relative">
+				<Radio class="w-5 h-5" />
+				{#if appState.peers.length > 0}
+					<span class="absolute -top-1 -right-2 px-1 py-0.2 rounded-full text-[9px] font-mono bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300">
+						{appState.peers.length}
+					</span>
+				{/if}
+			</div>
+			<span class="text-[10px]">Devices</span>
+		</button>
+
+		<button
+			onclick={() => (activeTab = 'transfers')}
+			class="flex flex-col items-center gap-1 px-4 py-1.5 rounded-xl transition-all {activeTab === 'transfers'
+				? 'text-indigo-600 dark:text-indigo-400 font-semibold'
+				: 'text-slate-500 dark:text-slate-400'}"
+		>
+			<div class="relative">
+				<Activity class="w-5 h-5" />
+				{#if appState.activeTransferCount > 0}
+					<span class="absolute -top-1 -right-2 w-2 h-2 rounded-full bg-indigo-500 animate-pulse"></span>
+				{/if}
+			</div>
+			<span class="text-[10px]">Transfers</span>
+		</button>
+	</nav>
 </div>
 
 <!-- Modals -->

@@ -257,6 +257,7 @@
     - Central reactivity resides in `AppState` ([`web/src/lib/state.svelte.ts`](file:///f/lanflare/web/src/lib/state.svelte.ts)) using class properties decorated with `$state` and `$derived.by`.
     - Theme appearance auto-detects system `(prefers-color-scheme: dark)` setting dynamically. If detection fails or media queries are unavailable, it defaults strictly to light theme. Users can also explicitly override the theme to light or dark in preferences or via the sidebar quick toggle.
     - IPC layer in [`web/src/lib/api.ts`](file:///f/lanflare/web/src/lib/api.ts) detects `window.__TAURI_INTERNALS__`. When invoked outside Tauri (e.g. standalone Vite dev server), it returns mock models with zero console errors.
+    - Responsive mobile UI and desktop window resizing: Desktop window constraints in `tauri.conf.json` are set to `minWidth: 360`, `minHeight: 500`. On viewports narrower than `768px` (`md`), the desktop sidebar converts into a mobile top navigation bar (branding, scan, theme toggle, and settings) and bottom tab bar (`Devices` and `Transfers` tabs). Device cards and transfer queue items dynamically reflow into single-column layouts with truncated badges and adaptive controls.
     - Form accessibility guidelines (e.g., associating form labels to input controls) are strictly enforced to guarantee zero Svelte compiler warnings.
 
 - **ADR-018: Reverse File Transfer (Browser Download API) Architecture & Session Re-entrancy**

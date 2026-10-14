@@ -134,7 +134,7 @@
 				</div>
 
 				<!-- Server Port & Fingerprint -->
-				<div class="grid grid-cols-2 gap-4">
+				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
 					<div class="space-y-1.5">
 						<label for="port-input" class="text-xs font-medium text-slate-700 dark:text-slate-300">Port (Default: 53317)</label>
 						<input
