@@ -888,16 +888,16 @@ pub async fn send_files(
     // 4. Spawn background transfer task with progress channel
     let (progress_tx, mut progress_rx) = mpsc::channel::<TransferProgress>(200);
     let app_clone = app.clone();
+    let sess_id_event = session_uuid.clone();
 
     tokio::spawn(async move {
         while let Some(prog) = progress_rx.recv().await {
             let payload = match prog {
                 TransferProgress::Started {
-                    session_id,
                     total_bytes,
                     ..
                 } => TransferProgressPayload {
-                    session_id,
+                    session_id: sess_id_event.clone(),
                     event_type: "started".to_string(),
                     file_id: None,
                     file_name: None,
@@ -910,7 +910,6 @@ pub async fn send_files(
                     error: None,
                 },
                 TransferProgress::FileProgress {
-                    session_id,
                     file_id,
                     file_name,
                     file_bytes_sent,
@@ -919,8 +918,9 @@ pub async fn send_files(
                     session_total_bytes,
                     bytes_per_second,
                     eta,
+                    ..
                 } => TransferProgressPayload {
-                    session_id,
+                    session_id: sess_id_event.clone(),
                     event_type: "file_progress".to_string(),
                     file_id: Some(file_id),
                     file_name: Some(file_name),
@@ -933,11 +933,11 @@ pub async fn send_files(
                     error: None,
                 },
                 TransferProgress::FileFinished {
-                    session_id,
                     file_id,
                     file_name,
+                    ..
                 } => TransferProgressPayload {
-                    session_id,
+                    session_id: sess_id_event.clone(),
                     event_type: "file_finished".to_string(),
                     file_id: Some(file_id),
                     file_name: Some(file_name),
@@ -950,12 +950,12 @@ pub async fn send_files(
                     error: None,
                 },
                 TransferProgress::FileFailed {
-                    session_id,
                     file_id,
                     file_name,
                     error,
+                    ..
                 } => TransferProgressPayload {
-                    session_id,
+                    session_id: sess_id_event.clone(),
                     event_type: "file_failed".to_string(),
                     file_id: Some(file_id),
                     file_name: Some(file_name),
@@ -968,11 +968,10 @@ pub async fn send_files(
                     error: Some(error),
                 },
                 TransferProgress::SessionCompleted {
-                    session_id,
                     total_bytes,
                     ..
                 } => TransferProgressPayload {
-                    session_id,
+                    session_id: sess_id_event.clone(),
                     event_type: "session_completed".to_string(),
                     file_id: None,
                     file_name: None,
@@ -984,9 +983,9 @@ pub async fn send_files(
                     eta_seconds: None,
                     error: None,
                 },
-                TransferProgress::SessionCancelled { session_id, reason } => {
+                TransferProgress::SessionCancelled { reason, .. } => {
                     TransferProgressPayload {
-                        session_id,
+                        session_id: sess_id_event.clone(),
                         event_type: "session_cancelled".to_string(),
                         file_id: None,
                         file_name: None,

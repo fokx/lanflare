@@ -181,20 +181,27 @@ export class AppState {
 		await tauriListen<TransferProgressPayload>('lanflare://transfer-progress', (payload) => {
 			let item = this.transfers.find((t) => t.id === payload.sessionId);
 			if (!item && payload.sessionId) {
-				// Register fallback if not found
-				item = {
-					id: payload.sessionId,
-					direction: 'outgoing',
-					peerAlias: this.selectedPeer?.alias || 'Remote Peer',
-					files: [],
-					totalBytes: payload.sessionTotalBytes || 0,
-					bytesTransferred: payload.sessionBytesSent || 0,
-					speedBytesPerSec: payload.bytesPerSecond || 0,
-					etaSeconds: payload.etaSeconds ?? null,
-					status: payload.eventType === 'started' || payload.eventType === 'file_progress' ? 'active' : 'waiting',
-					startTime: Date.now()
-				};
-				this.transfers.unshift(item);
+				// Reconcile with any waiting outgoing transfer to prevent duplicate entries
+				const waitingItem = this.transfers.find((t) => t.direction === 'outgoing' && t.status === 'waiting');
+				if (waitingItem) {
+					item = waitingItem;
+					item.id = payload.sessionId;
+				} else {
+					item = {
+						id: payload.sessionId,
+						direction: 'outgoing',
+						peerAlias: this.selectedPeer?.alias || 'Remote Peer',
+						peerEndpoint: this.selectedPeer?.endpoints?.[0],
+						files: [],
+						totalBytes: payload.sessionTotalBytes || 0,
+						bytesTransferred: payload.sessionBytesSent || 0,
+						speedBytesPerSec: payload.bytesPerSecond || 0,
+						etaSeconds: payload.etaSeconds ?? null,
+						status: payload.eventType === 'started' || payload.eventType === 'file_progress' ? 'active' : 'waiting',
+						startTime: Date.now()
+					};
+					this.transfers.unshift(item);
+				}
 			}
 
 			if (item) {
