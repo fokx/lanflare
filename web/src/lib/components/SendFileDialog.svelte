@@ -25,8 +25,11 @@
 	let pinInput = $state('');
 	let isSending = $state(false);
 	let errorMsg = $state<string | null>(null);
+	let isComposingText = $state(false);
+	let inlineTextMessage = $state('');
 
 	async function pickFiles() {
+		isComposingText = false;
 		if (isTauri()) {
 			try {
 				const res = await open({
@@ -46,6 +49,7 @@
 	}
 
 	async function pickFolder() {
+		isComposingText = false;
 		if (isTauri()) {
 			try {
 				const res = await open({
@@ -64,6 +68,7 @@
 	}
 
 	async function pasteClipboard() {
+		isComposingText = false;
 		const success = await appState.pasteFromClipboard();
 		if (!success) {
 			errorMsg = 'Clipboard is empty or does not contain text';
@@ -74,6 +79,12 @@
 	}
 
 	async function handleSend() {
+		if (isComposingText && inlineTextMessage.trim()) {
+			await appState.addTextMessage(inlineTextMessage.trim());
+			inlineTextMessage = '';
+			isComposingText = false;
+		}
+
 		if (appState.preparedItems.length === 0) {
 			errorMsg = 'Please add at least one file, folder, or text message to transfer';
 			return;
@@ -175,10 +186,12 @@
 
 				<button
 					type="button"
-					onclick={() => (appState.showTextModal = true)}
-					class="flex flex-col items-center justify-center p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-all cursor-pointer group"
+					onclick={() => (isComposingText = !isComposingText)}
+					class="flex flex-col items-center justify-center p-3 rounded-xl border transition-all cursor-pointer group {isComposingText
+						? 'bg-indigo-50 dark:bg-indigo-950/60 border-indigo-400 dark:border-indigo-500 text-indigo-600 dark:text-indigo-400'
+						: 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300'}"
 				>
-					<MessageSquare class="w-5 h-5 mb-1 text-slate-500 group-hover:text-indigo-600 dark:group-hover:text-indigo-400" />
+					<MessageSquare class="w-5 h-5 mb-1 {isComposingText ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 group-hover:text-indigo-600 dark:group-hover:text-indigo-400'}" />
 					<span class="text-xs font-semibold">Text Message</span>
 				</button>
 
@@ -191,6 +204,22 @@
 					<span class="text-xs font-semibold">From Clipboard</span>
 				</button>
 			</div>
+
+			<!-- Inline Text Input when Text Message is selected -->
+			{#if isComposingText}
+				<div class="space-y-1.5 p-3 rounded-xl bg-slate-50 dark:bg-slate-950/70 border border-indigo-200 dark:border-indigo-900/60 animate-in fade-in duration-150">
+					<div class="flex items-center justify-between text-xs text-slate-500">
+						<span class="font-medium text-slate-700 dark:text-slate-300">Message to {peer.alias}</span>
+						<span class="text-[11px] text-slate-400">{new TextEncoder().encode(inlineTextMessage).length} bytes</span>
+					</div>
+					<textarea
+						bind:value={inlineTextMessage}
+						rows="4"
+						placeholder="Type a message to {peer.alias}..."
+						class="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg p-2.5 text-xs text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:border-indigo-500 font-sans resize-none"
+					></textarea>
+				</div>
+			{/if}
 
 			<!-- Selected Items List -->
 			{#if appState.preparedItems.length > 0}
@@ -265,7 +294,7 @@
 			</button>
 			<button
 				onclick={handleSend}
-				disabled={isSending || appState.preparedItems.length === 0}
+				disabled={isSending || (appState.preparedItems.length === 0 && (!isComposingText || !inlineTextMessage.trim()))}
 				class="flex items-center gap-2 py-2 px-5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-xs shadow-md shadow-indigo-600/20 transition-all cursor-pointer disabled:opacity-50"
 			>
 				<Send class="w-4 h-4" />

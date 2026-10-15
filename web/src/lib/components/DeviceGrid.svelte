@@ -111,47 +111,128 @@
 	<ShareViaLinkView />
 {:else}
 	<div class="flex flex-col h-full overflow-hidden p-4 sm:p-6 gap-4 sm:gap-5">
-		<!-- Top Bar: Title & Search -->
-		<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 flex-none">
-			<div class="flex items-center gap-3">
-				<div class="p-2 sm:p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-600 dark:text-indigo-400">
-					<Radio class="w-5 h-5 sm:w-6 sm:h-6 animate-pulse" />
-				</div>
-				<div>
-					<h2 class="text-lg sm:text-xl font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-						Discovered Devices
-						<span
-							class="text-xs px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-400 border border-slate-300 dark:border-slate-700/60 font-mono"
-						>
-							{appState.peers.length}
+		<!-- 1. Selection Section (What to send) -->
+		<div class="bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 space-y-3 flex-none shadow-sm">
+			<div class="flex items-center justify-between">
+				<div class="flex items-center gap-2">
+					<span class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Selection</span>
+					{#if appState.preparedItems.length > 0}
+						<span class="text-xs px-2 py-0.5 rounded-full font-mono bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300">
+							{appState.preparedItems.length} {appState.preparedItems.length === 1 ? 'item' : 'items'}
+							{#if appState.totalPreparedSize > 0}
+								&bull; {formatBytes(appState.totalPreparedSize)}
+							{/if}
 						</span>
-					</h2>
-					<p class="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400">
-						Active local peers on Multicast UDP & mDNS DNS-SD
-					</p>
+					{/if}
 				</div>
+				{#if appState.preparedItems.length > 0}
+					<button
+						onclick={() => appState.clearPreparedItems()}
+						class="text-xs text-slate-400 hover:text-rose-500 transition-colors cursor-pointer font-medium"
+					>
+						Clear all
+					</button>
+				{/if}
 			</div>
 
-			<!-- Search Input -->
-			<div class="relative w-full sm:w-64">
-				<Search class="absolute left-3 top-2.5 w-4 h-4 text-slate-400 pointer-events-none" />
-				<input
-					type="text"
-					placeholder="Filter devices or IP..."
-					bind:value={appState.searchQuery}
-					class="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-sm text-slate-900 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors shadow-sm dark:shadow-none"
-				/>
+			<!-- 4 Action Buttons -->
+			<div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+				<button
+					onclick={pickFiles}
+					class="flex items-center justify-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer group shadow-2xs"
+				>
+					<FilePlus class="w-4 h-4 text-indigo-500 group-hover:scale-110 transition-transform" />
+					<span>Files</span>
+				</button>
+				<button
+					onclick={pickFolder}
+					class="flex items-center justify-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer group shadow-2xs"
+				>
+					<FolderPlus class="w-4 h-4 text-amber-500 group-hover:scale-110 transition-transform" />
+					<span>Folder</span>
+				</button>
+				<button
+					onclick={() => (appState.showTextModal = true)}
+					class="flex items-center justify-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer group shadow-2xs"
+				>
+					<MessageSquare class="w-4 h-4 text-violet-500 group-hover:scale-110 transition-transform" />
+					<span>Text</span>
+				</button>
+				<button
+					onclick={pasteClipboard}
+					class="flex items-center justify-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer group shadow-2xs"
+				>
+					<ClipboardPaste class="w-4 h-4 text-emerald-500 group-hover:scale-110 transition-transform" />
+					<span>Clipboard</span>
+				</button>
 			</div>
+
+			<!-- Selected Items Chips or Empty State -->
+			{#if appState.preparedItems.length > 0}
+				<div class="flex items-center gap-2 overflow-x-auto py-1 scrollbar-none">
+					{#each appState.preparedItems as item, idx}
+						<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200 text-xs flex-shrink-0">
+							{#if item.type === 'folder'}
+								<Folder class="w-3.5 h-3.5 text-amber-500" />
+							{:else if item.type === 'text'}
+								<MessageSquare class="w-3.5 h-3.5 text-violet-500" />
+							{:else}
+								<FileText class="w-3.5 h-3.5 text-indigo-500" />
+							{/if}
+							<span class="truncate max-w-[150px] font-medium">{item.name}</span>
+							{#if item.size > 0}
+								<span class="text-[10px] text-slate-400 font-mono">({formatBytes(item.size)})</span>
+							{/if}
+							<button
+								onclick={() => appState.removePreparedItem(idx)}
+								class="p-0.5 text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
+								title="Remove"
+							>
+								<X class="w-3 h-3" />
+							</button>
+						</div>
+					{/each}
+				</div>
+			{:else}
+				<p class="text-xs text-slate-400 dark:text-slate-500">
+					No items selected. Choose files, a folder, text, or paste from clipboard.
+				</p>
+			{/if}
 		</div>
 
-		<!-- Mode Switcher Tabs (Single, Multiple, Share via link) -->
-		<div class="bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-2xl p-2.5 space-y-2.5 flex-none shadow-sm">
-			<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800/80 pb-2">
-				<div class="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl">
+		<!-- 2. Recipients Section (Where to send) -->
+		<div class="space-y-3 flex-none">
+			<!-- Header & Search -->
+			<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+				<div class="flex items-center gap-2">
+					<Radio class="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+					<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+						Nearby Devices
+						<span class="text-xs px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-400 font-mono">
+							{appState.peers.length}
+						</span>
+					</h3>
+				</div>
+
+				<!-- Search Input -->
+				<div class="relative w-full sm:w-64">
+					<Search class="absolute left-3 top-2.5 w-4 h-4 text-slate-400 pointer-events-none" />
+					<input
+						type="text"
+						placeholder="Filter devices or IP..."
+						bind:value={appState.searchQuery}
+						class="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-sm text-slate-900 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors shadow-2xs"
+					/>
+				</div>
+			</div>
+
+			<!-- Mode Tabs & Explanation -->
+			<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-xl p-2 shadow-2xs">
+				<div class="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-950 p-1 rounded-lg">
 					<button
 						onclick={() => (appState.sendMode = 'single')}
-						class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer {appState.sendMode === 'single'
-							? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm'
+						class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer {appState.sendMode === 'single'
+							? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs'
 							: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}"
 					>
 						<User class="w-3.5 h-3.5" />
@@ -160,8 +241,8 @@
 
 					<button
 						onclick={() => (appState.sendMode = 'multiple')}
-						class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer {appState.sendMode === 'multiple'
-							? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm'
+						class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer {appState.sendMode === 'multiple'
+							? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs'
 							: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}"
 					>
 						<Users class="w-3.5 h-3.5" />
@@ -180,8 +261,8 @@
 								appState.startShareViaLink();
 							}
 						}}
-						class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer {(appState.sendMode as string) === 'link'
-							? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm'
+						class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer {(appState.sendMode as string) === 'link'
+							? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs'
 							: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}"
 					>
 						<Link class="w-3.5 h-3.5" />
@@ -189,82 +270,14 @@
 					</button>
 				</div>
 
-				<!-- Quick Add Content Buttons -->
-				<div class="flex items-center gap-1.5 flex-wrap">
-					<button
-						onclick={pickFiles}
-						class="flex items-center gap-1 py-1 px-2.5 rounded-lg bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-medium border border-slate-200 dark:border-slate-700/60 transition-colors cursor-pointer"
-					>
-						<FilePlus class="w-3.5 h-3.5 text-indigo-500" />
-						<span>Add Files</span>
-					</button>
-					<button
-						onclick={pickFolder}
-						class="flex items-center gap-1 py-1 px-2.5 rounded-lg bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-medium border border-slate-200 dark:border-slate-700/60 transition-colors cursor-pointer"
-					>
-						<FolderPlus class="w-3.5 h-3.5 text-amber-500" />
-						<span>Add Folder</span>
-					</button>
-					<button
-						onclick={() => (appState.showTextModal = true)}
-						class="flex items-center gap-1 py-1 px-2.5 rounded-lg bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-medium border border-slate-200 dark:border-slate-700/60 transition-colors cursor-pointer"
-					>
-						<MessageSquare class="w-3.5 h-3.5 text-violet-500" />
-						<span>Text</span>
-					</button>
-					<button
-						onclick={pasteClipboard}
-						class="flex items-center gap-1 py-1 px-2.5 rounded-lg bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-medium border border-slate-200 dark:border-slate-700/60 transition-colors cursor-pointer"
-					>
-						<ClipboardPaste class="w-3.5 h-3.5 text-emerald-500" />
-						<span>Paste</span>
-					</button>
-				</div>
-			</div>
-
-			<!-- Prepared Items Bar (if any) -->
-			{#if appState.preparedItems.length > 0}
-				<div class="flex items-center justify-between gap-2 text-xs">
-					<div class="flex items-center gap-2 overflow-x-auto py-0.5 max-w-[85%] scrollbar-none">
-						<span class="text-[11px] font-semibold text-slate-500 flex-shrink-0">
-							Prepared ({appState.preparedItems.length}):
-						</span>
-						{#each appState.preparedItems as item, idx}
-							<div class="flex items-center gap-1.5 px-2 py-0.8 rounded-lg bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/60 text-slate-800 dark:text-slate-200 flex-shrink-0">
-								{#if item.type === 'folder'}
-									<Folder class="w-3 h-3 text-amber-500" />
-								{:else if item.type === 'text'}
-									<MessageSquare class="w-3 h-3 text-violet-500" />
-								{:else}
-									<FileText class="w-3 h-3 text-indigo-500" />
-								{/if}
-								<span class="truncate max-w-[120px]">{item.name}</span>
-								<button
-									onclick={() => appState.removePreparedItem(idx)}
-									class="p-0.5 text-slate-400 hover:text-rose-500 cursor-pointer"
-								>
-									<X class="w-3 h-3" />
-								</button>
-							</div>
-						{/each}
-					</div>
-
-					<button
-						onclick={() => appState.clearPreparedItems()}
-						class="text-[11px] text-slate-400 hover:text-rose-500 transition-colors cursor-pointer flex-shrink-0 font-medium"
-					>
-						Clear All
-					</button>
-				</div>
-			{:else}
-				<p class="text-[11px] text-slate-400 dark:text-slate-500">
+				<p class="text-xs text-slate-500 dark:text-slate-400 px-2">
 					{#if appState.sendMode === 'single'}
-						Single recipient: Sends files to one recipient. Selection will be cleared after finished files transfer.
+						Click a device to send. Selection will be cleared after transfer.
 					{:else}
-						Multiple recipients: Sends files to multiple recipients. Selection will not be cleared after finished files transfer.
+						Select multiple devices. Selection will be kept after transfer.
 					{/if}
 				</p>
-			{/if}
+			</div>
 		</div>
 
 		<!-- Peers Grid -->
