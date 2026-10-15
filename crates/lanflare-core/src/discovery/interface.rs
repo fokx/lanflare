@@ -188,6 +188,34 @@ pub fn local_interfaces(filter: &InterfaceFilter) -> std::io::Result<LocalInterf
     Ok(result)
 }
 
+/// Determines if an interface is an active LAN subnet suitable for a /24 sweep.
+///
+/// Filters out loopback, virtual containers (docker, veth, vboxnet), and point-to-point
+/// VPN / CGNAT ranges (Tailscale `100.64.0.0/10`, wireguard, tun/tap) which do not carry /24 LANs.
+pub fn is_sweepable_interface(name: &str, ip: &Ipv4Addr) -> bool {
+    if ip.is_loopback() {
+        return false;
+    }
+
+    // Skip CGNAT / Carrier Grade NAT (100.64.0.0/10) used by Tailscale, VPNs, etc.
+    let octets = ip.octets();
+    if octets[0] == 100 && (octets[1] & 0xC0) == 64 {
+        return false;
+    }
+
+    let lower = name.to_ascii_lowercase();
+    if lower.starts_with("tailscale")
+        || lower.starts_with("docker")
+        || lower.starts_with("vboxnet")
+        || lower.starts_with("veth")
+        || lower.starts_with("br-")
+    {
+        return false;
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

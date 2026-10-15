@@ -3,7 +3,7 @@
 use anyhow::Context;
 use lanflare_core::config::AppConfig;
 use lanflare_core::crypto::cert::TlsIdentity;
-use lanflare_core::discovery::interface::{local_interfaces, InterfaceFilter};
+use lanflare_core::discovery::interface::{is_sweepable_interface, local_interfaces, InterfaceFilter};
 use lanflare_core::discovery::mdns::{start_mdns_engine, MdnsConfig, MdnsDiscoveryEvent, MdnsNodeInfo};
 use lanflare_core::discovery::multicast::{
     start_multicast_engine, MulticastConfig, MulticastDiscoveryEvent, MulticastNodeInfo,
@@ -304,33 +304,6 @@ pub async fn scan(
     Ok(peers)
 }
 
-/// Determines if an interface is an active LAN subnet suitable for a /24 sweep.
-///
-/// Filters out loopback, virtual containers (docker, veth, vboxnet), and point-to-point
-/// VPN / CGNAT ranges (Tailscale `100.64.0.0/10`, wireguard, tun/tap) which do not carry /24 LANs.
-fn is_sweepable_interface(name: &str, ip: &std::net::Ipv4Addr) -> bool {
-    if ip.is_loopback() {
-        return false;
-    }
-
-    // Skip CGNAT / Carrier Grade NAT (100.64.0.0/10) used by Tailscale, VPNs, etc.
-    let octets = ip.octets();
-    if octets[0] == 100 && (octets[1] & 0xC0) == 64 {
-        return false;
-    }
-
-    let lower = name.to_ascii_lowercase();
-    if lower.starts_with("tailscale")
-        || lower.starts_with("docker")
-        || lower.starts_with("vboxnet")
-        || lower.starts_with("veth")
-        || lower.starts_with("br-")
-    {
-        return false;
-    }
-
-    true
-}
 
 use std::io::Write;
 use std::net::IpAddr;

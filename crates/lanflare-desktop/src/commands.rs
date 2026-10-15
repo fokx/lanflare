@@ -4,7 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_notification::NotificationExt;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -26,6 +27,50 @@ use lanflare_proto::discovery::{DeviceType, ProtocolType, RegisterDtoV2};
 use crate::state::{
     ActiveOutgoingSession, DesktopState, IncomingFileInfo, PendingIncomingSession,
 };
+
+/// DTO for DiscoveredPeer matching frontend types.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredPeerDto {
+    pub fingerprint: String,
+    pub alias: String,
+    pub version: String,
+    pub device_model: Option<String>,
+    pub device_type: Option<DeviceType>,
+    pub endpoints: Vec<String>,
+    pub protocol: ProtocolType,
+    pub port: u16,
+    pub download: bool,
+    pub sources: usize,
+    pub last_seen: u64,
+}
+
+impl From<&DiscoveredPeer> for DiscoveredPeerDto {
+    fn from(p: &DiscoveredPeer) -> Self {
+        let mut endpoints = Vec::new();
+        for ep in &p.endpoints {
+            endpoints.push(format!("{}:{}", ep.ip, p.port));
+        }
+        if endpoints.is_empty() {
+            if let Some(ip) = p.primary_ip() {
+                endpoints.push(format!("{}:{}", ip, p.port));
+            }
+        }
+        Self {
+            fingerprint: p.fingerprint.clone(),
+            alias: p.alias.clone(),
+            version: p.version.clone(),
+            device_model: p.device_model.clone(),
+            device_type: p.device_type,
+            endpoints,
+            protocol: p.protocol,
+            port: p.port,
+            download: p.download,
+            sources: p.discovery_sources.len(),
+            last_seen: p.last_seen_ms,
+        }
+    }
+}
 
 /// DTO for returning current app configuration and node identity.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -169,8 +214,9 @@ pub async fn update_config(
 #[tauri::command]
 pub async fn get_discovered_peers(
     state: State<'_, Arc<DesktopState>>,
-) -> Result<Vec<DiscoveredPeer>, String> {
-    Ok(state.registry.get_all().await)
+) -> Result<Vec<DiscoveredPeerDto>, String> {
+    let peers = state.registry.get_all().await;
+    Ok(peers.iter().map(DiscoveredPeerDto::from).collect())
 }
 
 /// Starts dual discovery engines (Multicast and mDNS) and emits peer updates to GUI.
@@ -182,6 +228,12 @@ pub async fn start_discovery(
     let mut disc = state.discovery.lock().await;
 
     // Stop existing if running
+    if let Some(tx) = disc.mc_stop_tx.take() {
+        let _ = tx.send(());
+    }
+    if let Some(tx) = disc.mdns_stop_tx.take() {
+        let _ = tx.send(());
+    }
     if let Some(h) = disc.multicast_handle.take() {
         h.stop().await;
     }
@@ -193,7 +245,7 @@ pub async fn start_discovery(
     let fp = state.identity.fingerprint.clone();
 
     // 1. Multicast Engine
-    let (_mc_stop_tx, mc_stop_rx) = oneshot::channel();
+    let (mc_stop_tx, mc_stop_rx) = oneshot::channel();
     let (mc_event_tx, mut mc_event_rx) = mpsc::channel::<MulticastDiscoveryEvent>(100);
 
     let mc_config = MulticastConfig {
@@ -218,6 +270,7 @@ pub async fn start_discovery(
                 h_clone.announce_burst().await;
             });
             disc.multicast_handle = Some(handle);
+            disc.mc_stop_tx = Some(mc_stop_tx);
         }
         Err(e) => {
             tracing::warn!("Failed to start multicast engine: {e}");
@@ -225,7 +278,7 @@ pub async fn start_discovery(
     }
 
     // 2. mDNS Engine
-    let (_mdns_stop_tx, mdns_stop_rx) = oneshot::channel();
+    let (mdns_stop_tx, mdns_stop_rx) = oneshot::channel();
     let (mdns_event_tx, mut mdns_event_rx) = mpsc::channel::<MdnsDiscoveryEvent>(100);
     let mdns_config = MdnsConfig {
         node_info: MdnsNodeInfo {
@@ -247,6 +300,7 @@ pub async fn start_discovery(
     match start_mdns_engine(mdns_config, mdns_event_tx, mdns_stop_rx).await {
         Ok(handle) => {
             disc.mdns_handle = Some(handle);
+            disc.mdns_stop_tx = Some(mdns_stop_tx);
         }
         Err(e) => {
             tracing::warn!("Failed to start mDNS engine: {e}");
@@ -285,16 +339,91 @@ pub async fn start_discovery(
         }
     });
 
+    // Subnet scan fallback / escalation (matching CLI behavior)
+    let registry_subnet = Arc::clone(&state.registry);
+    let identity_subnet = state.identity.clone();
+    let port_subnet = cfg.port;
+    let app_subnet = app.clone();
+    tokio::spawn(async move {
+        // Brief grace period for multicast/mDNS responses
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let filter = InterfaceFilter::default();
+        if let Ok(interfaces) = local_interfaces(&filter) {
+            let valid_ifaces: Vec<_> = interfaces
+                .v4
+                .into_iter()
+                .filter(|iface| lanflare_core::discovery::interface::is_sweepable_interface(&iface.name, &iface.address))
+                .collect();
+
+            if !valid_ifaces.is_empty() {
+                let scan_tasks = valid_ifaces.into_iter().map(|iface| {
+                    let reg = registry_subnet.clone();
+                    let ident = identity_subnet.clone();
+                    async move {
+                        lanflare_core::discovery::scanner::scan_subnet(
+                            iface.address,
+                            port_subnet,
+                            &ident,
+                            &reg,
+                        )
+                        .await
+                    }
+                });
+                futures_util::future::join_all(scan_tasks).await;
+                let _ = app_subnet.emit("lanflare://peers-updated", ());
+            }
+        }
+    });
+
     Ok(())
 }
 
-/// Triggers an immediate announcement burst across discovery engines.
+/// Triggers an immediate announcement burst across discovery engines and probes LAN subnets.
 #[tauri::command]
-pub async fn announce_presence(state: State<'_, Arc<DesktopState>>) -> Result<(), String> {
+pub async fn announce_presence(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<(), String> {
     let disc = state.discovery.lock().await;
     if let Some(ref h) = disc.multicast_handle {
         h.announce_burst().await;
     }
+    drop(disc);
+
+    // Also run a subnet scan sweep in background on refresh
+    let registry_subnet = Arc::clone(&state.registry);
+    let identity_subnet = state.identity.clone();
+    let port_subnet = state.config.read().await.port;
+    let app_subnet = app.clone();
+    tokio::spawn(async move {
+        let filter = InterfaceFilter::default();
+        if let Ok(interfaces) = local_interfaces(&filter) {
+            let valid_ifaces: Vec<_> = interfaces
+                .v4
+                .into_iter()
+                .filter(|iface| lanflare_core::discovery::interface::is_sweepable_interface(&iface.name, &iface.address))
+                .collect();
+
+            if !valid_ifaces.is_empty() {
+                let scan_tasks = valid_ifaces.into_iter().map(|iface| {
+                    let reg = registry_subnet.clone();
+                    let ident = identity_subnet.clone();
+                    async move {
+                        lanflare_core::discovery::scanner::scan_subnet(
+                            iface.address,
+                            port_subnet,
+                            &ident,
+                            &reg,
+                        )
+                        .await
+                    }
+                });
+                futures_util::future::join_all(scan_tasks).await;
+                let _ = app_subnet.emit("lanflare://peers-updated", ());
+            }
+        }
+    });
+
     Ok(())
 }
 
@@ -302,6 +431,12 @@ pub async fn announce_presence(state: State<'_, Arc<DesktopState>>) -> Result<()
 #[tauri::command]
 pub async fn stop_discovery(state: State<'_, Arc<DesktopState>>) -> Result<(), String> {
     let mut disc = state.discovery.lock().await;
+    if let Some(tx) = disc.mc_stop_tx.take() {
+        let _ = tx.send(());
+    }
+    if let Some(tx) = disc.mdns_stop_tx.take() {
+        let _ = tx.send(());
+    }
     if let Some(h) = disc.multicast_handle.take() {
         h.stop().await;
     }
@@ -372,6 +507,18 @@ pub async fn start_receiver_server(
                     if auto_accept {
                         let all_ids = files.keys().cloned().collect();
                         let _ = decision_tx.send(PrepareUploadDecision::Accept(all_ids));
+                        let notif_body = format!(
+                            "Auto-accepting {} file(s) ({:.2} MB) from {}",
+                            files.len(),
+                            total_bytes as f64 / (1024.0 * 1024.0),
+                            sender_info.alias
+                        );
+                        let _ = app_clone
+                            .notification()
+                            .builder()
+                            .title("LanFlare - Receiving Files")
+                            .body(&notif_body)
+                            .show();
                         let _ = app_clone.emit(
                             "lanflare://incoming-transfer",
                             IncomingTransferEventPayload {
@@ -392,6 +539,31 @@ pub async fn start_receiver_server(
                             files: file_infos.clone(),
                             decision_tx: Some(decision_tx),
                         });
+
+                        // Show system notification
+                        let notif_body = format!(
+                            "{} wants to send {} file(s) ({:.2} MB)",
+                            sender_info.alias,
+                            files.len(),
+                            total_bytes as f64 / (1024.0 * 1024.0)
+                        );
+                        if let Err(e) = app_clone
+                            .notification()
+                            .builder()
+                            .title("LanFlare - Incoming Transfer Request")
+                            .body(&notif_body)
+                            .show()
+                        {
+                            tracing::warn!("Failed to display system notification: {e}");
+                        }
+
+                        // Ensure main window is visible, unminimized, and focused
+                        if let Some(window) = app_clone.get_webview_window("main") {
+                            let _ = window.unminimize();
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                            let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
+                        }
 
                         let _ = app_clone.emit(
                             "lanflare://incoming-transfer-request",

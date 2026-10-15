@@ -471,7 +471,7 @@ impl MdnsHandle {
 pub async fn start_mdns_engine(
     config: MdnsConfig,
     event_tx: mpsc::Sender<MdnsDiscoveryEvent>,
-    stop_rx: oneshot::Receiver<()>,
+    mut stop_rx: oneshot::Receiver<()>,
 ) -> anyhow::Result<MdnsHandle> {
     let daemon = ServiceDaemon::new()?;
 
@@ -501,7 +501,11 @@ pub async fn start_mdns_engine(
         Some(tokio::spawn(async move {
             tokio::select! {
                 _ = browse_loop(browse_receiver, event_tx, self_fingerprint, cancel_child.clone()) => {}
-                _ = stop_rx => {}
+                res = &mut stop_rx => {
+                    if res.is_err() {
+                        let _ = cancel_child.cancelled().await;
+                    }
+                }
                 _ = cancel_child.cancelled() => {}
             }
             cancel_child.cancel();
@@ -511,7 +515,11 @@ pub async fn start_mdns_engine(
         let cancel_child = cancel.clone();
         Some(tokio::spawn(async move {
             tokio::select! {
-                _ = stop_rx => {}
+                res = &mut stop_rx => {
+                    if res.is_err() {
+                        let _ = cancel_child.cancelled().await;
+                    }
+                }
                 _ = cancel_child.cancelled() => {}
             }
             cancel_child.cancel();

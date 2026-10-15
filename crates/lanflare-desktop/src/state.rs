@@ -16,6 +16,8 @@ use lanflare_core::server::{PrepareUploadDecision, ServerHandle};
 pub struct DiscoveryState {
     pub multicast_handle: Option<MulticastHandle>,
     pub mdns_handle: Option<MdnsHandle>,
+    pub mc_stop_tx: Option<oneshot::Sender<()>>,
+    pub mdns_stop_tx: Option<oneshot::Sender<()>>,
 }
 
 /// Incoming transfer request waiting for user decision.

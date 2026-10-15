@@ -22,7 +22,7 @@ export interface UpdateConfigPayload {
 	pin?: string | null;
 }
 
-export type DeviceType = 'Mobile' | 'Desktop' | 'Web' | 'Headless' | 'Server';
+export type DeviceType = 'mobile' | 'desktop' | 'web' | 'headless' | 'server' | 'Mobile' | 'Desktop' | 'Web' | 'Headless' | 'Server';
 export type ProtocolType = 'http' | 'https';
 
 export interface DiscoveredPeer {

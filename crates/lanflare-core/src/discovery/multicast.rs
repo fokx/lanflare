@@ -404,7 +404,7 @@ impl MulticastHandle {
 pub async fn start_multicast_engine(
     config: MulticastConfig,
     event_tx: mpsc::Sender<MulticastDiscoveryEvent>,
-    stop_rx: oneshot::Receiver<()>,
+    mut stop_rx: oneshot::Receiver<()>,
 ) -> anyhow::Result<MulticastHandle> {
     let bound_sockets = bind_multicast_sockets(&config)?;
     if bound_sockets.is_empty() {
@@ -448,7 +448,11 @@ pub async fn start_multicast_engine(
                     tracing::error!("All multicast sockets failed. Stopping multicast discovery.");
                     let _ = event_tx.try_send(MulticastDiscoveryEvent::AllSocketsFailed);
                 }
-                _ = stop_rx => {}
+                res = &mut stop_rx => {
+                    if res.is_err() {
+                        let _ = cancel.cancelled().await;
+                    }
+                }
                 _ = cancel.cancelled() => {}
             }
 

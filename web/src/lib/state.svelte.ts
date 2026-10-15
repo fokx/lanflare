@@ -49,7 +49,7 @@ export class AppState {
 			return (
 				p.alias.toLowerCase().includes(q) ||
 				p.fingerprint.toLowerCase().includes(q) ||
-				p.endpoints.some((e) => e.includes(q)) ||
+				p.endpoints.some((e) => (typeof e === 'string' ? e.includes(q) : String(e).includes(q))) ||
 				(p.deviceModel && p.deviceModel.toLowerCase().includes(q))
 			);
 		});
@@ -62,18 +62,18 @@ export class AppState {
 
 	// Initialize app and event listeners
 	async init() {
+		// Setup event listeners first so no events are missed
+		await this.setupListeners();
+
 		try {
 			this.status = await getNodeStatus();
-			this.peers = await getDiscoveredPeers();
 			this.serverPort = await startReceiverServer();
 			await startDiscovery();
 			this.isDiscovering = true;
+			this.peers = await getDiscoveredPeers();
 		} catch (e) {
 			console.error('Failed to initialize app state:', e);
 		}
-
-		// Setup event listeners
-		await this.setupListeners();
 	}
 
 	private async setupListeners() {
