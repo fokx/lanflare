@@ -31,6 +31,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 dirs = { workspace = true }
+chrono = { workspace = true }
 
 # Tauri v2
 tauri = { workspace = true }

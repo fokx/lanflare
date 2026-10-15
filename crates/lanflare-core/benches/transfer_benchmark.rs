@@ -124,6 +124,7 @@ async fn benchmark_end_to_end_plain_http_transfer(temp_dir: &Path) {
         download_dir: server_download_dir.clone(),
         auto_accept: true,
         pin: None,
+        ..Default::default()
     };
     let registry = PeerRegistry::new();
     let (event_tx, _event_rx) = mpsc::channel(100);
@@ -206,6 +207,7 @@ async fn benchmark_end_to_end_https_mtls_transfer(temp_dir: &Path) {
         download_dir: server_download_dir.clone(),
         auto_accept: true,
         pin: None,
+        ..Default::default()
     };
     let registry = PeerRegistry::new();
     let (event_tx, _event_rx) = mpsc::channel(100);
@@ -292,6 +294,7 @@ async fn benchmark_parallel_multi_file_transfer(temp_dir: &Path) {
         download_dir: server_download_dir.clone(),
         auto_accept: true,
         pin: None,
+        ..Default::default()
     };
     let registry = PeerRegistry::new();
     let (event_tx, _event_rx) = mpsc::channel(100);

@@ -180,6 +180,7 @@ async fn test_cli_transfer_orchestration_e2e() {
         download_dir: temp_rx_dir.clone(),
         auto_accept: true,
         pin: None,
+        ..Default::default()
     };
     let registry = PeerRegistry::new();
     let (ev_tx, _ev_rx) = mpsc::channel(100);

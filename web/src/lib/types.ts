@@ -11,6 +11,8 @@ export interface NodeStatusDto {
 	autoAccept: boolean;
 	pinEnabled: boolean;
 	fingerprint: string;
+	saveToHistory: boolean;
+	multicastAddress: string;
 	interfaces: NetworkInterfaceDto[];
 }
 
@@ -20,6 +22,20 @@ export interface UpdateConfigPayload {
 	downloadDir?: string;
 	autoAccept?: boolean;
 	pin?: string | null;
+	saveToHistory?: boolean;
+	multicastAddress?: string;
+}
+
+export type SendMode = 'single' | 'multiple' | 'link';
+
+export interface PreparedSendItem {
+	id: string;
+	type: 'file' | 'folder' | 'text';
+	name: string;
+	path: string;
+	size: number;
+	summary?: string;
+	textContent?: string;
 }
 
 export type DeviceType = 'mobile' | 'desktop' | 'web' | 'headless' | 'server' | 'Mobile' | 'Desktop' | 'Web' | 'Headless' | 'Server';

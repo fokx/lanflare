@@ -1,6 +1,6 @@
 //! Tauri IPC commands bridging GUI frontend to lanflare-core.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -82,6 +82,8 @@ pub struct NodeStatusDto {
     pub auto_accept: bool,
     pub pin_enabled: bool,
     pub fingerprint: String,
+    pub save_to_history: bool,
+    pub multicast_address: String,
     pub interfaces: Vec<NetworkInterfaceDto>,
 }
 
@@ -103,6 +105,8 @@ pub struct UpdateConfigPayload {
     pub download_dir: Option<String>,
     pub auto_accept: Option<bool>,
     pub pin: Option<Option<String>>,
+    pub save_to_history: Option<bool>,
+    pub multicast_address: Option<String>,
 }
 
 /// Payload emitted over Tauri events when an incoming transfer request arrives.
@@ -179,22 +183,29 @@ pub async fn get_node_status(state: State<'_, Arc<DesktopState>>) -> Result<Node
         auto_accept: cfg.auto_accept,
         pin_enabled: cfg.pin.is_some(),
         fingerprint,
+        save_to_history: cfg.save_to_history,
+        multicast_address: cfg.multicast_address,
         interfaces: ifaces,
     })
 }
 
-/// Updates application configuration (alias, port, download directory, PIN).
+/// Updates application configuration (alias, port, download directory, PIN, history, multicast).
 #[tauri::command]
 pub async fn update_config(
+    app: AppHandle,
     state: State<'_, Arc<DesktopState>>,
     payload: UpdateConfigPayload,
 ) -> Result<NodeStatusDto, String> {
     let mut cfg = state.config.write().await;
+    let mut restart_discovery = false;
 
     if let Some(alias) = payload.alias {
         cfg.alias = alias;
     }
     if let Some(port) = payload.port {
+        if cfg.port != port {
+            restart_discovery = true;
+        }
         cfg.port = port;
     }
     if let Some(dir) = payload.download_dir {
@@ -206,8 +217,33 @@ pub async fn update_config(
     if let Some(pin_opt) = payload.pin {
         cfg.pin = pin_opt;
     }
+    if let Some(save_hist) = payload.save_to_history {
+        cfg.save_to_history = save_hist;
+    }
+    if let Some(mc_addr_str) = payload.multicast_address {
+        let trimmed = mc_addr_str.trim();
+        let parsed: std::net::Ipv4Addr = trimmed
+            .parse()
+            .map_err(|e| format!("Invalid IPv4 multicast address: {e}"))?;
+        if !parsed.is_multicast() {
+            return Err("Multicast address must be within 224.0.0.0 to 239.255.255.255".to_string());
+        }
+        if cfg.multicast_address != trimmed {
+            restart_discovery = true;
+        }
+        cfg.multicast_address = trimmed.to_string();
+    }
+
+    if let Err(e) = crate::state::save_config(&cfg) {
+        tracing::warn!("Failed to persist configuration to disk: {e}");
+    }
 
     drop(cfg);
+
+    if restart_discovery {
+        let _ = start_discovery(app, state.clone()).await;
+    }
+
     get_node_status(state).await
 }
 
@@ -249,7 +285,13 @@ pub async fn start_discovery(
     let (mc_stop_tx, mc_stop_rx) = oneshot::channel();
     let (mc_event_tx, mut mc_event_rx) = mpsc::channel::<MulticastDiscoveryEvent>(100);
 
+    let mc_group = cfg
+        .multicast_address
+        .parse::<std::net::Ipv4Addr>()
+        .unwrap_or(lanflare_core::discovery::multicast::DEFAULT_MULTICAST_IPV4);
+
     let mc_config = MulticastConfig {
+        group_v4: mc_group,
         port: cfg.port,
         node_info: MulticastNodeInfo {
             alias: cfg.alias.clone(),
@@ -796,25 +838,9 @@ pub async fn send_files(
         .primary_base_url()
         .ok_or_else(|| "Target peer has no valid IP address".to_string())?;
 
-    // 2. Prepare outgoing files
-    let mut outgoing = Vec::with_capacity(payload.files.len());
-    let mut total_bytes = 0u64;
-
-    for path_str in &payload.files {
-        let path = PathBuf::from(path_str);
-        if !path.exists() {
-            return Err(format!("File does not exist: {}", path.display()));
-        }
-        let out_file = OutgoingFile::from_path(&path)
-            .await
-            .map_err(|e| format!("Failed to read {}: {e}", path.display()))?
-            .with_computed_sha256()
-            .await
-            .map_err(|e| format!("Failed to hash {}: {e}", path.display()))?;
-
-        total_bytes += out_file.size;
-        outgoing.push(out_file);
-    }
+    // 2. Prepare outgoing files (including recursive expansion of folders)
+    let outgoing = collect_outgoing_files(&payload.files).await?;
+    let total_bytes: u64 = outgoing.iter().map(|f| f.size).sum();
 
     // 3. Create client with pinned certificate verifier
     let client_config = LsClientConfig {
@@ -1095,4 +1121,214 @@ pub async fn cancel_outgoing_transfer(
         return Ok(());
     }
     Err("No active outgoing transfer matches this session ID".to_string())
+}
+
+/// Helper to asynchronously collect files, recursively traversing directories and recording relative paths.
+async fn collect_outgoing_files(paths: &[String]) -> Result<Vec<OutgoingFile>, String> {
+    let mut collected = Vec::new();
+
+    for path_str in paths {
+        let path = PathBuf::from(path_str);
+        if !path.exists() {
+            return Err(format!("File does not exist: {}", path.display()));
+        }
+
+        if path.is_file() {
+            let out_file = OutgoingFile::from_path(&path)
+                .await
+                .map_err(|e| format!("Failed to read {}: {e}", path.display()))?
+                .with_computed_sha256()
+                .await
+                .map_err(|e| format!("Failed to hash {}: {e}", path.display()))?;
+            collected.push(out_file);
+        } else if path.is_dir() {
+            let parent_dir = path.parent().unwrap_or(&path);
+            let mut dir_entries: Vec<(PathBuf, String)> = Vec::new();
+            collect_dir_entries_recursive(&path, parent_dir, &mut dir_entries)
+                .await
+                .map_err(|e| format!("Failed to scan directory {}: {e}", path.display()))?;
+
+            for (file_path, rel_name) in dir_entries {
+                let out_file = OutgoingFile::from_path_with_name(&file_path, rel_name)
+                    .await
+                    .map_err(|e| format!("Failed to read {}: {e}", file_path.display()))?
+                    .with_computed_sha256()
+                    .await
+                    .map_err(|e| format!("Failed to hash {}: {e}", file_path.display()))?;
+                collected.push(out_file);
+            }
+        }
+    }
+
+    if collected.is_empty() {
+        return Err("No files found in selected items".to_string());
+    }
+
+    Ok(collected)
+}
+
+fn collect_dir_entries_recursive<'a>(
+    dir: &'a Path,
+    base_prefix: &'a Path,
+    out: &'a mut Vec<(PathBuf, String)>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        let mut reader = tokio::fs::read_dir(dir).await?;
+        while let Some(entry) = reader.next_entry().await? {
+            let entry_path = entry.path();
+            let file_type = entry.file_type().await?;
+            if file_type.is_dir() {
+                collect_dir_entries_recursive(&entry_path, base_prefix, out).await?;
+            } else if file_type.is_file() {
+                let rel = entry_path
+                    .strip_prefix(base_prefix)
+                    .unwrap_or(&entry_path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.push((entry_path, rel));
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Creates a temporary text message file on disk so it can be sent via standard transfer protocols.
+#[tauri::command]
+pub async fn create_temp_text_file(
+    content: String,
+    file_name: Option<String>,
+) -> Result<String, String> {
+    let dir = std::env::temp_dir().join("lanflare_messages");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("Failed to create temporary directory: {e}"))?;
+
+    let name = file_name.unwrap_or_else(|| {
+        let now = chrono::Local::now();
+        format!("message_{}.txt", now.format("%Y%m%d_%H%M%S"))
+    });
+    let file_path = dir.join(name);
+    tokio::fs::write(&file_path, content.as_bytes())
+        .await
+        .map_err(|e| format!("Failed to write text message file: {e}"))?;
+
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+/// Registers files with the download manager for "Share via link" browser downloads.
+#[tauri::command]
+pub async fn offer_download_files(
+    state: State<'_, Arc<DesktopState>>,
+    files: Vec<String>,
+) -> Result<(), String> {
+    let srv_guard = state.server_handle.read().await;
+    let srv = srv_guard
+        .as_ref()
+        .ok_or_else(|| "Server is not currently running".to_string())?;
+
+    let mut download_files = Vec::new();
+    for path_str in files {
+        let path = PathBuf::from(&path_str);
+        if !path.exists() {
+            return Err(format!("File does not exist: {}", path.display()));
+        }
+
+        if path.is_file() {
+            let meta = tokio::fs::metadata(&path)
+                .await
+                .map_err(|e| format!("Failed to stat {}: {e}", path.display()))?;
+            let file_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("file")
+                .to_string();
+            let file_type = lanflare_core::client::transfer::mime_guess_simple(&file_name);
+            let file_id = uuid::Uuid::new_v4().to_string();
+
+            download_files.push(lanflare_core::server::DownloadFile {
+                dto: lanflare_proto::transfer::FileDto {
+                    id: file_id,
+                    file_name,
+                    size: meta.len(),
+                    file_type,
+                    sha256: None,
+                    preview: None,
+                    metadata: None,
+                },
+                file_path: path,
+            });
+        } else if path.is_dir() {
+            let parent_dir = path.parent().unwrap_or(&path);
+            let mut dir_entries = Vec::new();
+            collect_dir_entries_recursive(&path, parent_dir, &mut dir_entries)
+                .await
+                .map_err(|e| format!("Failed to scan folder {}: {e}", path.display()))?;
+
+            for (file_path, rel_name) in dir_entries {
+                let meta = tokio::fs::metadata(&file_path)
+                    .await
+                    .map_err(|e| format!("Failed to stat {}: {e}", file_path.display()))?;
+                let file_type = lanflare_core::client::transfer::mime_guess_simple(&rel_name);
+                let file_id = uuid::Uuid::new_v4().to_string();
+
+                download_files.push(lanflare_core::server::DownloadFile {
+                    dto: lanflare_proto::transfer::FileDto {
+                        id: file_id,
+                        file_name: rel_name,
+                        size: meta.len(),
+                        file_type,
+                        sha256: None,
+                        preview: None,
+                        metadata: None,
+                    },
+                    file_path,
+                });
+            }
+        }
+    }
+
+    srv.download_manager().set_files(download_files).await;
+    Ok(())
+}
+
+/// Clears currently offered download files in the download manager.
+#[tauri::command]
+pub async fn clear_download_files(state: State<'_, Arc<DesktopState>>) -> Result<(), String> {
+    let srv_guard = state.server_handle.read().await;
+    if let Some(srv) = srv_guard.as_ref() {
+        srv.download_manager().clear_files().await;
+    }
+    Ok(())
+}
+
+/// Retrieves list of file DTOs currently offered for browser download.
+#[tauri::command]
+pub async fn get_download_files(
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<Vec<lanflare_proto::transfer::FileDto>, String> {
+    let srv_guard = state.server_handle.read().await;
+    if let Some(srv) = srv_guard.as_ref() {
+        let dtos = srv.download_manager().get_file_dtos().await;
+        Ok(dtos.into_values().collect())
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+/// Loads persistent transfer history entries from disk.
+#[tauri::command]
+pub fn get_transfer_history() -> Result<Vec<serde_json::Value>, String> {
+    Ok(crate::state::load_history())
+}
+
+/// Saves persistent transfer history entries to disk.
+#[tauri::command]
+pub fn save_transfer_history(items: Vec<serde_json::Value>) -> Result<(), String> {
+    crate::state::save_history(&items).map_err(|e| format!("Failed to save history: {e}"))
+}
+
+/// Clears persistent transfer history from disk.
+#[tauri::command]
+pub fn clear_transfer_history() -> Result<(), String> {
+    crate::state::save_history(&[]).map_err(|e| format!("Failed to clear history: {e}"))
 }

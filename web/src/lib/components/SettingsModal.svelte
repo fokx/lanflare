@@ -1,17 +1,35 @@
 <script lang="ts">
 	import { appState } from '$lib/state.svelte';
-	import { themeManager, type ThemeMode } from '$lib/theme.svelte';
-	import { updateConfig } from '$lib/api';
-	import { Settings, Folder, KeyRound, Radio, Shield, Check, X, Palette, Sun, Moon, Monitor } from 'lucide-svelte';
+	import { themeManager } from '$lib/theme.svelte';
+	import { updateConfig, isTauri } from '$lib/api';
+	import { open } from '@tauri-apps/plugin-dialog';
+	import {
+		Settings,
+		Folder,
+		FolderOpen,
+		KeyRound,
+		Radio,
+		Check,
+		X,
+		Palette,
+		Sun,
+		Moon,
+		Monitor,
+		History,
+		AlertCircle
+	} from 'lucide-svelte';
 
 	let alias = $state(appState.status?.alias || '');
 	let port = $state(appState.status?.port || 53317);
 	let downloadDir = $state(appState.status?.downloadDir || '');
 	let autoAccept = $state(appState.status?.autoAccept || false);
+	let saveToHistory = $state(appState.status?.saveToHistory ?? true);
+	let multicastAddress = $state(appState.status?.multicastAddress || '224.0.0.167');
 	let pin = $state('');
 	let pinEnabled = $state(appState.status?.pinEnabled || false);
 	let isSaving = $state(false);
 	let saveSuccess = $state(false);
+	let errorMsg = $state<string | null>(null);
 
 	$effect(() => {
 		if (appState.status) {
@@ -19,11 +37,48 @@
 			port = appState.status.port;
 			downloadDir = appState.status.downloadDir;
 			autoAccept = appState.status.autoAccept;
+			saveToHistory = appState.status.saveToHistory ?? true;
+			multicastAddress = appState.status.multicastAddress || '224.0.0.167';
 			pinEnabled = appState.status.pinEnabled;
 		}
 	});
 
+	async function pickDownloadDirectory() {
+		if (isTauri()) {
+			try {
+				const selected = await open({
+					directory: true,
+					multiple: false,
+					defaultPath: downloadDir || undefined
+				});
+				if (selected && typeof selected === 'string') {
+					downloadDir = selected;
+				}
+			} catch (e) {
+				console.error('Directory picker error:', e);
+			}
+		} else {
+			// Mock in browser
+			downloadDir = '/home/user/CustomDownloads';
+		}
+	}
+
 	async function handleSave() {
+		errorMsg = null;
+
+		// Validate multicast IP address
+		const mcTrimmed = multicastAddress.trim();
+		const mcParts = mcTrimmed.split('.');
+		if (mcParts.length !== 4 || mcParts.some((p) => isNaN(Number(p)) || Number(p) < 0 || Number(p) > 255)) {
+			errorMsg = 'Invalid multicast address format (e.g., 224.0.0.167)';
+			return;
+		}
+		const firstOctet = Number(mcParts[0]);
+		if (firstOctet < 224 || firstOctet > 239) {
+			errorMsg = 'Multicast address must be within 224.0.0.0 to 239.255.255.255';
+			return;
+		}
+
 		isSaving = true;
 		saveSuccess = false;
 		try {
@@ -32,6 +87,8 @@
 				port,
 				downloadDir,
 				autoAccept,
+				saveToHistory,
+				multicastAddress: mcTrimmed,
 				pin: pinEnabled ? (pin ? pin : undefined) : null
 			});
 			appState.status = updated;
@@ -41,7 +98,7 @@
 				appState.showSettings = false;
 			}, 600);
 		} catch (e) {
-			console.error('Failed to save settings:', e);
+			errorMsg = String(e);
 		} finally {
 			isSaving = false;
 		}
@@ -53,10 +110,10 @@
 		class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 dark:bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-150"
 	>
 		<div
-			class="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-6 space-y-6 animate-in zoom-in-95 duration-150"
+			class="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-6 space-y-6 animate-in zoom-in-95 duration-150 max-h-[90vh] flex flex-col"
 		>
 			<!-- Header -->
-			<div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-4">
+			<div class="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-4 flex-none">
 				<div class="flex items-center gap-3">
 					<div class="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
 						<Settings class="w-5 h-5" />
@@ -74,8 +131,8 @@
 				</button>
 			</div>
 
-			<!-- Settings Form -->
-			<div class="space-y-4 text-sm">
+			<!-- Settings Form (Scrollable) -->
+			<div class="space-y-4 text-sm overflow-y-auto pr-1 flex-1">
 				<!-- Appearance / Theme Selector -->
 				<div class="space-y-1.5">
 					<span class="text-xs font-medium text-slate-700 dark:text-slate-300 block flex items-center gap-1.5">
@@ -92,7 +149,7 @@
 								: 'bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-900'}"
 						>
 							<Monitor class="w-3.5 h-3.5" />
-							<span>Auto (System)</span>
+							<span>Auto</span>
 						</button>
 						<button
 							type="button"
@@ -117,9 +174,6 @@
 							<span>Dark</span>
 						</button>
 					</div>
-					<p class="text-[11px] text-slate-400 dark:text-slate-500">
-						Auto detects system dark mode and defaults to light theme if detection fails.
-					</p>
 				</div>
 
 				<!-- Device Alias -->
@@ -133,40 +187,82 @@
 					/>
 				</div>
 
-				<!-- Server Port & Fingerprint -->
+				<!-- Download Directory (Folder Picker) -->
+				<div class="space-y-1.5">
+					<label for="download-input" class="text-xs font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+						<Folder class="w-3.5 h-3.5 text-indigo-500" />
+						<span>Download Directory</span>
+					</label>
+					<div class="flex items-center gap-2">
+						<div
+							id="download-input"
+							class="flex-1 bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-800 dark:text-slate-200 truncate select-all"
+							title={downloadDir}
+						>
+							<span class="truncate block">{downloadDir || 'Default download folder'}</span>
+						</div>
+						<button
+							type="button"
+							onclick={pickDownloadDirectory}
+							class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-50 dark:bg-indigo-600/20 hover:bg-indigo-100 dark:hover:bg-indigo-600/30 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 text-xs font-medium cursor-pointer transition-colors flex-shrink-0"
+						>
+							<FolderOpen class="w-4 h-4" />
+							<span>Choose Folder...</span>
+						</button>
+					</div>
+					<p class="text-[11px] text-slate-400 dark:text-slate-500">
+						Incoming files and folders will be saved to this folder.
+					</p>
+				</div>
+
+				<!-- Multicast Group Address & Port -->
 				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
 					<div class="space-y-1.5">
-						<label for="port-input" class="text-xs font-medium text-slate-700 dark:text-slate-300">Port (Default: 53317)</label>
+						<label for="multicast-input" class="text-xs font-medium text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+							<Radio class="w-3.5 h-3.5 text-indigo-500" />
+							<span>Multicast Address</span>
+						</label>
+						<input
+							id="multicast-input"
+							type="text"
+							bind:value={multicastAddress}
+							placeholder="224.0.0.167"
+							class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
+						/>
+					</div>
+
+					<div class="space-y-1.5">
+						<label for="port-input" class="text-xs font-medium text-slate-700 dark:text-slate-300">Server Port</label>
 						<input
 							id="port-input"
 							type="number"
 							bind:value={port}
-							class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
+							class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-900 dark:text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
 						/>
-					</div>
-
-					<div class="space-y-1.5">
-						<span class="text-xs font-medium text-slate-700 dark:text-slate-300 block">TLS Fingerprint</span>
-						<div
-							class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800/80 rounded-lg px-3 py-2 text-xs text-slate-500 dark:text-slate-400 font-mono truncate cursor-help"
-							title={appState.status?.fingerprint || ''}
-						>
-							{appState.status?.fingerprint ? appState.status.fingerprint.slice(0, 16) + '...' : '--'}
-						</div>
 					</div>
 				</div>
+				<p class="text-[11px] text-slate-400 dark:text-slate-500">
+					Default multicast address is <code class="font-mono text-indigo-500">224.0.0.167</code>. Changing this allows isolation into custom peer discovery groups.
+				</p>
 
-				<!-- Download Directory -->
-				<div class="space-y-1.5">
-					<label for="download-input" class="text-xs font-medium text-slate-700 dark:text-slate-300">Download Directory</label>
-					<div class="flex items-center gap-2">
-						<input
-							id="download-input"
-							type="text"
-							bind:value={downloadDir}
-							class="flex-1 bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:border-indigo-500 font-mono"
-						/>
+				<!-- Save to History Toggle -->
+				<div
+					class="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800/80"
+				>
+					<div class="space-y-0.5">
+						<div class="text-xs font-medium text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+							<History class="w-3.5 h-3.5 text-indigo-500" />
+							<span>Save to History</span>
+						</div>
+						<p class="text-[11px] text-slate-500 dark:text-slate-400">
+							Persist file transfer logs across application restarts (enabled by default)
+						</p>
 					</div>
+					<input
+						type="checkbox"
+						bind:checked={saveToHistory}
+						class="w-4 h-4 accent-indigo-600 rounded cursor-pointer"
+					/>
 				</div>
 
 				<!-- Auto Accept Toggle -->
@@ -214,10 +310,17 @@
 						</div>
 					{/if}
 				</div>
+
+				{#if errorMsg}
+					<div class="flex items-center gap-2 p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 text-xs">
+						<AlertCircle class="w-4 h-4 flex-shrink-0" />
+						<span>{errorMsg}</span>
+					</div>
+				{/if}
 			</div>
 
 			<!-- Footer Buttons -->
-			<div class="flex items-center justify-end gap-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+			<div class="flex items-center justify-end gap-3 pt-2 border-t border-slate-200 dark:border-slate-800 flex-none">
 				<button
 					onclick={() => (appState.showSettings = false)}
 					class="py-2 px-4 rounded-xl text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 text-xs font-medium transition-colors"

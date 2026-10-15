@@ -63,6 +63,13 @@ pub fn run() {
             commands::stop_receiver_server,
             commands::send_files,
             commands::cancel_outgoing_transfer,
+            commands::create_temp_text_file,
+            commands::offer_download_files,
+            commands::clear_download_files,
+            commands::get_download_files,
+            commands::get_transfer_history,
+            commands::save_transfer_history,
+            commands::clear_transfer_history,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running LanFlare Desktop application");

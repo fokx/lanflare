@@ -232,6 +232,7 @@ mod tests {
             download_dir: temp_dir.clone(),
             auto_accept: true,
             pin: None,
+            ..Default::default()
         };
 
         let registry = PeerRegistry::new();
@@ -373,6 +374,7 @@ mod tests {
             download_dir: temp_dir.clone(),
             auto_accept: true,
             pin: Some("54321".to_string()),
+            ..Default::default()
         };
 
         let registry = PeerRegistry::new();
@@ -481,6 +483,7 @@ mod tests {
             download_dir: temp_dir.clone(),
             auto_accept: true,
             pin: None,
+            ..Default::default()
         };
 
         let registry = PeerRegistry::new();
@@ -565,6 +568,7 @@ mod tests {
             download_dir: temp_dir.clone(),
             auto_accept: true,
             pin: None,
+            ..Default::default()
         };
 
         let registry = PeerRegistry::new();

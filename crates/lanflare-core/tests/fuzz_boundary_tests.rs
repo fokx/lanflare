@@ -152,6 +152,7 @@ async fn test_http_boundary_and_fuzz_hardening() {
         download_dir: temp_dir.clone(),
         auto_accept: true,
         pin: Some("4455".to_string()),
+        ..Default::default()
     };
 
     let registry = PeerRegistry::new();
@@ -362,6 +363,7 @@ async fn test_streaming_upload_boundary_failures_and_cleanup() {
         download_dir: temp_dir.clone(),
         auto_accept: true,
         pin: None,
+        ..Default::default()
     };
 
     let registry = PeerRegistry::new();

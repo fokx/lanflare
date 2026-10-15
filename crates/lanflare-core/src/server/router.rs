@@ -8,7 +8,7 @@ use hyper::{Method, Request, Response, StatusCode};
 
 use crate::server::handlers::{
     empty_response, handle_cancel, handle_download, handle_info, handle_prepare_download,
-    handle_prepare_upload, handle_register, handle_upload, ServerState,
+    handle_prepare_upload, handle_register, handle_upload, handle_web_portal, ServerState,
 };
 
 /// Client connection metadata extracted from the underlying TLS / TCP stream.
@@ -30,6 +30,11 @@ pub async fn route_request(
     let path = req.uri().path();
 
     let response = match (method, path) {
+        // Web portal for browser download (Share via link)
+        (&Method::GET, "/") | (&Method::GET, "/index.html") => {
+            handle_web_portal(state).await
+        }
+
         // v1/v2 Device Information: GET /api/localsend/v2/info or GET /api/localsend/v1/info
         (&Method::GET, "/api/localsend/v2/info") | (&Method::GET, "/api/localsend/v1/info") => {
             handle_info(state).await
@@ -55,8 +60,8 @@ pub async fn route_request(
             handle_prepare_download(req, client.remote_ip, state).await
         }
 
-        // Reverse file transfer binary stream: GET /api/localsend/v2/download
-        (&Method::GET, "/api/localsend/v2/download") => {
+        // Reverse file transfer binary stream: GET /api/localsend/v2/download or GET /download
+        (&Method::GET, "/api/localsend/v2/download") | (&Method::GET, "/download") => {
             handle_download(req, client.remote_ip, state).await
         }
 

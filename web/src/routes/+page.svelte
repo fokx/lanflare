@@ -6,6 +6,7 @@
 	import TransferQueue from '$lib/components/TransferQueue.svelte';
 	import IncomingTransferModal from '$lib/components/IncomingTransferModal.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
+	import TextMessageModal from '$lib/components/TextMessageModal.svelte';
 	import SendFileDialog from '$lib/components/SendFileDialog.svelte';
 	import type { DiscoveredPeer } from '$lib/types';
 	import {
@@ -273,6 +274,7 @@
 <!-- Modals -->
 <IncomingTransferModal />
 <SettingsModal />
+<TextMessageModal />
 
 {#if appState.showSendDialog && appState.selectedPeer}
 	<SendFileDialog

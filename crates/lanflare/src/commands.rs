@@ -652,6 +652,7 @@ pub async fn receive(
         download_dir: dest_dir.clone(),
         auto_accept,
         pin: pin.clone(),
+        ..Default::default()
     };
 
     let registry = PeerRegistry::new();

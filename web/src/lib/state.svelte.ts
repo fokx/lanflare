@@ -5,7 +5,9 @@ import type {
 	TransferProgressPayload,
 	OutgoingTransferInitiatedPayload,
 	TransferQueueItem,
-	FileReceivedPayload
+	FileReceivedPayload,
+	SendMode,
+	PreparedSendItem
 } from './types';
 import {
 	getNodeStatus,
@@ -14,7 +16,13 @@ import {
 	startReceiverServer,
 	tauriListen,
 	respondIncomingTransfer,
-	cancelOutgoingTransfer
+	cancelOutgoingTransfer,
+	createTempTextFile,
+	offerDownloadFiles,
+	clearDownloadFiles,
+	getTransferHistory,
+	saveTransferHistory,
+	sendFiles
 } from './api';
 
 export class AppState {
@@ -27,18 +35,31 @@ export class AppState {
 	peers = $state<DiscoveredPeer[]>([]);
 	searchQuery = $state<string>('');
 
+	// Send Mode: 'single' | 'multiple' | 'link'
+	sendMode = $state<SendMode>('single');
+
+	// Multi-Recipient Selection (Peer fingerprints)
+	selectedRecipients = $state<string[]>([]);
+
+	// Prepared items to send (files, folders, text messages)
+	preparedItems = $state<PreparedSendItem[]>([]);
+
+	// Share via Link active state
+	isSharingLink = $state<boolean>(false);
+
 	// Pending Incoming Transfer Modal State
 	pendingIncoming = $state<IncomingTransferEventPayload | null>(null);
 
 	// Active and Recent Transfers
 	transfers = $state<TransferQueueItem[]>([]);
 
-	// Selected peer for target sending dialog
+	// Selected peer for target sending dialog (single mode)
 	selectedPeer = $state<DiscoveredPeer | null>(null);
 
 	// UI Modals
 	showSettings = $state<boolean>(false);
 	showSendDialog = $state<boolean>(false);
+	showTextModal = $state<boolean>(false);
 
 	// Derived: Filtered Peers
 	filteredPeers = $derived.by(() => {
@@ -58,13 +79,21 @@ export class AppState {
 
 	// Derived: Active Transfers Count
 	activeTransferCount = $derived.by(() => {
-		return this.transfers.filter((t) => t.status === 'active').length;
+		return this.transfers.filter((t) => t.status === 'active' || t.status === 'waiting').length;
 	});
 
-	// Initialize app and event listeners
+	// Derived: Total Prepared Size
+	totalPreparedSize = $derived.by(() => {
+		return this.preparedItems.reduce((acc, item) => acc + item.size, 0);
+	});
+
+	// Initialize app, load history, and setup event listeners
 	async init() {
 		// Setup event listeners first so no events are missed
 		await this.setupListeners();
+
+		// Load transfer history from backend / localStorage
+		await this.loadPersistedHistory();
 
 		try {
 			this.status = await getNodeStatus();
@@ -75,6 +104,215 @@ export class AppState {
 		} catch (e) {
 			console.error('Failed to initialize app state:', e);
 		}
+	}
+
+	private async loadPersistedHistory() {
+		try {
+			const persisted = await getTransferHistory();
+			if (Array.isArray(persisted) && persisted.length > 0) {
+				this.transfers = persisted;
+			} else if (typeof localStorage !== 'undefined') {
+				const raw = localStorage.getItem('lanflare_transfers');
+				if (raw) {
+					this.transfers = JSON.parse(raw);
+				}
+			}
+
+			// Clean up any transfers that were left active/waiting when the app last terminated
+			for (const t of this.transfers) {
+				if (t.status === 'active' || t.status === 'waiting') {
+					t.status = 'cancelled';
+					t.error = 'Transfer interrupted by app shutdown';
+				}
+			}
+		} catch (err) {
+			console.warn('Failed to load transfer history:', err);
+		}
+	}
+
+	persistHistory() {
+		if (this.status && !this.status.saveToHistory) {
+			return;
+		}
+		try {
+			if (typeof localStorage !== 'undefined') {
+				localStorage.setItem('lanflare_transfers', JSON.stringify(this.transfers));
+			}
+			saveTransferHistory(this.transfers).catch(() => {});
+		} catch (e) {
+			console.error('Failed to persist history:', e);
+		}
+	}
+
+	deleteTransfer(id: string) {
+		this.transfers = this.transfers.filter((t) => t.id !== id);
+		this.persistHistory();
+	}
+
+	clearAllHistory() {
+		// Keep only actively transferring or waiting items
+		this.transfers = this.transfers.filter(
+			(t) => t.status === 'active' || t.status === 'waiting'
+		);
+		this.persistHistory();
+	}
+
+	// Selection & Preparation Methods
+	addFiles(filePaths: string[]) {
+		for (const p of filePaths) {
+			if (!this.preparedItems.some((item) => item.path === p)) {
+				const name = p.split('/').pop()?.split('\\').pop() || p;
+				this.preparedItems.push({
+					id: p,
+					type: 'file',
+					name,
+					path: p,
+					size: 0,
+					summary: 'File'
+				});
+			}
+		}
+	}
+
+	addFolder(folderPath: string) {
+		if (!this.preparedItems.some((item) => item.path === folderPath)) {
+			const name = folderPath.split('/').pop()?.split('\\').pop() || folderPath;
+			this.preparedItems.push({
+				id: folderPath,
+				type: 'folder',
+				name,
+				path: folderPath,
+				size: 0,
+				summary: 'Folder'
+			});
+		}
+	}
+
+	async addTextMessage(text: string, title?: string) {
+		try {
+			const filePath = await createTempTextFile(text, title ? `${title}.txt` : undefined);
+			const snippet = text.slice(0, 30).trim() + (text.length > 30 ? '...' : '');
+			const name = title || (snippet ? `"${snippet}"` : 'Text Message');
+			const size = new TextEncoder().encode(text).length;
+
+			this.preparedItems.push({
+				id: filePath,
+				type: 'text',
+				name,
+				path: filePath,
+				size,
+				textContent: text,
+				summary: 'Text Message'
+			});
+		} catch (e) {
+			console.error('Failed to create text message file:', e);
+		}
+	}
+
+	async pasteFromClipboard(): Promise<boolean> {
+		try {
+			if (typeof navigator !== 'undefined' && navigator.clipboard) {
+				const text = await navigator.clipboard.readText();
+				if (text && text.trim()) {
+					await this.addTextMessage(text.trim());
+					return true;
+				}
+			}
+			return false;
+		} catch (e) {
+			console.warn('Failed to read clipboard text:', e);
+			return false;
+		}
+	}
+
+	removePreparedItem(index: number) {
+		this.preparedItems = this.preparedItems.filter((_, i) => i !== index);
+	}
+
+	clearPreparedItems() {
+		this.preparedItems = [];
+	}
+
+	toggleRecipient(fingerprint: string) {
+		if (this.selectedRecipients.includes(fingerprint)) {
+			this.selectedRecipients = this.selectedRecipients.filter((fp) => fp !== fingerprint);
+		} else {
+			this.selectedRecipients = [...this.selectedRecipients, fingerprint];
+		}
+	}
+
+	selectAllRecipients() {
+		this.selectedRecipients = this.peers.map((p) => p.fingerprint);
+	}
+
+	clearSelectedRecipients() {
+		this.selectedRecipients = [];
+	}
+
+	// Share via Link methods
+	async startShareViaLink() {
+		if (this.preparedItems.length === 0) return;
+		try {
+			await offerDownloadFiles(this.preparedItems.map((i) => i.path));
+			this.isSharingLink = true;
+		} catch (e) {
+			console.error('Failed to start share via link:', e);
+		}
+	}
+
+	async stopShareViaLink() {
+		try {
+			await clearDownloadFiles();
+			this.isSharingLink = false;
+		} catch (e) {
+			console.error('Failed to stop share via link:', e);
+		}
+	}
+
+	// Sending
+	async sendPreparedToPeer(peer: DiscoveredPeer, pin?: string) {
+		if (this.preparedItems.length === 0) return;
+		const filePaths = this.preparedItems.map((i) => i.path);
+
+		try {
+			await sendFiles({
+				targetFingerprint: peer.fingerprint,
+				targetEndpoint: peer.endpoints[0],
+				files: filePaths,
+				pin
+			});
+
+			// If in single recipient mode:
+			// "Single recipient: Sends files to one recipient. Selection will be cleared after finished files transfer."
+			if (this.sendMode === 'single') {
+				this.clearPreparedItems();
+			}
+		} catch (e) {
+			console.error(`Failed to send files to ${peer.alias}:`, e);
+			throw e;
+		}
+	}
+
+	async sendPreparedToMultiple(pin?: string) {
+		if (this.preparedItems.length === 0 || this.selectedRecipients.length === 0) return;
+		const filePaths = this.preparedItems.map((i) => i.path);
+		const targetPeers = this.peers.filter((p) => this.selectedRecipients.includes(p.fingerprint));
+
+		for (const peer of targetPeers) {
+			try {
+				await sendFiles({
+					targetFingerprint: peer.fingerprint,
+					targetEndpoint: peer.endpoints[0],
+					files: filePaths,
+					pin
+				});
+			} catch (e) {
+				console.error(`Failed to send files to ${peer.alias}:`, e);
+			}
+		}
+
+		// "Multiple recipients : Sends files to multiple recipients. Selection will not be cleared after finished files transfer."
+		// Selection is retained!
 	}
 
 	private async setupListeners() {
@@ -116,6 +354,7 @@ export class AppState {
 				status: 'active',
 				startTime: Date.now()
 			});
+			this.persistHistory();
 		});
 
 		// 4. File started
@@ -128,6 +367,7 @@ export class AppState {
 					if (f) {
 						f.status = 'in_progress';
 					}
+					this.persistHistory();
 				}
 			}
 		);
@@ -145,6 +385,7 @@ export class AppState {
 				if (item.bytesTransferred >= item.totalBytes) {
 					item.status = 'completed';
 				}
+				this.persistHistory();
 			}
 		});
 
@@ -173,6 +414,7 @@ export class AppState {
 						status: 'waiting',
 						startTime: Date.now()
 					});
+					this.persistHistory();
 				}
 			}
 		);
@@ -181,8 +423,9 @@ export class AppState {
 		await tauriListen<TransferProgressPayload>('lanflare://transfer-progress', (payload) => {
 			let item = this.transfers.find((t) => t.id === payload.sessionId);
 			if (!item && payload.sessionId) {
-				// Reconcile with any waiting outgoing transfer to prevent duplicate entries
-				const waitingItem = this.transfers.find((t) => t.direction === 'outgoing' && t.status === 'waiting');
+				const waitingItem = this.transfers.find(
+					(t) => t.direction === 'outgoing' && t.status === 'waiting'
+				);
 				if (waitingItem) {
 					item = waitingItem;
 					item.id = payload.sessionId;
@@ -197,7 +440,10 @@ export class AppState {
 						bytesTransferred: payload.sessionBytesSent || 0,
 						speedBytesPerSec: payload.bytesPerSecond || 0,
 						etaSeconds: payload.etaSeconds ?? null,
-						status: payload.eventType === 'started' || payload.eventType === 'file_progress' ? 'active' : 'waiting',
+						status:
+							payload.eventType === 'started' || payload.eventType === 'file_progress'
+								? 'active'
+								: 'waiting',
 						startTime: Date.now()
 					};
 					this.transfers.unshift(item);
@@ -275,6 +521,7 @@ export class AppState {
 						}
 					}
 				}
+				this.persistHistory();
 			}
 		});
 	}
@@ -285,7 +532,6 @@ export class AppState {
 			const payload = this.pendingIncoming;
 			try {
 				await respondIncomingTransfer(payload.sessionId, true);
-				// Add to active queue
 				this.transfers.unshift({
 					id: payload.sessionId,
 					direction: 'incoming',
@@ -305,6 +551,7 @@ export class AppState {
 					status: 'active',
 					startTime: Date.now()
 				});
+				this.persistHistory();
 			} catch (e) {
 				console.error('Failed to accept transfer:', e);
 			} finally {
@@ -331,6 +578,7 @@ export class AppState {
 			const item = this.transfers.find((t) => t.id === sessionId);
 			if (item) {
 				item.status = 'cancelled';
+				this.persistHistory();
 			}
 		} catch (e) {
 			console.error('Failed to cancel transfer:', e);

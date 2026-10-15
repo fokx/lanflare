@@ -414,6 +414,7 @@ async fn test_lanflare_reverse_file_transfer_browser_download_api() {
         download_dir: temp_dir.clone(),
         auto_accept: true,
         pin: Some("556677".to_string()),
+        ..Default::default()
     };
     let registry = PeerRegistry::new();
     let (server_ev_tx, _server_ev_rx) = mpsc::channel(10);
@@ -554,6 +555,7 @@ async fn test_https_mtls_fingerprint_validation_parity() {
         download_dir: temp_dir.clone(),
         auto_accept: true,
         pin: None,
+        ..Default::default()
     };
     let registry = PeerRegistry::new();
 

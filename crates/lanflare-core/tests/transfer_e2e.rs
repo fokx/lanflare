@@ -63,6 +63,7 @@ async fn test_plain_http_multi_file_transfer_e2e() {
         download_dir: temp_download_dir.clone(),
         auto_accept: true,
         pin: None,
+        ..Default::default()
     };
     let registry = PeerRegistry::new();
     let (server_ev_tx, _server_ev_rx) = mpsc::channel(100);
@@ -200,6 +201,7 @@ async fn test_https_mtls_pin_protected_transfer_e2e() {
         download_dir: temp_download_dir.clone(),
         auto_accept: true,
         pin: Some(pin_code.clone()),
+        ..Default::default()
     };
 
     let registry = PeerRegistry::new();

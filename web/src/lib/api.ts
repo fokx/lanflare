@@ -83,6 +83,37 @@ export async function cancelOutgoingTransfer(sessionId: string): Promise<void> {
 	return tauriInvoke<void>('cancel_outgoing_transfer', { sessionId });
 }
 
+// Text & Clipboard Transfer API
+export async function createTempTextFile(content: string, fileName?: string): Promise<string> {
+	return tauriInvoke<string>('create_temp_text_file', { content, fileName });
+}
+
+// Share via link API
+export async function offerDownloadFiles(files: string[]): Promise<void> {
+	return tauriInvoke<void>('offer_download_files', { files });
+}
+
+export async function clearDownloadFiles(): Promise<void> {
+	return tauriInvoke<void>('clear_download_files');
+}
+
+export async function getDownloadFiles(): Promise<any[]> {
+	return tauriInvoke<any[]>('get_download_files');
+}
+
+// History Persistence API
+export async function getTransferHistory(): Promise<any[]> {
+	return tauriInvoke<any[]>('get_transfer_history');
+}
+
+export async function saveTransferHistory(items: any[]): Promise<void> {
+	return tauriInvoke<void>('save_transfer_history', { items });
+}
+
+export async function clearTransferHistory(): Promise<void> {
+	return tauriInvoke<void>('clear_transfer_history');
+}
+
 // Fallback mocks for Vite standalone dev/test in browser
 function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 	switch (cmd) {
@@ -94,6 +125,8 @@ function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 				autoAccept: false,
 				pinEnabled: false,
 				fingerprint: '3FA85F647990AFDDF6872B2F139FF30B00000000000000000000000000000000',
+				saveToHistory: true,
+				multicastAddress: '224.0.0.167',
 				interfaces: [{ name: 'eth0', address: '192.168.1.100', isIpv6: false }]
 			} as T;
 		case 'get_discovered_peers':
@@ -129,6 +162,11 @@ function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 			return 53317 as T;
 		case 'send_files':
 			return 'mock-session-uuid-1234' as T;
+		case 'create_temp_text_file':
+			return '/tmp/lanflare_messages/mock_message.txt' as T;
+		case 'get_transfer_history':
+		case 'get_download_files':
+			return [] as T;
 		default:
 			return undefined as T;
 	}

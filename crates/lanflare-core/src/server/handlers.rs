@@ -21,7 +21,7 @@ use crate::server::session::{
     DownloadManager, FileTransferStatus, PrepareUploadDecision, SessionEndReason, SessionFile,
     SessionManager,
 };
-use crate::storage::path::{resolve_unique_destination_path, sanitize_filename};
+use crate::storage::path::resolve_unique_destination_path;
 use crate::storage::writer::{StorageCommitResult, StreamingFileWriter};
 
 /// Application events emitted by the HTTP server for GUI/TUI integration.
@@ -314,12 +314,11 @@ pub async fn handle_prepare_upload(
         }
 
         let token = Uuid::new_v4().to_string();
-        let safe_name = match sanitize_filename(&file_dto.file_name) {
-            Ok(name) => name,
-            Err(_) => format!("file_{}.bin", Uuid::new_v4().simple()),
-        };
-
-        let target_path = match resolve_unique_destination_path(&state.config.download_dir, &safe_name)
+        let target_path = match resolve_unique_destination_path(&state.config.download_dir, &file_dto.file_name)
+            .or_else(|_| {
+                let fallback = format!("file_{}.bin", Uuid::new_v4().simple());
+                resolve_unique_destination_path(&state.config.download_dir, &fallback)
+            })
         {
             Ok(p) => p,
             Err(_) => {
@@ -634,13 +633,27 @@ pub async fn handle_download(
     state: &ServerState,
 ) -> Response<Full<Bytes>> {
     let query = parse_query(req.uri().query());
-    let (Some(session_id), Some(file_id)) = (query.get("sessionId"), query.get("fileId")) else {
-        return empty_response(StatusCode::BAD_REQUEST);
+    let file_id = match query.get("fileId") {
+        Some(id) => id,
+        None => return empty_response(StatusCode::BAD_REQUEST),
     };
+
+    let session_id = match query.get("sessionId") {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => "web".to_string(),
+    };
+
+    // For browser direct downloads, ensure session is prepared
+    if session_id == "web" {
+        state
+            .download_manager
+            .prepare_session(Some("web"), remote_ip, true)
+            .await;
+    }
 
     let file_path = match state
         .download_manager
-        .get_file_path(session_id, file_id, remote_ip)
+        .get_file_path(&session_id, file_id, remote_ip)
         .await
     {
         Ok(p) => p,
@@ -669,5 +682,218 @@ pub async fn handle_download(
         )
         .header(hyper::header::CONTENT_LENGTH, content.len())
         .body(Full::new(Bytes::from(content)))
+        .unwrap()
+}
+
+/// Helper converting byte size into human-readable representation.
+fn format_file_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.2} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn escape_html(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+/// Handler serving the web portal for browser downloads (Share via link).
+pub async fn handle_web_portal(state: &ServerState) -> Response<Full<Bytes>> {
+    let files = state.download_manager.get_file_dtos().await;
+    let alias = escape_html(&state.config.alias);
+
+    let mut files_html = String::new();
+    if files.is_empty() {
+        files_html.push_str(
+            r#"<div class="empty-state">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+                <p>No files are currently being shared.</p>
+                <span>Keep this page open and wait for the sender to share files.</span>
+            </div>"#,
+        );
+    } else {
+        for (id, file) in &files {
+            let encoded_name = escape_html(&file.file_name);
+            let size_str = format_file_size(file.size);
+            files_html.push_str(&format!(
+                r#"<div class="file-item">
+                    <div class="file-info">
+                        <div class="file-icon">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+                        </div>
+                        <div class="file-details">
+                            <div class="file-name" title="{encoded_name}">{encoded_name}</div>
+                            <div class="file-size">{size_str}</div>
+                        </div>
+                    </div>
+                    <a class="download-btn" href="/api/localsend/v2/download?sessionId=web&fileId={id}" download="{encoded_name}">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        Download
+                    </a>
+                </div>"#
+            ));
+        }
+    }
+
+    let html = format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LanFlare - Download Files</title>
+    <style>
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: #090d16;
+            color: #f1f5f9;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }}
+        .card {{
+            width: 100%;
+            max-width: 520px;
+            background: #111827;
+            border: 1px solid #1f2937;
+            border-radius: 20px;
+            padding: 28px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }}
+        .header {{
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 24px;
+            padding-bottom: 18px;
+            border-bottom: 1px solid #1f2937;
+        }}
+        .logo {{
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+        }}
+        .title h1 {{ font-size: 18px; font-weight: 700; color: #f8fafc; }}
+        .title p {{ font-size: 13px; color: #94a3b8; margin-top: 2px; }}
+        .title p strong {{ color: #e2e8f0; }}
+        .file-list {{ display: flex; flex-direction: column; gap: 10px; }}
+        .file-item {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 14px;
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            gap: 12px;
+            transition: all 0.15s ease;
+        }}
+        .file-item:hover {{
+            background: #243248;
+            border-color: #6366f1;
+        }}
+        .file-info {{ display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }}
+        .file-icon {{
+            width: 38px;
+            height: 38px;
+            border-radius: 8px;
+            background: rgba(99, 102, 241, 0.15);
+            color: #818cf8;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }}
+        .file-details {{ min-width: 0; flex: 1; }}
+        .file-name {{
+            font-size: 13px;
+            font-weight: 600;
+            color: #f1f5f9;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+        .file-size {{ font-size: 11px; color: #94a3b8; font-family: monospace; margin-top: 2px; }}
+        .download-btn {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 14px;
+            border-radius: 10px;
+            background: #4f46e5;
+            color: white;
+            text-decoration: none;
+            font-size: 12px;
+            font-weight: 600;
+            flex-shrink: 0;
+            transition: background 0.15s ease;
+        }}
+        .download-btn:hover {{ background: #4338ca; }}
+        .empty-state {{
+            padding: 40px 20px;
+            text-align: center;
+            color: #64748b;
+        }}
+        .empty-state svg {{ margin: 0 auto 12px; stroke: #475569; }}
+        .empty-state p {{ font-size: 14px; font-weight: 500; color: #94a3b8; }}
+        .empty-state span {{ font-size: 12px; color: #64748b; margin-top: 4px; display: block; }}
+        .footer {{
+            margin-top: 20px;
+            text-align: center;
+            font-size: 11px;
+            color: #64748b;
+        }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="header">
+            <div class="logo">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
+            </div>
+            <div class="title">
+                <h1>LanFlare Web Share</h1>
+                <p>Shared by <strong>{alias}</strong></p>
+            </div>
+        </div>
+        <div class="file-list">
+            {files_html}
+        </div>
+        <div class="footer">
+            LocalSend Protocol v2.2 Compatible &bull; Fast Local Wi-Fi Transfer
+        </div>
+    </div>
+</body>
+</html>"#
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(hyper::header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Full::new(Bytes::from(html)))
         .unwrap()
 }

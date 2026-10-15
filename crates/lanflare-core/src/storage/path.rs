@@ -168,6 +168,69 @@ pub fn sanitize_filename(name: &str) -> Result<String, PathSanitizeError> {
     Ok(trimmed.to_string())
 }
 
+/// Sanitizes an untrusted relative path string to produce a safe relative PathBuf.
+///
+/// Prevents path traversal (`..`, `.`, absolute paths, leading slashes), Windows ADS (`:`),
+/// control characters, and reserved device names in any component.
+pub fn sanitize_relative_path(path_str: &str) -> Result<PathBuf, PathSanitizeError> {
+    if path_str.is_empty() {
+        return Err(PathSanitizeError::EmptyFilename);
+    }
+    if path_str.contains('\0') {
+        return Err(PathSanitizeError::ContainsControlChar);
+    }
+
+    let raw_parts: Vec<&str> = path_str
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+        .collect();
+
+    if raw_parts.is_empty() {
+        return Err(PathSanitizeError::EmptyFilename);
+    }
+
+    let mut safe_components = Vec::with_capacity(raw_parts.len());
+    for part in raw_parts {
+        if part == "." || part == ".." {
+            return Err(PathSanitizeError::PathTraversal(path_str.to_string()));
+        }
+        if part.contains(':') {
+            return Err(PathSanitizeError::AlternateDataStream);
+        }
+
+        // Replace invalid characters and strip control characters
+        let filtered: String = part
+            .chars()
+            .filter(|c| !c.is_ascii_control())
+            .map(|c| match c {
+                '<' | '>' | '"' | '|' | '?' | '*' => '_',
+                other => other,
+            })
+            .collect();
+
+        let trimmed = filtered.trim_end_matches([' ', '.']).trim();
+        if trimmed.is_empty() {
+            return Err(PathSanitizeError::EmptyFilename);
+        }
+
+        if is_reserved_windows_name(trimmed) {
+            return Err(PathSanitizeError::ReservedDeviceName(trimmed.to_string()));
+        }
+
+        if trimmed.len() > MAX_FILENAME_BYTES {
+            return Err(PathSanitizeError::FilenameTooLong(trimmed.len()));
+        }
+
+        safe_components.push(trimmed.to_string());
+    }
+
+    let mut res = PathBuf::new();
+    for comp in safe_components {
+        res.push(comp);
+    }
+    Ok(res)
+}
+
 /// Resolves and secures a destination path inside `base_dir` from an untrusted filename.
 ///
 /// Ensures the filename is sanitized and that the resolved path does not escape `base_dir`.
@@ -188,19 +251,27 @@ pub fn resolve_destination_path(base_dir: &Path, file_name: &str) -> Result<Path
 
 /// Resolves a non-colliding destination path inside `base_dir`.
 ///
-/// If `file_name` already exists in `base_dir`, appends an incremental counter
+/// Supports both single files and relative folder structures.
+/// If target already exists in `base_dir`, appends an incremental counter
 /// in the format `stem (1).ext`, `stem (2).ext`, etc.
 pub fn resolve_unique_destination_path(
     base_dir: &Path,
     file_name: &str,
 ) -> Result<PathBuf, PathSanitizeError> {
-    let sanitized = sanitize_filename(file_name)?;
+    let sanitized = sanitize_relative_path(file_name)
+        .or_else(|_| sanitize_filename(file_name).map(PathBuf::from))?;
     let target = base_dir.join(&sanitized);
+
+    // Verify target does not escape base_dir
+    if !target.starts_with(base_dir) {
+        return Err(PathSanitizeError::EscapesBaseDir(target.display().to_string()));
+    }
 
     if !target.exists() {
         return Ok(target);
     }
 
+    let parent = target.parent().unwrap_or(base_dir);
     let stem = target
         .file_stem()
         .and_then(|s| s.to_str())
@@ -212,7 +283,7 @@ pub fn resolve_unique_destination_path(
             Some(extension) => format!("{stem} ({counter}).{extension}"),
             None => format!("{stem} ({counter})"),
         };
-        let candidate = base_dir.join(candidate_name);
+        let candidate = parent.join(candidate_name);
         if !candidate.exists() {
             return Ok(candidate);
         }
@@ -460,6 +531,39 @@ mod tests {
         let unique2 = resolve_unique_destination_path(&temp_dir, "report.pdf").unwrap();
         assert_eq!(unique2, temp_dir.join("report (2).pdf"));
 
+        // Test nested folder structure
+        let sub_dir = temp_dir.join("MyFolder").join("Docs");
+        std::fs::create_dir_all(&sub_dir).unwrap();
+        let nested_file = sub_dir.join("notes.txt");
+        std::fs::write(&nested_file, b"nested").unwrap();
+
+        let unique_nested = resolve_unique_destination_path(&temp_dir, "MyFolder/Docs/notes.txt").unwrap();
+        assert_eq!(unique_nested, temp_dir.join("MyFolder/Docs/notes (1).txt"));
+
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_sanitize_relative_path() {
+        assert_eq!(
+            sanitize_relative_path("Photos/Summer/pic.jpg").unwrap(),
+            PathBuf::from("Photos/Summer/pic.jpg")
+        );
+        assert_eq!(
+            sanitize_relative_path("Projects\\src\\main.rs").unwrap(),
+            PathBuf::from("Projects/src/main.rs")
+        );
+        assert!(matches!(
+            sanitize_relative_path("../escape.txt"),
+            Err(PathSanitizeError::PathTraversal(_))
+        ));
+        assert!(matches!(
+            sanitize_relative_path("a/../../b.txt"),
+            Err(PathSanitizeError::PathTraversal(_))
+        ));
+        assert!(matches!(
+            sanitize_relative_path("folder/CON.txt"),
+            Err(PathSanitizeError::ReservedDeviceName(_))
+        ));
     }
 }

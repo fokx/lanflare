@@ -10,7 +10,8 @@
 		Activity,
 		X,
 		FileText,
-		RefreshCw
+		RefreshCw,
+		Trash2
 	} from 'lucide-svelte';
 
 	function getStatusBadge(status: string) {
@@ -66,9 +67,20 @@
 						{appState.transfers.length}
 					</span>
 				</h2>
-				<p class="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400">Real-time session progress and speedometers</p>
+				<p class="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400">Real-time session progress and persistent logs</p>
 			</div>
 		</div>
+
+		{#if appState.transfers.some((t) => t.status !== 'active' && t.status !== 'waiting')}
+			<button
+				onclick={() => appState.clearAllHistory()}
+				class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/30 border border-slate-200 dark:border-slate-800 transition-colors cursor-pointer"
+				title="Clear all completed or failed transfer history"
+			>
+				<Trash2 class="w-3.5 h-3.5" />
+				<span>Clear History</span>
+			</button>
+		{/if}
 	</div>
 
 	<!-- Queue List -->
@@ -126,16 +138,26 @@
 							</div>
 						</div>
 
-						<!-- Cancel Button if Active or Waiting -->
-						{#if transfer.status === 'active' || transfer.status === 'waiting'}
-							<button
-								onclick={() => appState.cancelTransfer(transfer.id)}
-								class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
-								title="Cancel Transfer"
-							>
-								<X class="w-4 h-4" />
-							</button>
-						{/if}
+						<!-- Action: Cancel if active/waiting, or Delete from history if completed/failed -->
+						<div class="flex items-center gap-1">
+							{#if transfer.status === 'active' || transfer.status === 'waiting'}
+								<button
+									onclick={() => appState.cancelTransfer(transfer.id)}
+									class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
+									title="Cancel Transfer"
+								>
+									<X class="w-4 h-4" />
+								</button>
+							{:else}
+								<button
+									onclick={() => appState.deleteTransfer(transfer.id)}
+									class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
+									title="Delete from history"
+								>
+									<Trash2 class="w-4 h-4" />
+								</button>
+							{/if}
+						</div>
 					</div>
 
 					<!-- Waiting Notification Banner -->

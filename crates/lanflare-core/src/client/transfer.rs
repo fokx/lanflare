@@ -74,6 +74,25 @@ impl OutgoingFile {
         })
     }
 
+    /// Creates an `OutgoingFile` from a local file path with custom relative advertised file_name.
+    pub async fn from_path_with_name<P: AsRef<Path>>(
+        path: P,
+        file_name: String,
+    ) -> Result<Self, ClientError> {
+        let p = path.as_ref().to_path_buf();
+        let meta = tokio::fs::metadata(&p).await?;
+        let file_type = mime_guess_simple(&file_name);
+
+        Ok(Self {
+            id: Uuid::new_v4().to_string(),
+            path: p,
+            file_name,
+            size: meta.len(),
+            file_type,
+            sha256: None,
+        })
+    }
+
     /// Computes and populates the SHA-256 hash of the local file.
     pub async fn with_computed_sha256(mut self) -> Result<Self, ClientError> {
         let mut file = File::open(&self.path).await?;
@@ -111,7 +130,7 @@ impl OutgoingFile {
 }
 
 /// Simple MIME classifier without external dependencies.
-fn mime_guess_simple(file_name: &str) -> String {
+pub fn mime_guess_simple(file_name: &str) -> String {
     let lower = file_name.to_ascii_lowercase();
     if lower.ends_with(".png") {
         "image/png".to_string()

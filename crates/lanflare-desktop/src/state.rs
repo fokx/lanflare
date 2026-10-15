@@ -60,11 +60,75 @@ pub struct DesktopState {
     pub active_outgoing: Mutex<Option<ActiveOutgoingSession>>,
 }
 
+use std::path::PathBuf;
+
+/// Path to persistent JSON configuration file.
+pub fn config_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("lanflare")
+        .join("config.json")
+}
+
+/// Loads persisted application configuration, falling back to defaults.
+pub fn load_config() -> AppConfig {
+    let path = config_path();
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(cfg) = serde_json::from_str::<AppConfig>(&content) {
+            return cfg;
+        }
+    }
+    let default_cfg = AppConfig::default();
+    let _ = save_config(&default_cfg);
+    default_cfg
+}
+
+/// Persists application configuration to disk.
+pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
+    let path = config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(cfg)?;
+    std::fs::write(&path, json)?;
+    Ok(())
+}
+
+/// Path to persistent transfer history JSON file.
+pub fn history_path() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("lanflare")
+        .join("history.json")
+}
+
+/// Loads persistent transfer history entries from disk.
+pub fn load_history() -> Vec<serde_json::Value> {
+    let path = history_path();
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+            return items;
+        }
+    }
+    Vec::new()
+}
+
+/// Saves transfer history entries to disk.
+pub fn save_history(items: &[serde_json::Value]) -> std::io::Result<()> {
+    let path = history_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(items)?;
+    std::fs::write(&path, json)?;
+    Ok(())
+}
+
 impl DesktopState {
     /// Initializes new desktop runtime state with defaults and generated TLS identity.
     pub fn new() -> anyhow::Result<Self> {
         let identity = generate_self_signed()?;
-        let config = AppConfig::default();
+        let config = load_config();
         let registry = PeerRegistry::new();
 
         Ok(Self {
