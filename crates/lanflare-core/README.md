@@ -29,7 +29,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-lanflare-core = "0.2.0"
+lanflare-core = "0.3.0"
 ```
 
 ## License
