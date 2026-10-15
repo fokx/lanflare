@@ -28,6 +28,11 @@ export interface UpdateConfigPayload {
 
 export type SendMode = 'single' | 'multiple' | 'link';
 
+export type ClipboardContentDto =
+	| { type: 'files'; data: string[] }
+	| { type: 'image'; data: { path: string; name: string; size: number } }
+	| { type: 'text'; data: string };
+
 export interface PreparedSendItem {
 	id: string;
 	type: 'file' | 'folder' | 'text';

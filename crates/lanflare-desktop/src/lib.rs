@@ -70,6 +70,7 @@ pub fn run() {
             commands::get_transfer_history,
             commands::save_transfer_history,
             commands::clear_transfer_history,
+            commands::read_clipboard,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running LanFlare Desktop application");

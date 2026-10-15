@@ -69,12 +69,14 @@
 
 	async function pasteClipboard() {
 		isComposingText = false;
-		const success = await appState.pasteFromClipboard();
-		if (!success) {
-			errorMsg = 'Clipboard is empty or does not contain text';
+		const res = await appState.pasteFromClipboard();
+		if (!res.success) {
+			errorMsg = res.message || 'Clipboard is empty or contains unsupported content';
 			setTimeout(() => {
 				if (errorMsg?.includes('Clipboard')) errorMsg = null;
 			}, 3000);
+		} else {
+			errorMsg = null;
 		}
 	}
 

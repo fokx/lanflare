@@ -6,7 +6,8 @@ import type {
 	DiscoveredPeer,
 	IncomingTransferEventPayload,
 	TransferProgressPayload,
-	SendFilesPayload
+	SendFilesPayload,
+	ClipboardContentDto
 } from './types';
 
 // Check if running inside Tauri webview
@@ -88,6 +89,10 @@ export async function createTempTextFile(content: string, fileName?: string): Pr
 	return tauriInvoke<string>('create_temp_text_file', { content, fileName });
 }
 
+export async function readClipboard(): Promise<ClipboardContentDto> {
+	return tauriInvoke<ClipboardContentDto>('read_clipboard');
+}
+
 // Share via link API
 export async function offerDownloadFiles(files: string[]): Promise<void> {
 	return tauriInvoke<void>('offer_download_files', { files });
@@ -164,6 +169,8 @@ function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 			return 'mock-session-uuid-1234' as T;
 		case 'create_temp_text_file':
 			return '/tmp/lanflare_messages/mock_message.txt' as T;
+		case 'read_clipboard':
+			return { type: 'text', data: 'Pasted clipboard mock content' } as T;
 		case 'get_transfer_history':
 		case 'get_download_files':
 			return [] as T;

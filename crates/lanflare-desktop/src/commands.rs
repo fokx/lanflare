@@ -1332,3 +1332,99 @@ pub fn save_transfer_history(items: Vec<serde_json::Value>) -> Result<(), String
 pub fn clear_transfer_history() -> Result<(), String> {
     crate::state::save_history(&[]).map_err(|e| format!("Failed to clear history: {e}"))
 }
+
+/// DTO for clipboard content (files, image, or text).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "camelCase")]
+pub enum ClipboardContentDto {
+    Files(Vec<String>),
+    Image {
+        path: String,
+        name: String,
+        size: usize,
+    },
+    Text(String),
+}
+
+/// Reads image, file paths, or text directly from the OS system clipboard.
+#[tauri::command]
+pub async fn read_clipboard() -> Result<ClipboardContentDto, String> {
+    tokio::task::spawn_blocking(|| {
+        let mut clipboard = arboard::Clipboard::new()
+            .map_err(|e| format!("Failed to access clipboard: {e}"))?;
+
+        // 1. Try reading an image
+        if let Ok(img) = clipboard.get_image() {
+            if img.width > 0 && img.height > 0 && !img.bytes.is_empty() {
+                let dir = std::env::temp_dir().join("lanflare_clipboard");
+                let _ = std::fs::create_dir_all(&dir);
+                let now = chrono::Local::now();
+                let file_name = format!("clipboard_{}.png", now.format("%Y%m%d_%H%M%S"));
+                let path = dir.join(&file_name);
+
+                if let Ok(file) = std::fs::File::create(&path) {
+                    let mut encoder = png::Encoder::new(file, img.width as u32, img.height as u32);
+                    encoder.set_color(png::ColorType::Rgba);
+                    encoder.set_depth(png::BitDepth::Eight);
+                    if let Ok(mut writer) = encoder.write_header() {
+                        if writer.write_image_data(&img.bytes).is_ok() {
+                            let size = std::fs::metadata(&path)
+                                .map(|m| m.len() as usize)
+                                .unwrap_or(img.bytes.len());
+                            return Ok(ClipboardContentDto::Image {
+                                path: path.to_string_lossy().to_string(),
+                                name: file_name,
+                                size,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Try reading text or file URLs
+        if let Ok(text) = clipboard.get_text() {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                // Check if the text contains copied file paths / file:// URLs
+                let mut existing_files = Vec::new();
+                for line in trimmed.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line == "copy" || line == "cut" || line.starts_with("x-special/") {
+                        continue;
+                    }
+
+                    // Try url parsing (file://...)
+                    if let Ok(url) = url::Url::parse(line) {
+                        if url.scheme() == "file" {
+                            if let Ok(p) = url.to_file_path() {
+                                if p.exists() {
+                                    existing_files.push(p.to_string_lossy().to_string());
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    // Try direct filesystem path
+                    let p = std::path::Path::new(line);
+                    if p.exists() {
+                        existing_files.push(p.to_string_lossy().to_string());
+                    }
+                }
+
+                if !existing_files.is_empty() {
+                    return Ok(ClipboardContentDto::Files(existing_files));
+                }
+
+                // Plain text
+                return Ok(ClipboardContentDto::Text(trimmed.to_string()));
+            }
+        }
+
+        Err("Clipboard is empty or contains unsupported content".to_string())
+    })
+    .await
+    .map_err(|e| format!("Clipboard task failed: {e}"))?
+}
+

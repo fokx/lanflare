@@ -22,6 +22,8 @@ import {
 	clearDownloadFiles,
 	getTransferHistory,
 	saveTransferHistory,
+	readClipboard,
+	isTauri,
 	sendFiles
 } from './api';
 
@@ -209,19 +211,46 @@ export class AppState {
 		}
 	}
 
-	async pasteFromClipboard(): Promise<boolean> {
+	async pasteFromClipboard(): Promise<{ success: boolean; message?: string }> {
 		try {
-			if (typeof navigator !== 'undefined' && navigator.clipboard) {
-				const text = await navigator.clipboard.readText();
-				if (text && text.trim()) {
-					await this.addTextMessage(text.trim());
-					return true;
+			if (isTauri()) {
+				const content = await readClipboard();
+				if (content.type === 'files') {
+					if (content.data.length > 0) {
+						this.addFiles(content.data);
+						return { success: true, message: `Added ${content.data.length} file(s) from clipboard` };
+					}
+				} else if (content.type === 'image') {
+					this.preparedItems.push({
+						id: content.data.path,
+						type: 'file',
+						name: content.data.name,
+						path: content.data.path,
+						size: content.data.size,
+						summary: 'Pasted Image'
+					});
+					return { success: true, message: `Added image from clipboard: ${content.data.name}` };
+				} else if (content.type === 'text') {
+					if (content.data && content.data.trim()) {
+						await this.addTextMessage(content.data.trim());
+						return { success: true, message: 'Added text message from clipboard' };
+					}
 				}
+				return { success: false, message: 'Clipboard is empty or contains unsupported content' };
+			} else {
+				// Standalone browser dev mock fallback
+				if (typeof navigator !== 'undefined' && navigator.clipboard) {
+					const text = await navigator.clipboard.readText();
+					if (text && text.trim()) {
+						await this.addTextMessage(text.trim());
+						return { success: true, message: 'Added text message from clipboard' };
+					}
+				}
+				return { success: false, message: 'Clipboard is empty or does not contain text' };
 			}
-			return false;
 		} catch (e) {
-			console.warn('Failed to read clipboard text:', e);
-			return false;
+			console.warn('Failed to read clipboard:', e);
+			return { success: false, message: String(e) };
 		}
 	}
 

@@ -25,6 +25,34 @@
 
 	onMount(() => {
 		appState.init();
+
+		async function handleWindowKeydown(e: KeyboardEvent) {
+			if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+				const target = e.target as HTMLElement | null;
+				if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+					return;
+				}
+				e.preventDefault();
+				await appState.pasteFromClipboard();
+			}
+		}
+
+		async function handleWindowPaste(e: ClipboardEvent) {
+			const target = e.target as HTMLElement | null;
+			if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+				return;
+			}
+			e.preventDefault();
+			await appState.pasteFromClipboard();
+		}
+
+		window.addEventListener('keydown', handleWindowKeydown);
+		window.addEventListener('paste', handleWindowPaste);
+
+		return () => {
+			window.removeEventListener('keydown', handleWindowKeydown);
+			window.removeEventListener('paste', handleWindowPaste);
+		};
 	});
 
 	async function handleRefresh() {
