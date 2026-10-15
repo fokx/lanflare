@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use lanflare_core::client::transfer::{
     OutgoingFile, TransferOptions, TransferOrchestrator, TransferProgress,
 };
-use lanflare_core::client::{LsClient, LsClientConfig};
+use lanflare_core::client::{ClientError, LsClient, LsClientConfig};
 use lanflare_core::discovery::interface::{local_interfaces, InterfaceFilter};
 use lanflare_core::discovery::mdns::{start_mdns_engine, MdnsConfig, MdnsDiscoveryEvent, MdnsNodeInfo};
 use lanflare_core::discovery::multicast::{
@@ -859,14 +859,35 @@ pub async fn send_files(
             target_ip: base_url.clone(),
             total_files: outgoing.len(),
             total_bytes,
-            cancel_token,
+            cancel_token: cancel_token.clone(),
         });
     }
+
+    // Emit outgoing-transfer-initiated event so GUI immediately displays "Waiting for response..."
+    let outgoing_files_dto: Vec<IncomingFileInfo> = outgoing
+        .iter()
+        .map(|f| IncomingFileInfo {
+            id: f.id.clone(),
+            file_name: f.file_name.clone(),
+            size: f.size,
+            file_type: f.file_type.clone(),
+        })
+        .collect();
+
+    let _ = app.emit(
+        "lanflare://outgoing-transfer-initiated",
+        serde_json::json!({
+            "sessionId": session_uuid,
+            "targetAlias": target_peer.alias,
+            "targetEndpoint": base_url,
+            "files": outgoing_files_dto,
+            "totalBytes": total_bytes,
+        }),
+    );
 
     // 4. Spawn background transfer task with progress channel
     let (progress_tx, mut progress_rx) = mpsc::channel::<TransferProgress>(200);
     let app_clone = app.clone();
-    let sess_id_clone = session_uuid.clone();
 
     tokio::spawn(async move {
         while let Some(prog) = progress_rx.recv().await {
@@ -984,13 +1005,59 @@ pub async fn send_files(
         }
     });
 
+    let app_err_clone = app.clone();
+    let state_task_clone = Arc::clone(&state);
+    let sess_id_err = session_uuid.clone();
+    let cancel_token_err = cancel_token.clone();
+
     tokio::spawn(async move {
         let res = orchestrator
             .transfer(&base_url, outgoing, transfer_opts, Some(progress_tx))
             .await;
 
+        // Clean up active outgoing session if this session is still active
+        {
+            let mut active = state_task_clone.active_outgoing.lock().await;
+            if let Some(ref s) = *active {
+                if s.session_id == sess_id_err {
+                    *active = None;
+                }
+            }
+        }
+
         if let Err(e) = res {
-            tracing::error!("Outgoing transfer session {sess_id_clone} failed: {e}");
+            tracing::error!("Outgoing transfer session {sess_id_err} failed: {e}");
+            let (event_type, error_msg) = if cancel_token_err.is_cancelled() {
+                ("session_cancelled".to_string(), "Transfer cancelled by user.".to_string())
+            } else {
+                let msg = match &e {
+                    ClientError::SessionRejected => "Transfer request was declined by the recipient.".to_string(),
+                    ClientError::UnauthorizedPin => "PIN required or invalid PIN provided.".to_string(),
+                    ClientError::PinRateLimited => "Too many PIN attempts. Recipient rate-limited requests.".to_string(),
+                    ClientError::SessionConflict => "Recipient device is busy with another transfer.".to_string(),
+                    ClientError::Reqwest(re) if re.is_timeout() => "Transfer request timed out waiting for recipient response.".to_string(),
+                    ClientError::Reqwest(re) if re.is_connect() => "Could not connect to recipient. Please verify network connection.".to_string(),
+                    _ => format!("Transfer failed: {e}"),
+                };
+                ("session_failed".to_string(), msg)
+            };
+
+            let _ = app_err_clone.emit(
+                "lanflare://transfer-progress",
+                TransferProgressPayload {
+                    session_id: sess_id_err,
+                    event_type,
+                    file_id: None,
+                    file_name: None,
+                    file_bytes_sent: None,
+                    file_total_bytes: None,
+                    session_bytes_sent: None,
+                    session_total_bytes: None,
+                    bytes_per_second: None,
+                    eta_seconds: None,
+                    error: Some(error_msg),
+                },
+            );
         }
     });
 
@@ -1000,6 +1067,7 @@ pub async fn send_files(
 /// Cancels an active outgoing file transfer session.
 #[tauri::command]
 pub async fn cancel_outgoing_transfer(
+    app: AppHandle,
     state: State<'_, Arc<DesktopState>>,
     session_id: String,
 ) -> Result<(), String> {
@@ -1009,6 +1077,22 @@ pub async fn cancel_outgoing_transfer(
     {
         sess.cancel_token.cancel();
         *active = None;
+        let _ = app.emit(
+            "lanflare://transfer-progress",
+            TransferProgressPayload {
+                session_id: session_id.clone(),
+                event_type: "session_cancelled".to_string(),
+                file_id: None,
+                file_name: None,
+                file_bytes_sent: None,
+                file_total_bytes: None,
+                session_bytes_sent: None,
+                session_total_bytes: None,
+                bytes_per_second: None,
+                eta_seconds: None,
+                error: Some("Transfer cancelled by user.".to_string()),
+            },
+        );
         return Ok(());
     }
     Err("No active outgoing transfer matches this session ID".to_string())

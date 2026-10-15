@@ -131,3 +131,30 @@ async fn test_send_files_payload_supports_endpoint_fallback() {
     assert_eq!(json_val["targetEndpoint"], "127.0.0.1:53317");
     assert_eq!(json_val["files"][0], "/path/to/test.txt");
 }
+
+#[tokio::test]
+async fn test_transfer_progress_payload_failure_and_rejection() {
+    use lanflare_desktop::commands::TransferProgressPayload;
+
+    let payload = TransferProgressPayload {
+        session_id: "test-session-456".to_string(),
+        event_type: "session_failed".to_string(),
+        file_id: None,
+        file_name: None,
+        file_bytes_sent: None,
+        file_total_bytes: None,
+        session_bytes_sent: None,
+        session_total_bytes: None,
+        bytes_per_second: None,
+        eta_seconds: None,
+        error: Some("Transfer request was declined by the recipient.".to_string()),
+    };
+
+    let json_val = serde_json::to_value(&payload).expect("Serialization must succeed");
+    assert_eq!(json_val["sessionId"], "test-session-456");
+    assert_eq!(json_val["eventType"], "session_failed");
+    assert_eq!(
+        json_val["error"],
+        "Transfer request was declined by the recipient."
+    );
+}

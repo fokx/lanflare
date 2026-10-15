@@ -3,6 +3,7 @@ import type {
 	DiscoveredPeer,
 	IncomingTransferEventPayload,
 	TransferProgressPayload,
+	OutgoingTransferInitiatedPayload,
 	TransferQueueItem,
 	FileReceivedPayload
 } from './types';
@@ -147,11 +148,40 @@ export class AppState {
 			}
 		});
 
-		// 6. Outgoing transfer progress
+		// 6. Outgoing transfer initiated (waiting for peer to accept)
+		await tauriListen<OutgoingTransferInitiatedPayload>(
+			'lanflare://outgoing-transfer-initiated',
+			(payload) => {
+				const existing = this.transfers.find((t) => t.id === payload.sessionId);
+				if (!existing) {
+					this.transfers.unshift({
+						id: payload.sessionId,
+						direction: 'outgoing',
+						peerAlias: payload.targetAlias,
+						peerEndpoint: payload.targetEndpoint,
+						files: payload.files.map((f) => ({
+							id: f.id,
+							name: f.fileName,
+							size: f.size,
+							bytesSent: 0,
+							status: 'pending'
+						})),
+						totalBytes: payload.totalBytes,
+						bytesTransferred: 0,
+						speedBytesPerSec: 0,
+						etaSeconds: null,
+						status: 'waiting',
+						startTime: Date.now()
+					});
+				}
+			}
+		);
+
+		// 7. Outgoing transfer progress & status updates
 		await tauriListen<TransferProgressPayload>('lanflare://transfer-progress', (payload) => {
 			let item = this.transfers.find((t) => t.id === payload.sessionId);
 			if (!item && payload.sessionId) {
-				// Register if not found
+				// Register fallback if not found
 				item = {
 					id: payload.sessionId,
 					direction: 'outgoing',
@@ -161,7 +191,7 @@ export class AppState {
 					bytesTransferred: payload.sessionBytesSent || 0,
 					speedBytesPerSec: payload.bytesPerSecond || 0,
 					etaSeconds: payload.etaSeconds ?? null,
-					status: 'active',
+					status: payload.eventType === 'started' || payload.eventType === 'file_progress' ? 'active' : 'waiting',
 					startTime: Date.now()
 				};
 				this.transfers.unshift(item);
@@ -171,6 +201,9 @@ export class AppState {
 				if (payload.sessionBytesSent !== undefined) {
 					item.bytesTransferred = payload.sessionBytesSent;
 				}
+				if (payload.sessionTotalBytes !== undefined && payload.sessionTotalBytes > 0) {
+					item.totalBytes = payload.sessionTotalBytes;
+				}
 				if (payload.bytesPerSecond !== undefined) {
 					item.speedBytesPerSec = payload.bytesPerSecond;
 				}
@@ -178,7 +211,10 @@ export class AppState {
 					item.etaSeconds = payload.etaSeconds;
 				}
 
-				if (payload.eventType === 'file_progress' && payload.fileId) {
+				if (payload.eventType === 'started') {
+					item.status = 'active';
+				} else if (payload.eventType === 'file_progress' && payload.fileId) {
+					item.status = 'active';
 					let f = item.files.find((x) => x.id === payload.fileId);
 					if (!f) {
 						f = {
@@ -202,9 +238,27 @@ export class AppState {
 					item.status = 'completed';
 					item.speedBytesPerSec = 0;
 					item.etaSeconds = null;
+					for (const f of item.files) {
+						if (f.status !== 'failed') {
+							f.status = 'completed';
+							f.bytesSent = f.size;
+						}
+					}
+					item.bytesTransferred = item.totalBytes;
 				} else if (payload.eventType === 'session_cancelled') {
 					item.status = 'cancelled';
-					item.error = payload.error;
+					item.error = payload.error || 'Transfer cancelled by user';
+					item.speedBytesPerSec = 0;
+					item.etaSeconds = null;
+				} else if (payload.eventType === 'session_failed') {
+					if (payload.error && payload.error.toLowerCase().includes('declined')) {
+						item.status = 'declined';
+					} else {
+						item.status = 'failed';
+					}
+					item.error = payload.error || 'Transfer failed';
+					item.speedBytesPerSec = 0;
+					item.etaSeconds = null;
 				} else if (payload.eventType === 'file_failed') {
 					if (payload.fileId) {
 						const f = item.files.find((x) => x.id === payload.fileId);

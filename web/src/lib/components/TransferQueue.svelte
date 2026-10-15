@@ -9,20 +9,43 @@
 		AlertCircle,
 		Activity,
 		X,
-		FileText
+		FileText,
+		RefreshCw
 	} from 'lucide-svelte';
 
 	function getStatusBadge(status: string) {
 		switch (status) {
+			case 'waiting':
+				return {
+					label: 'Waiting for response...',
+					color: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
+				};
 			case 'active':
-				return { label: 'Transferring', color: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20' };
+				return {
+					label: 'Transferring',
+					color: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20'
+				};
 			case 'completed':
-				return { label: 'Completed', color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20' };
+				return {
+					label: 'Completed',
+					color: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+				};
 			case 'cancelled':
-				return { label: 'Cancelled', color: 'bg-slate-200 dark:bg-slate-700/30 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700/50' };
+				return {
+					label: 'Cancelled',
+					color: 'bg-slate-200 dark:bg-slate-700/30 text-slate-600 dark:text-slate-400 border-slate-300 dark:border-slate-700/50'
+				};
+			case 'declined':
+				return {
+					label: 'Declined by peer',
+					color: 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
+				};
 			case 'failed':
 			default:
-				return { label: 'Failed', color: 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20' };
+				return {
+					label: 'Failed',
+					color: 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
+				};
 		}
 	}
 </script>
@@ -103,8 +126,8 @@
 							</div>
 						</div>
 
-						<!-- Cancel Button if Active -->
-						{#if transfer.status === 'active'}
+						<!-- Cancel Button if Active or Waiting -->
+						{#if transfer.status === 'active' || transfer.status === 'waiting'}
 							<button
 								onclick={() => appState.cancelTransfer(transfer.id)}
 								class="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
@@ -114,6 +137,22 @@
 							</button>
 						{/if}
 					</div>
+
+					<!-- Waiting Notification Banner -->
+					{#if transfer.status === 'waiting'}
+						<div class="flex items-center gap-2 py-1.5 px-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-300 text-xs font-medium">
+							<RefreshCw class="w-3.5 h-3.5 animate-spin text-amber-600 dark:text-amber-400" />
+							<span>Waiting for {transfer.peerAlias} to accept transfer request...</span>
+						</div>
+					{/if}
+
+					<!-- Error / Declined Alert Banner -->
+					{#if transfer.error}
+						<div class="flex items-start gap-2 p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-700 dark:text-rose-300 text-xs">
+							<AlertCircle class="w-4 h-4 text-rose-500 dark:text-rose-400 flex-shrink-0 mt-0.5" />
+							<div class="flex-1 font-medium">{transfer.error}</div>
+						</div>
+					{/if}
 
 					<!-- Progress Bar & Speedometer -->
 					<div class="space-y-1.5 sm:space-y-2">
@@ -136,14 +175,18 @@
 
 						<!-- Progress Track -->
 						<div class="w-full bg-slate-200 dark:bg-slate-800 rounded-full h-2 overflow-hidden">
-							<div
-								class="h-full rounded-full transition-all duration-200 {transfer.status === 'failed'
-									? 'bg-rose-500'
-									: transfer.status === 'completed'
-										? 'bg-emerald-500'
-										: 'bg-indigo-600 dark:bg-indigo-500'}"
-								style:width="{percent}%"
-							></div>
+							{#if transfer.status === 'waiting'}
+								<div class="h-full bg-amber-500 animate-pulse w-full"></div>
+							{:else}
+								<div
+									class="h-full rounded-full transition-all duration-200 {transfer.status === 'failed' || transfer.status === 'declined'
+										? 'bg-rose-500'
+										: transfer.status === 'completed'
+											? 'bg-emerald-500'
+											: 'bg-indigo-600 dark:bg-indigo-500'}"
+									style:width="{percent}%"
+								></div>
+							{/if}
 						</div>
 					</div>
 

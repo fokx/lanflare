@@ -63,7 +63,14 @@ export interface SendFilesPayload {
 
 export interface TransferProgressPayload {
 	sessionId: string;
-	eventType: 'started' | 'file_progress' | 'file_finished' | 'file_failed' | 'session_completed' | 'session_cancelled';
+	eventType:
+		| 'started'
+		| 'file_progress'
+		| 'file_finished'
+		| 'file_failed'
+		| 'session_completed'
+		| 'session_cancelled'
+		| 'session_failed';
 	fileId?: string;
 	fileName?: string;
 	fileBytesSent?: number;
@@ -73,6 +80,14 @@ export interface TransferProgressPayload {
 	bytesPerSecond?: number;
 	etaSeconds?: number;
 	error?: string;
+}
+
+export interface OutgoingTransferInitiatedPayload {
+	sessionId: string;
+	targetAlias: string;
+	targetEndpoint?: string;
+	files: IncomingFileInfo[];
+	totalBytes: number;
 }
 
 export interface FileReceivedPayload {
@@ -101,7 +116,7 @@ export interface TransferQueueItem {
 	bytesTransferred: number;
 	speedBytesPerSec: number;
 	etaSeconds: number | null;
-	status: 'active' | 'completed' | 'cancelled' | 'failed';
+	status: 'waiting' | 'active' | 'completed' | 'cancelled' | 'failed' | 'declined';
 	error?: string;
 	startTime: number;
 }

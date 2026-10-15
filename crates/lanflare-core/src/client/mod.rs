@@ -208,9 +208,8 @@ impl LsClient {
                 }
                 Ok(prep_resp)
             }
-            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
-                Err(ClientError::UnauthorizedPin)
-            }
+            reqwest::StatusCode::FORBIDDEN => Err(ClientError::SessionRejected),
+            reqwest::StatusCode::UNAUTHORIZED => Err(ClientError::UnauthorizedPin),
             reqwest::StatusCode::TOO_MANY_REQUESTS => Err(ClientError::PinRateLimited),
             reqwest::StatusCode::CONFLICT => Err(ClientError::SessionConflict),
             _ => {

@@ -63,6 +63,27 @@
 			});
 
 			appState.selectedPeer = peer;
+			if (!isTauri()) {
+				appState.transfers.unshift({
+					id: sessionId,
+					direction: 'outgoing',
+					peerAlias: peer.alias,
+					peerEndpoint: peer.endpoints[0] || '192.168.1.100:53317',
+					files: selectedFilePaths.map((p) => ({
+						id: p,
+						name: p.split('/').pop() || p,
+						size: 1048576,
+						bytesSent: 0,
+						status: 'pending'
+					})),
+					totalBytes: selectedFilePaths.length * 1048576,
+					bytesTransferred: 0,
+					speedBytesPerSec: 0,
+					etaSeconds: null,
+					status: 'waiting',
+					startTime: Date.now()
+				});
+			}
 			onClose();
 		} catch (e) {
 			errorMsg = String(e);
