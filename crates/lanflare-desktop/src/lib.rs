@@ -28,6 +28,7 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(state.clone())
         .setup({
             let state_setup = state.clone();
@@ -71,6 +72,7 @@ pub fn run() {
             commands::save_transfer_history,
             commands::clear_transfer_history,
             commands::read_clipboard,
+            commands::save_clipboard_image,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running LanFlare Desktop application");

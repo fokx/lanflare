@@ -1428,3 +1428,33 @@ pub async fn read_clipboard() -> Result<ClipboardContentDto, String> {
     .map_err(|e| format!("Clipboard task failed: {e}"))?
 }
 
+/// Saves an RGBA image buffer (from clipboard) to a temporary PNG file.
+#[tauri::command]
+pub async fn save_clipboard_image(
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+) -> Result<String, String> {
+    let dir = std::env::temp_dir().join("lanflare_clipboard");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("Failed to create clipboard temp dir: {e}"))?;
+
+    let now = chrono::Local::now();
+    let file_name = format!("clipboard_{}.png", now.format("%Y%m%d_%H%M%S"));
+    let path = dir.join(&file_name);
+
+    let file = std::fs::File::create(&path)
+        .map_err(|e| format!("Failed to create file: {e}"))?;
+
+    let mut encoder = png::Encoder::new(file, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header()
+        .map_err(|e| format!("Failed to write PNG header: {e}"))?;
+    writer.write_image_data(&rgba)
+        .map_err(|e| format!("Failed to write PNG data: {e}"))?;
+
+    Ok(path.to_string_lossy().to_string())
+}
+

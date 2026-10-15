@@ -93,6 +93,10 @@ export async function readClipboard(): Promise<ClipboardContentDto> {
 	return tauriInvoke<ClipboardContentDto>('read_clipboard');
 }
 
+export async function saveClipboardImage(rgba: Uint8Array, width: number, height: number): Promise<string> {
+	return tauriInvoke<string>('save_clipboard_image', { rgba, width, height });
+}
+
 // Share via link API
 export async function offerDownloadFiles(files: string[]): Promise<void> {
 	return tauriInvoke<void>('offer_download_files', { files });
@@ -169,6 +173,8 @@ function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 			return 'mock-session-uuid-1234' as T;
 		case 'create_temp_text_file':
 			return '/tmp/lanflare_messages/mock_message.txt' as T;
+		case 'save_clipboard_image':
+			return '/tmp/lanflare_clipboard/mock_clipboard.png' as T;
 		case 'read_clipboard':
 			return { type: 'text', data: 'Pasted clipboard mock content' } as T;
 		case 'get_transfer_history':

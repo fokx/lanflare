@@ -23,9 +23,11 @@ import {
 	getTransferHistory,
 	saveTransferHistory,
 	readClipboard,
+	saveClipboardImage,
 	isTauri,
 	sendFiles
 } from './api';
+import { readText as tauriReadText, readImage as tauriReadImage } from '@tauri-apps/plugin-clipboard-manager';
 
 export class AppState {
 	// Node Status
@@ -214,28 +216,93 @@ export class AppState {
 	async pasteFromClipboard(): Promise<{ success: boolean; message?: string }> {
 		try {
 			if (isTauri()) {
-				const content = await readClipboard();
-				if (content.type === 'files') {
-					if (content.data.length > 0) {
-						this.addFiles(content.data);
-						return { success: true, message: `Added ${content.data.length} file(s) from clipboard` };
+				// 1. Try reading an image via official @tauri-apps/plugin-clipboard-manager
+				try {
+					const img = await tauriReadImage();
+					if (img) {
+						const rgba = await img.rgba();
+						const size = await img.size();
+						if (rgba && rgba.length > 0 && size.width > 0 && size.height > 0) {
+							const filePath = await saveClipboardImage(rgba, size.width, size.height);
+							const name = filePath.split('/').pop() || 'clipboard.png';
+							this.preparedItems.push({
+								id: filePath,
+								type: 'file',
+								name,
+								path: filePath,
+								size: rgba.length,
+								summary: 'Pasted Image'
+							});
+							return { success: true, message: `Added image from clipboard: ${name}` };
+						}
 					}
-				} else if (content.type === 'image') {
-					this.preparedItems.push({
-						id: content.data.path,
-						type: 'file',
-						name: content.data.name,
-						path: content.data.path,
-						size: content.data.size,
-						summary: 'Pasted Image'
-					});
-					return { success: true, message: `Added image from clipboard: ${content.data.name}` };
-				} else if (content.type === 'text') {
-					if (content.data && content.data.trim()) {
-						await this.addTextMessage(content.data.trim());
+				} catch {
+					// No image or readImage threw, proceed to text
+				}
+
+				// 2. Try reading text via official @tauri-apps/plugin-clipboard-manager
+				try {
+					const text = await tauriReadText();
+					if (text && text.trim()) {
+						const trimmed = text.trim();
+						// Check if text contains copied file paths / file:// URLs
+						const lines = trimmed.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+						const filePaths: string[] = [];
+						for (const line of lines) {
+							if (line === 'copy' || line === 'cut' || line.startsWith('x-special/')) continue;
+							let p = line;
+							if (p.startsWith('file://')) {
+								p = decodeURIComponent(p.slice(7));
+								if (/^\/[a-zA-Z]:/.test(p)) {
+									p = p.slice(1);
+								}
+							}
+							if (p.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(p)) {
+								filePaths.push(p);
+							}
+						}
+
+						if (filePaths.length > 0) {
+							this.addFiles(filePaths);
+							return { success: true, message: `Added ${filePaths.length} file(s) from clipboard` };
+						}
+
+						// Normal text message
+						await this.addTextMessage(trimmed);
 						return { success: true, message: 'Added text message from clipboard' };
 					}
+				} catch {
+					// Proceed to backend fallback
 				}
+
+				// 3. Fallback to native Rust backend read_clipboard
+				try {
+					const content = await readClipboard();
+					if (content.type === 'files') {
+						if (content.data.length > 0) {
+							this.addFiles(content.data);
+							return { success: true, message: `Added ${content.data.length} file(s) from clipboard` };
+						}
+					} else if (content.type === 'image') {
+						this.preparedItems.push({
+							id: content.data.path,
+							type: 'file',
+							name: content.data.name,
+							path: content.data.path,
+							size: content.data.size,
+							summary: 'Pasted Image'
+						});
+						return { success: true, message: `Added image from clipboard: ${content.data.name}` };
+					} else if (content.type === 'text') {
+						if (content.data && content.data.trim()) {
+							await this.addTextMessage(content.data.trim());
+							return { success: true, message: 'Added text message from clipboard' };
+						}
+					}
+				} catch {
+					// Fall through to error
+				}
+
 				return { success: false, message: 'Clipboard is empty or contains unsupported content' };
 			} else {
 				// Standalone browser dev mock fallback

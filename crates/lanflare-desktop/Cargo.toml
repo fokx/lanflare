@@ -40,6 +40,7 @@ tauri-plugin-dialog = { workspace = true }
 tauri-plugin-fs = { workspace = true }
 tauri-plugin-opener = { workspace = true }
 tauri-plugin-shell = { workspace = true }
+tauri-plugin-clipboard-manager = "2.5.0"
 arboard = "3.6.1"
 png = "0.18.1"
 url = "2.5"
