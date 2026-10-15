@@ -36,6 +36,17 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     registry.start_eviction_task();
                 });
+
+                // Listen to registry events (added, updated, expired, removed) and emit to GUI
+                let mut reg_rx = state_setup.registry.subscribe();
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Emitter;
+                    while let Ok(_event) = reg_rx.recv().await {
+                        let _ = app_handle.emit("lanflare://peers-updated", ());
+                    }
+                });
+
                 tray::setup_tray(app.handle(), state_setup)?;
                 Ok(())
             }

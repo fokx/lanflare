@@ -57,6 +57,7 @@
 		try {
 			const sessionId = await sendFiles({
 				targetFingerprint: peer.fingerprint,
+				targetEndpoint: peer.endpoints[0],
 				files: selectedFilePaths,
 				pin: pinInput.trim() ? pinInput.trim() : undefined
 			});

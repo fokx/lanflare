@@ -114,3 +114,20 @@ async fn test_pending_incoming_session_and_decision() {
     let decision = decision_rx.await.expect("Decision must be received");
     assert_eq!(decision, PrepareUploadDecision::Accept(vec!["file-1".to_string()]));
 }
+
+#[tokio::test]
+async fn test_send_files_payload_supports_endpoint_fallback() {
+    use lanflare_desktop::commands::SendFilesPayload;
+
+    let payload = SendFilesPayload {
+        target_fingerprint: "NONEXISTENT_FP_12345".to_string(),
+        target_endpoint: Some("127.0.0.1:53317".to_string()),
+        files: vec!["/path/to/test.txt".to_string()],
+        pin: None,
+    };
+
+    let json_val = serde_json::to_value(&payload).expect("Serialization must succeed");
+    assert_eq!(json_val["targetFingerprint"], "NONEXISTENT_FP_12345");
+    assert_eq!(json_val["targetEndpoint"], "127.0.0.1:53317");
+    assert_eq!(json_val["files"][0], "/path/to/test.txt");
+}

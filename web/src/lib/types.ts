@@ -56,6 +56,7 @@ export interface IncomingTransferEventPayload {
 
 export interface SendFilesPayload {
 	targetFingerprint: string;
+	targetEndpoint?: string;
 	files: string[];
 	pin?: string;
 }

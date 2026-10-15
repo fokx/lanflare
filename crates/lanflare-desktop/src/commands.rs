@@ -121,6 +121,7 @@ pub struct IncomingTransferEventPayload {
 #[serde(rename_all = "camelCase")]
 pub struct SendFilesPayload {
     pub target_fingerprint: String,
+    pub target_endpoint: Option<String>,
     pub files: Vec<String>,
     pub pin: Option<String>,
 }
@@ -697,12 +698,99 @@ pub async fn send_files(
         return Err("No files specified for transfer".to_string());
     }
 
-    // 1. Find peer in registry by fingerprint
-    let target_peer = state
-        .registry
-        .get(&payload.target_fingerprint)
-        .await
-        .ok_or_else(|| format!("Peer with fingerprint {} not found", payload.target_fingerprint))?;
+    // 1. Find peer in registry by fingerprint (with auto-probe and auto-scan fallback)
+    let target_peer = match state.registry.get(&payload.target_fingerprint).await {
+        Some(p) => p,
+        None => {
+            tracing::info!(
+                "Peer with fingerprint {} not in registry. Probing target endpoint or network...",
+                payload.target_fingerprint
+            );
+
+            let mut resolved_peer = None;
+
+            // Attempt A: Direct probe if target_endpoint provided
+            if let Some(ref ep_str) = payload.target_endpoint {
+                let trimmed = ep_str.trim();
+                let (host_str, port) = if let Some(idx) = trimmed.rfind(':') {
+                    (&trimmed[..idx], trimmed[idx + 1..].parse::<u16>().unwrap_or(53317))
+                } else {
+                    (trimmed, 53317)
+                };
+
+                if let Ok(ip) = host_str.parse::<std::net::IpAddr>() {
+                    let probe_config = LsClientConfig {
+                        timeout: Duration::from_secs(3),
+                        connect_timeout: Duration::from_secs(2),
+                        tls_identity: Some(state.identity.clone()),
+                        target_fingerprint: None,
+                    };
+
+                    if let Ok(probe_client) = LsClient::new(probe_config) {
+                        for proto in [ProtocolType::Https, ProtocolType::Http] {
+                            let proto_str = match proto {
+                                ProtocolType::Https => "https",
+                                ProtocolType::Http => "http",
+                            };
+                            let base_url = match ip {
+                                std::net::IpAddr::V4(v4) => format!("{proto_str}://{v4}:{port}"),
+                                std::net::IpAddr::V6(v6) => format!("{proto_str}://[{v6}]:{port}"),
+                            };
+                            if let Ok(info) = probe_client.get_info(&base_url).await {
+                                if info.fingerprint.eq_ignore_ascii_case(&payload.target_fingerprint)
+                                    || payload.target_fingerprint.is_empty()
+                                {
+                                    resolved_peer = state.registry.handle_info(ip, port, proto, &info).await;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Attempt B: If still not found, do a quick network sweep across interfaces
+            if resolved_peer.is_none() {
+                let reg = Arc::clone(&state.registry);
+                let ident = state.identity.clone();
+                let port = state.config.read().await.port;
+                let filter = InterfaceFilter::default();
+
+                if let Ok(interfaces) = local_interfaces(&filter) {
+                    let valid_ifaces: Vec<_> = interfaces
+                        .v4
+                        .into_iter()
+                        .filter(|iface| lanflare_core::discovery::interface::is_sweepable_interface(&iface.name, &iface.address))
+                        .collect();
+
+                    let scan_tasks = valid_ifaces.into_iter().map(|iface| {
+                        let reg = reg.clone();
+                        let ident = ident.clone();
+                        async move {
+                            lanflare_core::discovery::scanner::scan_subnet(
+                                iface.address,
+                                port,
+                                &ident,
+                                &reg,
+                            )
+                            .await
+                        }
+                    });
+                    futures_util::future::join_all(scan_tasks).await;
+                }
+
+                // Check registry again after sweep
+                resolved_peer = state.registry.get(&payload.target_fingerprint).await;
+            }
+
+            resolved_peer.ok_or_else(|| {
+                format!(
+                    "Peer with fingerprint {} not found after re-scanning network. Please ensure the target device is on the same Wi-Fi/LAN.",
+                    payload.target_fingerprint
+                )
+            })?
+        }
+    };
 
     let base_url = target_peer
         .primary_base_url()

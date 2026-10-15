@@ -240,7 +240,7 @@ pub struct PeerRegistryConfig {
 impl Default for PeerRegistryConfig {
     fn default() -> Self {
         Self {
-            peer_timeout: Duration::from_secs(60),
+            peer_timeout: Duration::from_secs(300),
             eviction_interval: Duration::from_secs(5),
             max_peers: 256,
             event_buffer_capacity: 128,
