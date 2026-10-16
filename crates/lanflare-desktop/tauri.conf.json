@@ -1,8 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/refs/heads/v2/crates/tauri-cli/schema.json",
   "productName": "LanFlare",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "identifier": "com.lanflare.desktop",
+
   "build": {
     "frontendDist": "../../web/build"
   },

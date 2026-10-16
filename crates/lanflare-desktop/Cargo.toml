@@ -18,8 +18,9 @@ path = "src/main.rs"
 tauri-build = { workspace = true }
 
 [dependencies]
-lanflare-proto = { path = "../lanflare-proto", version = "0.3.0" }
-lanflare-core = { path = "../lanflare-core", version = "0.3.0" }
+lanflare-proto = { path = "../lanflare-proto", version = "0.4.0" }
+lanflare-core = { path = "../lanflare-core", version = "0.4.0" }
+
 
 tokio = { workspace = true }
 tokio-util = { workspace = true }

@@ -14,6 +14,8 @@
 [Quick Start](#-quick-start) •
 [CLI Usage](#-cli-usage) •
 [Desktop App](#-desktop-app) •
+[Android App](#-android-app) •
+[Building for Android](#-building-for-android) •
 [LocalSend Interop](#-cross-device-compatibility-localsend) •
 [Developer Docs](docs/README.md)
 
@@ -35,10 +37,12 @@ LanFlare natively speaks the **LocalSend v2.2 protocol**. If your friend, collea
 - 🔍 **Zero-Configuration Discovery**: Devices automatically detect each other in real time via UDP multicast and mDNS. Includes an intelligent fast-probe fallback for restricted guest networks and Wi-Fi AP isolation.
 - 🔒 **Private & Secure**: Your files never touch external servers or the cloud. Transfers are secured using ephemeral end-to-end TLS encryption with certificate fingerprint verification and optional transfer PINs.
 - 📱 **Universal Compatibility**: Works seamlessly with official LocalSend clients on Android, iOS, Windows, macOS, and Linux.
+- 📂 **Native Android Support**: Built-in Android system Share Sheet target (`ACTION_SEND` / `ACTION_SEND_MULTIPLE`) and direct saving to the public `Download` directory with native MediaScanner indexing.
 - 🌐 **Web Download Mode**: Want to send a file to a device without any app installed? LanFlare can generate a local web link so anyone on your Wi-Fi can download files directly using their web browser.
-- 💻 **Both CLI and Desktop GUI**:
+- 💻 **CLI, Desktop, & Mobile**:
   - **CLI (`lanflare`)**: Interactive terminal picker, live streaming progress bars, and script-friendly flags.
   - **Desktop GUI**: Sleek, modern desktop interface powered by Tauri v2 and Svelte 5.
+  - **Android APK**: Native mobile app with gesture bar insets, background multicast lock, and clipboard image integration.
 
 ---
 
@@ -60,6 +64,11 @@ Download the latest installer or executable for your operating system from the *
 - **Linux**: `.AppImage` or `.deb`
 - **Windows**: `.msi` or `.exe` installer
 - **macOS**: `.dmg` (Universal binary for Apple Silicon & Intel)
+
+### Option 3: Android APK
+
+Download the pre-built `.apk` file for Android from the **[Releases](https://github.com/fokx/lanflare/releases)** page and install it on your device (supports Android 9+ / API 28+).
+
 
 ---
 
@@ -141,6 +150,91 @@ The desktop version of LanFlare offers an intuitive, responsive graphical user i
 - **Receive**: One-click transfer approvals with detailed sender identity and file breakdowns.
 - **History**: Log of past completed transfers and quick open buttons.
 - **Settings**: Customize your device nickname, download folder, network ports, and security PIN.
+
+---
+
+## 📱 Android App
+
+LanFlare provides first-class support for Android devices with an optimized mobile interface and deep system integration:
+
+### Mobile Features
+
+- 📤 **Android System Share Sheet**: Share single or multiple photos, videos, documents, or text snippets from any app (Google Photos, Files, Chrome, etc.) directly into LanFlare using Android's native share target (`ACTION_SEND` and `ACTION_SEND_MULTIPLE`).
+- 📂 **Direct Public Downloads Directory**: Automatically saves received files to `/storage/emulated/0/Download`—accessible from any Android file explorer (Google Files, Samsung My Files, Solid Explorer)—rather than an inaccessible app-isolated directory.
+- 🖼️ **Native MediaScanner Indexing**: As soon as a file transfer finishes, `MediaScannerConnection` scans the saved file so images, audio, and videos appear immediately in your photo gallery and system downloads list.
+- 📶 **Wi-Fi Multicast Lock**: Acquires an Android multicast lock to ensure discovery beacons are consistently broadcast and received even when the screen is dimmed or the device enters low-power states.
+- 📐 **Edge-to-Edge Responsive UI**: Automatically measures Android system window insets, adapting padding for gesture navigation bars, cutouts, and status bars.
+
+### How to Use on Android
+
+1. **Send Files**:
+   - Open LanFlare and tap **Add Files** or paste from the clipboard, then tap any discovered peer on the radar.
+   - Alternatively, open your favorite gallery or file manager, select files, tap **Share**, and choose **LanFlare**.
+2. **Receive Files**:
+   - Keep LanFlare open. When another peer initiates a transfer, an approval prompt appears with the sender's alias and file list.
+   - Tap **Accept** to download files directly to your device's **Download** folder.
+3. **Storage Access**:
+   - On Android 11+ (API 30+), if prompted in **Settings**, tap **Grant Permission** to allow "All files access" so LanFlare can save incoming transfers directly into your public `Download/` directory.
+
+---
+
+## 🔨 Building for Android
+
+LanFlare is built with Tauri v2 and cross-compiles to a native Android APK via the Rust NDK toolchain.
+
+### Prerequisites
+
+Ensure you have the following installed on your development machine:
+
+1. **Rust & Android Target**:
+   ```bash
+   rustup target add aarch64-linux-android
+   ```
+2. **Android SDK & NDK**:
+   - Android SDK Command-line Tools / SDK Platform 36.
+   - Android NDK (version 26 or higher, e.g., NDK 26+ / 30+).
+   - Set environment variables:
+     ```bash
+     export ANDROID_HOME=$HOME/Android/Sdk
+     export NDK_HOME=$ANDROID_HOME/ndk/<ndk-version>
+     ```
+3. **Java Development Kit**:
+   - OpenJDK 17 or OpenJDK 21.
+4. **Node.js & pnpm**:
+   - Node.js 18+ and `pnpm`.
+5. **Tauri CLI v2**:
+   ```bash
+   cargo install tauri-cli --version "^2.0.0"
+   ```
+
+### Build Commands
+
+```bash
+# 1. Install frontend dependencies and build web assets
+cd web
+pnpm install
+pnpm build
+cd ..
+
+# 2. Build the Android debug APK (for ARM64 / modern phones)
+cargo tauri android build --apk --debug --target aarch64
+
+# 3. (Optional) Build a production release APK
+cargo tauri android build --apk --target aarch64
+```
+
+### APK Output Location
+
+After a successful build, the generated APK will be located at:
+```text
+crates/lanflare-desktop/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+```
+
+To install directly to a connected Android phone or emulator via ADB:
+```bash
+adb install crates/lanflare-desktop/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk
+```
+
 
 ---
 

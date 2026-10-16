@@ -11,7 +11,8 @@ keywords = ["localsend", "network", "file-transfer", "p2p", "lan"]
 categories = ["network-programming", "asynchronous"]
 
 [dependencies]
-lanflare-proto = { path = "../lanflare-proto", version = "0.3.0" }
+lanflare-proto = { path = "../lanflare-proto", version = "0.4.0" }
+
 
 # Async runtime & IO
 tokio = { workspace = true }
