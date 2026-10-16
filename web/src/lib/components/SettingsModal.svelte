@@ -30,6 +30,26 @@
 	let isSaving = $state(false);
 	let saveSuccess = $state(false);
 	let errorMsg = $state<string | null>(null);
+	let hasStoragePermission = $state(true);
+
+	function checkStoragePermission() {
+		if (typeof window !== 'undefined' && (window as any).AndroidStorage?.isStorageManager) {
+			hasStoragePermission = (window as any).AndroidStorage.isStorageManager();
+		}
+	}
+
+	function requestPermission() {
+		if (typeof window !== 'undefined' && (window as any).AndroidStorage?.requestStoragePermission) {
+			(window as any).AndroidStorage.requestStoragePermission();
+			setTimeout(checkStoragePermission, 1500);
+		}
+	}
+
+	$effect(() => {
+		if (appState.showSettings && isAndroid()) {
+			checkStoragePermission();
+		}
+	});
 
 	$effect(() => {
 		if (appState.status) {
@@ -42,6 +62,7 @@
 			pinEnabled = appState.status.pinEnabled;
 		}
 	});
+
 
 	async function pickDownloadDirectory() {
 		if (isAndroid()) {
@@ -217,10 +238,25 @@
 							</button>
 						{/if}
 					</div>
+					{#if isAndroid() && !hasStoragePermission}
+						<div class="mt-1.5 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 flex items-center justify-between gap-2">
+							<span class="text-xs text-amber-800 dark:text-amber-300">
+								Storage access needed to save files to Download folder.
+							</span>
+							<button
+								type="button"
+								onclick={requestPermission}
+								class="px-2.5 py-1 text-xs font-semibold rounded bg-amber-600 hover:bg-amber-700 text-white shadow-xs cursor-pointer flex-shrink-0"
+							>
+								Grant Permission
+							</button>
+						</div>
+					{/if}
 					<p class="text-[11px] text-slate-400 dark:text-slate-500">
-						{isAndroid() ? 'Incoming files are saved to your device Downloads/LanFlare directory.' : 'Incoming files and folders will be saved to this folder.'}
+						{isAndroid() ? 'Incoming files are saved to your device Download folder.' : 'Incoming files and folders will be saved to this folder.'}
 					</p>
 				</div>
+
 
 				<!-- Multicast Group Address & Port -->
 				<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">

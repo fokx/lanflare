@@ -56,11 +56,18 @@ pub struct AppConfig {
 
 impl Default for AppConfig {
     fn default() -> Self {
+        #[cfg(target_os = "android")]
+        let download_dir = PathBuf::from("/storage/emulated/0/Download");
+        #[cfg(not(target_os = "android"))]
+        let download_dir = dirs::download_dir().unwrap_or_else(|| PathBuf::from("."));
+
         Self {
+
             alias: "LanFlare Node".to_string(),
             port: 53317,
-            download_dir: dirs::download_dir().unwrap_or_else(|| PathBuf::from(".")),
+            download_dir,
             auto_accept: false,
+
             pin: None,
             save_to_history: true,
             multicast_address: default_multicast_address(),

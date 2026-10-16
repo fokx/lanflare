@@ -2,16 +2,20 @@ package com.lanflare.desktop
 
 import android.content.Context
 import android.content.Intent
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import kotlin.math.roundToInt
+
 
 class MainActivity : TauriActivity() {
   private var multicastLock: WifiManager.MulticastLock? = null
@@ -115,10 +119,57 @@ class MainActivity : TauriActivity() {
     fun getRight(): Int = safeRight
   }
 
+  inner class StorageBridge {
+    @JavascriptInterface
+    fun getPublicDownloadsDirectory(): String {
+      @Suppress("DEPRECATION")
+      return Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath
+    }
+
+    @JavascriptInterface
+    fun isStorageManager(): Boolean {
+      return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Environment.isExternalStorageManager()
+      } else {
+        true
+      }
+    }
+
+    @JavascriptInterface
+    fun requestStoragePermission() {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        try {
+          val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+            data = Uri.fromParts("package", packageName, null)
+          }
+          startActivity(intent)
+        } catch (e: Exception) {
+          try {
+            val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+            startActivity(intent)
+          } catch (e2: Exception) {
+            e2.printStackTrace()
+          }
+        }
+      }
+    }
+
+    @JavascriptInterface
+    fun scanFile(path: String) {
+      try {
+        MediaScannerConnection.scanFile(applicationContext, arrayOf(path), null, null)
+      } catch (e: Exception) {
+        e.printStackTrace()
+      }
+    }
+  }
+
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
 
     webView.addJavascriptInterface(InsetsBridge(), "AndroidSafeInsets")
+    webView.addJavascriptInterface(StorageBridge(), "AndroidStorage")
+
 
     ViewCompat.setOnApplyWindowInsetsListener(webView) { _, insets ->
       val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())

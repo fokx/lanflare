@@ -48,8 +48,12 @@ pub fn run() {
                 let app_h = app.handle();
                 let config_dir = app_h.path().app_config_dir().ok();
                 let data_dir = app_h.path().app_data_dir().ok();
+                #[cfg(target_os = "android")]
+                let download_dir = Some(std::path::PathBuf::from("/storage/emulated/0/Download"));
+                #[cfg(not(target_os = "android"))]
                 let download_dir = app_h.path().download_dir().ok();
                 let state_paths = state_setup.clone();
+
                 tauri::async_runtime::spawn(async move {
                     state_paths.init_paths(config_dir, data_dir, download_dir).await;
                 });

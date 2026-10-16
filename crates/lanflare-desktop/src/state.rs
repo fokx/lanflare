@@ -169,8 +169,9 @@ impl DesktopState {
         &self,
         config_dir: Option<PathBuf>,
         data_dir: Option<PathBuf>,
-        download_dir: Option<PathBuf>,
+        #[allow(unused_variables)] download_dir: Option<PathBuf>,
     ) {
+
         if let Some(cfg_dir) = config_dir {
             let path = cfg_dir.join("lanflare").join("config.json");
             *self.config_file.write().await = path.clone();
@@ -184,6 +185,23 @@ impl DesktopState {
             let path = d_dir.join("lanflare").join("history.json");
             *self.history_file.write().await = path;
         }
+        #[cfg(target_os = "android")]
+        {
+
+            let mut cfg = self.config.write().await;
+            let public_download = PathBuf::from("/storage/emulated/0/Download");
+            let old_data_prefix = "/storage/emulated/0/Android/data";
+            if cfg.download_dir.to_string_lossy().contains(old_data_prefix)
+                || cfg.download_dir.as_os_str() == "."
+                || cfg.download_dir.as_os_str().is_empty()
+            {
+                cfg.download_dir = public_download;
+                let file_path = self.config_file.read().await.clone();
+                let _ = save_config_file(&file_path, &cfg);
+            }
+        }
+
+        #[cfg(not(target_os = "android"))]
         if let Some(dl_dir) = download_dir {
             let mut cfg = self.config.write().await;
             if cfg.download_dir.as_os_str() == "." || cfg.download_dir.as_os_str().is_empty() {
@@ -192,6 +210,7 @@ impl DesktopState {
                 let _ = save_config_file(&file_path, &cfg);
             }
         }
+
     }
 
     /// Saves configuration to the configured path.

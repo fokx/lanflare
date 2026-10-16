@@ -493,6 +493,14 @@ export class AppState {
 
 		// 5. File received
 		await tauriListen<FileReceivedPayload>('lanflare://file-received', (payload) => {
+			if (typeof window !== 'undefined') {
+				const storageBridge = (window as any).AndroidStorage;
+				if (storageBridge && payload.savedPath) {
+					try {
+						storageBridge.scanFile(payload.savedPath);
+					} catch (_) {}
+				}
+			}
 			const item = this.transfers.find((t) => t.id === payload.sessionId);
 			if (item) {
 				const f = item.files.find((x) => x.id === payload.fileId);
@@ -507,6 +515,7 @@ export class AppState {
 				this.persistHistory();
 			}
 		});
+
 
 		// 6. Outgoing transfer initiated (waiting for peer to accept)
 		await tauriListen<OutgoingTransferInitiatedPayload>(
