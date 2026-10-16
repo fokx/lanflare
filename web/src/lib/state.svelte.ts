@@ -464,7 +464,8 @@ export class AppState {
 					name: f.fileName,
 					size: f.size,
 					bytesSent: 0,
-					status: 'pending'
+					status: 'pending' as const,
+					path: this.status?.downloadDir ? `${this.status.downloadDir}/${f.fileName}` : undefined
 				})),
 				totalBytes: payload.totalBytes,
 				bytesTransferred: 0,
@@ -485,6 +486,9 @@ export class AppState {
 					const f = item.files.find((x) => x.id === payload.fileId);
 					if (f) {
 						f.status = 'in_progress';
+						if (!f.path && this.status?.downloadDir && payload.fileName) {
+							f.path = `${this.status.downloadDir}/${payload.fileName}`;
+						}
 					}
 					this.persistHistory();
 				}
@@ -507,8 +511,9 @@ export class AppState {
 				if (f) {
 					f.status = 'completed';
 					f.bytesSent = payload.size;
+					f.path = payload.savedPath;
 				}
-				item.bytesTransferred += payload.size;
+				item.bytesTransferred = item.files.reduce((acc, cur) => acc + (cur.bytesSent || 0), 0);
 				if (item.bytesTransferred >= item.totalBytes) {
 					item.status = 'completed';
 				}
@@ -523,6 +528,7 @@ export class AppState {
 			(payload) => {
 				const existing = this.transfers.find((t) => t.id === payload.sessionId);
 				if (!existing) {
+					const preparedMap = new Map(this.preparedItems.map((pi) => [pi.name, pi.path]));
 					this.transfers.unshift({
 						id: payload.sessionId,
 						direction: 'outgoing',
@@ -533,7 +539,8 @@ export class AppState {
 							name: f.fileName,
 							size: f.size,
 							bytesSent: 0,
-							status: 'pending'
+							status: 'pending' as const,
+							path: preparedMap.get(f.fileName) || f.id
 						})),
 						totalBytes: payload.totalBytes,
 						bytesTransferred: 0,

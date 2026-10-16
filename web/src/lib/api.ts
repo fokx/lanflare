@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
 import type {
 	NodeStatusDto,
 	UpdateConfigPayload,
@@ -9,6 +10,38 @@ import type {
 	SendFilesPayload,
 	ClipboardContentDto
 } from './types';
+
+// Open a file using system default application
+export async function openFile(filePath: string): Promise<void> {
+	if (!filePath) return;
+	if (isTauri()) {
+		try {
+			await openPath(filePath);
+		} catch (e) {
+			console.error('Failed to open file via opener:', e);
+		}
+	} else {
+		console.log('[Web Mock] openFile:', filePath);
+	}
+}
+
+// Open / reveal the folder containing a file or the folder itself in file manager
+export async function openFolder(folderOrFilePath: string): Promise<void> {
+	if (!folderOrFilePath) return;
+	if (isTauri()) {
+		try {
+			await revealItemInDir(folderOrFilePath);
+		} catch (_) {
+			try {
+				await openPath(folderOrFilePath);
+			} catch (e2) {
+				console.error('Failed to reveal/open folder:', e2);
+			}
+		}
+	} else {
+		console.log('[Web Mock] openFolder:', folderOrFilePath);
+	}
+}
 
 // Check if running inside Tauri webview
 export const isTauri = (): boolean => {

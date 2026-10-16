@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { appState } from '$lib/state.svelte';
 	import { formatBytes, formatSpeed, formatEta } from '$lib/format';
+	import { openFile, openFolder } from '$lib/api';
 	import {
 		ArrowUpRight,
 		ArrowDownLeft,
@@ -11,8 +12,40 @@
 		X,
 		FileText,
 		RefreshCw,
-		Trash2
+		Trash2,
+		Clock,
+		FolderOpen,
+		ExternalLink
 	} from 'lucide-svelte';
+
+	function formatDateTime(timestamp: number): string {
+		if (!timestamp) return '';
+		const d = new Date(timestamp);
+		return d.toLocaleString(undefined, {
+			year: 'numeric',
+			month: '2-digit',
+			day: '2-digit',
+			hour: '2-digit',
+			minute: '2-digit',
+			second: '2-digit'
+		});
+	}
+
+	function handleOpenFile(path?: string, name?: string) {
+		if (path) {
+			openFile(path);
+		} else if (appState.status?.downloadDir && name) {
+			openFile(`${appState.status.downloadDir}/${name}`);
+		}
+	}
+
+	function handleOpenFolder(path?: string, name?: string) {
+		if (path) {
+			openFolder(path);
+		} else if (appState.status?.downloadDir) {
+			openFolder(appState.status.downloadDir);
+		}
+	}
 
 	function getStatusBadge(status: string) {
 		switch (status) {
@@ -131,15 +164,33 @@
 										{badge.label}
 									</span>
 								</div>
-								<p class="text-xs text-slate-500 dark:text-slate-400 truncate max-w-[150px] sm:max-w-none">
-									{transfer.direction === 'outgoing' ? 'Sending to' : 'Receiving from'}
-									{transfer.peerEndpoint || 'LAN Peer'}
-								</p>
+								<div class="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+									<span class="truncate max-w-[150px] sm:max-w-none">
+										{transfer.direction === 'outgoing' ? 'Sending to' : 'Receiving from'}
+										{transfer.peerEndpoint || 'LAN Peer'}
+									</span>
+									{#if transfer.startTime}
+										<span class="text-slate-300 dark:text-slate-700 hidden sm:inline">&bull;</span>
+										<span class="inline-flex items-center gap-1 font-mono text-[11px] text-slate-400 dark:text-slate-500">
+											<Clock class="w-3 h-3" />
+											{formatDateTime(transfer.startTime)}
+										</span>
+									{/if}
+								</div>
 							</div>
 						</div>
 
-						<!-- Action: Cancel if active/waiting, or Delete from history if completed/failed -->
+						<!-- Action: Open folder, Cancel if active/waiting, or Delete from history if completed/failed -->
 						<div class="flex items-center gap-1">
+							{#if transfer.status === 'completed' || transfer.files.some((f) => f.status === 'completed')}
+								<button
+									onclick={() => handleOpenFolder(transfer.files[0]?.path, transfer.files[0]?.name)}
+									class="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-500/10 transition-colors cursor-pointer"
+									title="Open containing folder in file manager"
+								>
+									<FolderOpen class="w-4 h-4" />
+								</button>
+							{/if}
 							{#if transfer.status === 'active' || transfer.status === 'waiting'}
 								<button
 									onclick={() => appState.cancelTransfer(transfer.id)}
@@ -216,14 +267,28 @@
 					{#if transfer.files.length > 0}
 						<div class="pt-2 border-t border-slate-100 dark:border-slate-800/80 space-y-1.5">
 							{#each transfer.files as f}
-								<div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-									<div class="flex items-center gap-2 truncate max-w-[65%] sm:max-w-[70%]">
-										<FileText class="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 flex-shrink-0" />
-										<span class="truncate text-slate-800 dark:text-slate-300">{f.name}</span>
-									</div>
-									<div class="flex items-center gap-2 font-mono text-[11px]">
+								<div class="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 group/file py-1 px-1.5 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+									<button
+										type="button"
+										onclick={() => handleOpenFile(f.path, f.name)}
+										class="flex items-center gap-2 truncate max-w-[60%] sm:max-w-[70%] text-left hover:text-indigo-600 dark:hover:text-indigo-400 cursor-pointer transition-colors"
+										title={f.path ? `Open file: ${f.path}` : `Open file: ${f.name}`}
+									>
+										<FileText class="w-3.5 h-3.5 text-slate-400 group-hover/file:text-indigo-500 flex-shrink-0" />
+										<span class="truncate text-slate-800 dark:text-slate-300 group-hover/file:underline font-medium">{f.name}</span>
+										<ExternalLink class="w-3 h-3 text-slate-400 opacity-0 group-hover/file:opacity-100 transition-opacity flex-shrink-0" />
+									</button>
+									<div class="flex items-center gap-2 font-mono text-[11px] flex-shrink-0">
 										<span>{formatBytes(f.size)}</span>
 										{#if f.status === 'completed'}
+											<button
+												type="button"
+												onclick={() => handleOpenFolder(f.path, f.name)}
+												class="p-1 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded transition-colors cursor-pointer"
+												title="Open folder containing this file"
+											>
+												<FolderOpen class="w-3.5 h-3.5" />
+											</button>
 											<CheckCircle2 class="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
 										{:else if f.status === 'failed'}
 											<AlertCircle class="w-3.5 h-3.5 text-rose-500 dark:text-rose-400" />

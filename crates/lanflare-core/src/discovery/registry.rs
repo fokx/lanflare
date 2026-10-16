@@ -240,7 +240,7 @@ pub struct PeerRegistryConfig {
 impl Default for PeerRegistryConfig {
     fn default() -> Self {
         Self {
-            peer_timeout: Duration::from_secs(300),
+            peer_timeout: Duration::from_secs(45),
             eviction_interval: Duration::from_secs(5),
             max_peers: 256,
             event_buffer_capacity: 128,
@@ -379,8 +379,14 @@ impl PeerRegistry {
 
     /// Returns a snapshot of all active peers currently registered.
     pub async fn get_all(&self) -> Vec<DiscoveredPeer> {
+        let now_ms = current_time_ms();
+        let timeout_ms = self.config.peer_timeout.as_millis() as u64;
         let peers = self.peers.read().await;
-        peers.values().cloned().collect()
+        peers
+            .values()
+            .filter(|p| now_ms.saturating_sub(p.last_seen_ms) <= timeout_ms)
+            .cloned()
+            .collect()
     }
 
     /// Manually inserts or merges an arbitrary `DiscoveredPeer`.

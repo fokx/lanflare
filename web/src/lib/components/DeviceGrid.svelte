@@ -115,78 +115,76 @@
 {#if appState.sendMode === 'link'}
 	<ShareViaLinkView />
 {:else}
-	<div class="flex flex-col h-full overflow-hidden p-4 sm:p-6 gap-4 sm:gap-5">
-		<!-- 1. Selection Section (What to send) -->
-		<div class="bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 space-y-3 flex-none shadow-sm">
-			<div class="flex items-center justify-between">
-				<div class="flex items-center gap-2">
-					<span class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Selection</span>
-					{#if appState.preparedItems.length > 0}
-						<span class="text-xs px-2 py-0.5 rounded-full font-mono bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300">
+	<div class="flex flex-col h-full overflow-hidden p-3 sm:p-5 gap-3 sm:gap-4">
+		<!-- 1. Compact Selection Toolbar (What to send) -->
+		<div class="bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-xl p-2.5 sm:p-3 space-y-2 flex-none shadow-xs">
+			<div class="flex flex-wrap items-center justify-between gap-2">
+				<!-- Action Buttons -->
+				<div class="flex items-center gap-1.5 flex-wrap">
+					<button
+						onclick={pickFiles}
+						class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer shadow-2xs"
+					>
+						<FilePlus class="w-3.5 h-3.5 text-indigo-500" />
+						<span>Files</span>
+					</button>
+					{#if !isAndroid()}
+						<button
+							onclick={pickFolder}
+							class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer shadow-2xs"
+						>
+							<FolderPlus class="w-3.5 h-3.5 text-amber-500" />
+							<span>Folder</span>
+						</button>
+					{/if}
+					<button
+						onclick={() => (appState.showTextModal = true)}
+						class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer shadow-2xs"
+					>
+						<MessageSquare class="w-3.5 h-3.5 text-violet-500" />
+						<span>Text</span>
+					</button>
+					<button
+						onclick={pasteClipboard}
+						class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer shadow-2xs"
+					>
+						<ClipboardPaste class="w-3.5 h-3.5 text-emerald-500" />
+						<span>Clipboard</span>
+					</button>
+				</div>
+
+				<!-- Selection counter & Clear button -->
+				{#if appState.preparedItems.length > 0}
+					<div class="flex items-center gap-2 flex-shrink-0">
+						<span class="text-xs px-2 py-0.5 rounded-full font-mono bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 font-medium">
 							{appState.preparedItems.length} {appState.preparedItems.length === 1 ? 'item' : 'items'}
 							{#if appState.totalPreparedSize > 0}
 								&bull; {formatBytes(appState.totalPreparedSize)}
 							{/if}
 						</span>
-					{/if}
-				</div>
-				{#if appState.preparedItems.length > 0}
-					<button
-						onclick={() => appState.clearPreparedItems()}
-						class="text-xs text-slate-400 hover:text-rose-500 transition-colors cursor-pointer font-medium"
-					>
-						Clear all
-					</button>
+						<button
+							onclick={() => appState.clearPreparedItems()}
+							class="text-xs text-slate-400 hover:text-rose-500 transition-colors cursor-pointer font-medium"
+						>
+							Clear all
+						</button>
+					</div>
 				{/if}
 			</div>
 
-			<!-- Action Buttons -->
-			<div class="grid grid-cols-2 {isAndroid() ? 'sm:grid-cols-3' : 'sm:grid-cols-4'} gap-2">
-				<button
-					onclick={pickFiles}
-					class="flex items-center justify-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer group shadow-2xs"
-				>
-					<FilePlus class="w-4 h-4 text-indigo-500 group-hover:scale-110 transition-transform" />
-					<span>Files</span>
-				</button>
-				{#if !isAndroid()}
-					<button
-						onclick={pickFolder}
-						class="flex items-center justify-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer group shadow-2xs"
-					>
-						<FolderPlus class="w-4 h-4 text-amber-500 group-hover:scale-110 transition-transform" />
-						<span>Folder</span>
-					</button>
-				{/if}
-				<button
-					onclick={() => (appState.showTextModal = true)}
-					class="flex items-center justify-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer group shadow-2xs"
-				>
-					<MessageSquare class="w-4 h-4 text-violet-500 group-hover:scale-110 transition-transform" />
-					<span>Text</span>
-				</button>
-				<button
-					onclick={pasteClipboard}
-					class="flex items-center justify-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer group shadow-2xs"
-				>
-					<ClipboardPaste class="w-4 h-4 text-emerald-500 group-hover:scale-110 transition-transform" />
-					<span>Clipboard</span>
-				</button>
-			</div>
-
-			<!-- Selected Items Chips or Empty State -->
+			<!-- Selected Items Chips (Only shown when items exist) -->
 			{#if appState.preparedItems.length > 0}
-				<div class="flex items-center gap-2 overflow-x-auto py-1 scrollbar-none">
+				<div class="flex items-center gap-1.5 overflow-x-auto py-0.5 scrollbar-none pt-1 border-t border-slate-100 dark:border-slate-800/60">
 					{#each appState.preparedItems as item, idx}
-						<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200 text-xs flex-shrink-0">
+						<div class="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-200 text-xs flex-shrink-0">
 							{#if item.type === 'folder'}
-								<Folder class="w-3.5 h-3.5 text-amber-500" />
+								<Folder class="w-3 h-3 text-amber-500" />
 							{:else if item.type === 'text'}
-								<MessageSquare class="w-3.5 h-3.5 text-violet-500" />
+								<MessageSquare class="w-3 h-3 text-violet-500" />
 							{:else}
-								<FileText class="w-3.5 h-3.5 text-indigo-500" />
+								<FileText class="w-3 h-3 text-indigo-500" />
 							{/if}
-							<span class="truncate max-w-[150px] font-medium">{item.name}</span>
+							<span class="truncate max-w-[130px] font-medium text-[11px]">{item.name}</span>
 							{#if item.size > 0}
 								<span class="text-[10px] text-slate-400 font-mono">({formatBytes(item.size)})</span>
 							{/if}
@@ -200,60 +198,34 @@
 						</div>
 					{/each}
 				</div>
-			{:else}
-				<p class="text-xs text-slate-400 dark:text-slate-500">
-					No items selected. Choose files, a folder, text, or paste from clipboard.
-				</p>
 			{/if}
 		</div>
 
-		<!-- 2. Recipients Section (Where to send) -->
-		<div class="space-y-3 flex-none">
-			<!-- Header & Search -->
-			<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-				<div class="flex items-center gap-2">
-					<Radio class="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-					<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
-						Nearby Devices
-						<span class="text-xs px-2 py-0.5 rounded-full bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-400 font-mono">
-							{appState.peers.length}
-						</span>
-					</h3>
-				</div>
-
-				<!-- Search Input -->
-				<div class="relative w-full sm:w-64">
-					<Search class="absolute left-3 top-2.5 w-4 h-4 text-slate-400 pointer-events-none" />
-					<input
-						type="text"
-						placeholder="Filter devices or IP..."
-						bind:value={appState.searchQuery}
-						class="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-sm text-slate-900 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors shadow-2xs"
-					/>
-				</div>
-			</div>
-
-			<!-- Mode Tabs & Explanation -->
-			<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 rounded-xl p-2 shadow-2xs">
-				<div class="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-950 p-1 rounded-lg">
+		<!-- 2. Compact Recipients Toolbar (Mode switch + Filter) -->
+		<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 flex-none">
+			<div class="flex items-center gap-2">
+				<!-- Mode Pill Segment -->
+				<div class="flex items-center gap-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-0.5 rounded-lg shadow-2xs">
 					<button
 						onclick={() => (appState.sendMode = 'single')}
-						class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer {appState.sendMode === 'single'
-							? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs'
-							: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}"
+						class="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer {appState.sendMode === 'single'
+							? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 shadow-2xs'
+							: 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}"
+						title="Single recipient: sends to one device, selection clears after transfer"
 					>
 						<User class="w-3.5 h-3.5" />
-						<span>Single recipient</span>
+						<span>Single</span>
 					</button>
 
 					<button
 						onclick={() => (appState.sendMode = 'multiple')}
-						class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer {appState.sendMode === 'multiple'
-							? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs'
-							: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}"
+						class="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer {appState.sendMode === 'multiple'
+							? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 shadow-2xs'
+							: 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}"
+						title="Multiple recipients: select multiple devices, selection retained"
 					>
 						<Users class="w-3.5 h-3.5" />
-						<span>Multiple recipients</span>
+						<span>Multiple</span>
 						{#if appState.selectedRecipients.length > 0}
 							<span class="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300">
 								{appState.selectedRecipients.length}
@@ -268,22 +240,31 @@
 								appState.startShareViaLink();
 							}
 						}}
-						class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer {(appState.sendMode as string) === 'link'
-							? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs'
-							: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}"
+						class="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer {(appState.sendMode as string) === 'link'
+							? 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 shadow-2xs'
+							: 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}"
+						title="Share via link: browser downloads for non-LanFlare recipients"
 					>
 						<Link class="w-3.5 h-3.5" />
-						<span>Share via link</span>
+						<span>Link</span>
 					</button>
 				</div>
 
-				<p class="text-xs text-slate-500 dark:text-slate-400 px-2">
-					{#if appState.sendMode === 'single'}
-						Click a device to send. Selection will be cleared after transfer.
-					{:else}
-						Select multiple devices. Selection will be kept after transfer.
-					{/if}
-				</p>
+				<span class="text-xs font-bold text-slate-500 dark:text-slate-400 flex items-center gap-1 font-mono">
+					<Radio class="w-3.5 h-3.5 text-indigo-500" />
+					<span>{appState.filteredPeers.length}</span>
+				</span>
+			</div>
+
+			<!-- Compact Search Input -->
+			<div class="relative w-full sm:w-56">
+				<Search class="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+				<input
+					type="text"
+					placeholder="Filter devices or IP..."
+					bind:value={appState.searchQuery}
+					class="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg pl-8 pr-2.5 py-1 text-xs text-slate-900 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition-colors shadow-2xs"
+				/>
 			</div>
 		</div>
 
@@ -308,13 +289,13 @@
 						{@const isSelected = appState.selectedRecipients.includes(peer.fingerprint)}
 
 						<div
-							class="group relative bg-white dark:bg-slate-900/90 border rounded-xl p-4 transition-all duration-200 flex flex-col justify-between shadow-sm hover:shadow-md dark:shadow-none {appState.sendMode === 'multiple' && isSelected
+							class="group relative bg-white dark:bg-slate-900/90 border rounded-xl p-3 sm:p-4 transition-all duration-200 flex flex-col justify-between shadow-xs hover:shadow-sm dark:shadow-none {appState.sendMode === 'multiple' && isSelected
 								? 'border-indigo-500 ring-2 ring-indigo-500/30 bg-indigo-50/20 dark:bg-indigo-950/20'
 								: 'border-slate-200 dark:border-slate-800 hover:border-indigo-500/40'}"
 						>
 							<!-- Card Top -->
 							<div class="flex items-start justify-between gap-2.5">
-								<div class="flex items-center gap-3">
+								<div class="flex items-center gap-2.5 sm:gap-3">
 									{#if appState.sendMode === 'multiple'}
 										<input
 											type="checkbox"
@@ -324,15 +305,15 @@
 										/>
 									{/if}
 									<div
-										class="p-2 sm:p-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700/60 text-slate-700 dark:text-slate-300 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 group-hover:bg-indigo-50 dark:group-hover:bg-indigo-500/10 group-hover:border-indigo-200 dark:group-hover:border-indigo-500/20 transition-colors"
+										class="p-1.5 sm:p-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700/60 text-slate-700 dark:text-slate-300 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 group-hover:bg-indigo-50 dark:group-hover:bg-indigo-500/10 group-hover:border-indigo-200 dark:group-hover:border-indigo-500/20 transition-colors"
 									>
-										<Icon class="w-5 h-5" />
+										<Icon class="w-4 h-4 sm:w-5 sm:h-5" />
 									</div>
 									<div>
-										<h3 class="font-semibold text-slate-900 dark:text-slate-200 text-sm leading-snug group-hover:text-indigo-600 dark:group-hover:text-white transition-colors truncate max-w-[140px] sm:max-w-none">
+										<h3 class="font-semibold text-slate-900 dark:text-slate-200 text-xs sm:text-sm leading-snug group-hover:text-indigo-600 dark:group-hover:text-white transition-colors truncate max-w-[140px] sm:max-w-none">
 											{peer.alias}
 										</h3>
-										<p class="text-xs text-slate-500 dark:text-slate-400 truncate max-w-[140px] sm:max-w-none">
+										<p class="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 truncate max-w-[140px] sm:max-w-none">
 											{peer.deviceModel || peer.deviceType || 'Device'}
 										</p>
 									</div>
@@ -340,7 +321,7 @@
 
 								<!-- Security Badge -->
 								<div
-									class="flex items-center gap-1 text-[10px] sm:text-[11px] px-1.5 sm:px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-medium flex-shrink-0"
+									class="flex items-center gap-1 text-[10px] sm:text-[11px] px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-medium flex-shrink-0"
 									title="Mutual TLS verified with pinned SHA-256 fingerprint"
 								>
 									<ShieldCheck class="w-3.5 h-3.5" />
@@ -349,15 +330,15 @@
 							</div>
 
 							<!-- Card Endpoints & Info -->
-							<div class="my-3 pt-2.5 border-t border-slate-100 dark:border-slate-800/80 space-y-1 text-xs">
+							<div class="my-2 pt-2 border-t border-slate-100 dark:border-slate-800/80 space-y-1 text-xs">
 								<div class="flex items-center justify-between text-slate-500 dark:text-slate-400">
-									<span>Endpoint:</span>
+									<span class="text-[11px]">Endpoint:</span>
 									<span class="font-mono text-slate-800 dark:text-slate-300 text-[11px]">
 										{peer.endpoints[0] || 'Unknown IP'}
 									</span>
 								</div>
 								<div class="flex items-center justify-between text-slate-500 dark:text-slate-400">
-									<span>Fingerprint:</span>
+									<span class="text-[11px]">Fingerprint:</span>
 									<span
 										class="font-mono text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 transition-colors cursor-help text-[11px]"
 										title={peer.fingerprint}
@@ -371,7 +352,7 @@
 							{#if appState.sendMode === 'single'}
 								<button
 									onclick={() => handleSendPreparedToPeer(peer)}
-									class="w-full mt-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-medium text-xs shadow-sm hover:shadow-indigo-500/20 transition-all cursor-pointer"
+									class="w-full mt-1 flex items-center justify-center gap-1.5 py-1.5 sm:py-2 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-medium text-xs shadow-xs hover:shadow-indigo-500/20 transition-all cursor-pointer"
 								>
 									<Send class="w-3.5 h-3.5" />
 									<span>{appState.preparedItems.length > 0 ? `Send ${appState.preparedItems.length} Item${appState.preparedItems.length === 1 ? '' : 's'}` : 'Send Files'}</span>
@@ -379,8 +360,8 @@
 							{:else}
 								<button
 									onclick={() => appState.toggleRecipient(peer.fingerprint)}
-									class="w-full mt-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg border font-medium text-xs transition-all cursor-pointer {isSelected
-										? 'bg-indigo-600 text-white border-indigo-600 shadow-sm'
+									class="w-full mt-1 flex items-center justify-center gap-1.5 py-1.5 sm:py-2 px-3 rounded-lg border font-medium text-xs transition-all cursor-pointer {isSelected
+										? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
 										: 'bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700/80'}"
 								>
 									{#if isSelected}

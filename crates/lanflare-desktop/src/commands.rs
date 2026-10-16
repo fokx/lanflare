@@ -299,6 +299,9 @@ pub async fn start_discovery(
     let cfg = state.config.read().await.clone();
     let fp = state.identity.fingerprint.clone();
 
+    // Sweep any stale peers on discovery restart
+    let _ = state.registry.sweep_stale_peers().await;
+
     // 1. Multicast Engine
     let (mc_stop_tx, mc_stop_rx) = oneshot::channel();
     let (mc_event_tx, mut mc_event_rx) = mpsc::channel::<MulticastDiscoveryEvent>(100);
@@ -451,6 +454,12 @@ pub async fn announce_presence(
     }
     drop(disc);
 
+    // Sweep any stale peers immediately on refresh
+    let evicted = state.registry.sweep_stale_peers().await;
+    if evicted > 0 {
+        let _ = app.emit("lanflare://peers-updated", ());
+    }
+
     // Also run a subnet scan sweep in background on refresh
     let registry_subnet = Arc::clone(&state.registry);
     let identity_subnet = state.identity.clone();
@@ -537,6 +546,12 @@ pub async fn start_receiver_server(
     let app_clone = app.clone();
 
     tokio::spawn(async move {
+        struct IncomingSessionTracker {
+            start_time: std::time::Instant,
+            file_bytes: std::collections::HashMap<String, u64>,
+        }
+        let mut session_trackers: std::collections::HashMap<String, IncomingSessionTracker> = std::collections::HashMap::new();
+
         while let Some(event) = event_rx.recv().await {
             match event {
                 ServerTransferEvent::DeviceRegistered { ip, info } => {
@@ -562,6 +577,14 @@ pub async fn start_receiver_server(
                             file_type: f.file_type.clone(),
                         });
                     }
+
+                    session_trackers.insert(
+                        session_id.clone(),
+                        IncomingSessionTracker {
+                            start_time: std::time::Instant::now(),
+                            file_bytes: std::collections::HashMap::new(),
+                        },
+                    );
 
                     let auto_accept = state_clone.config.read().await.auto_accept;
                     if auto_accept {
@@ -690,6 +713,13 @@ pub async fn start_receiver_server(
                     file_name,
                     total_bytes,
                 } => {
+                    session_trackers
+                        .entry(session_id.clone())
+                        .or_insert_with(|| IncomingSessionTracker {
+                            start_time: std::time::Instant::now(),
+                            file_bytes: std::collections::HashMap::new(),
+                        });
+
                     let _ = app_clone.emit(
                         "lanflare://file-started",
                         serde_json::json!({
@@ -700,11 +730,54 @@ pub async fn start_receiver_server(
                         }),
                     );
                 }
+                ServerTransferEvent::FileProgress {
+                    session_id,
+                    file_id,
+                    file_name,
+                    bytes_received,
+                    total_bytes,
+                } => {
+                    let tracker = session_trackers
+                        .entry(session_id.clone())
+                        .or_insert_with(|| IncomingSessionTracker {
+                            start_time: std::time::Instant::now(),
+                            file_bytes: std::collections::HashMap::new(),
+                        });
+                    tracker.file_bytes.insert(file_id.clone(), bytes_received);
+
+                    let session_bytes: u64 = tracker.file_bytes.values().sum();
+                    let elapsed = tracker.start_time.elapsed().as_secs_f64();
+                    let bytes_per_second = if elapsed > 0.0 {
+                        (session_bytes as f64 / elapsed) as u64
+                    } else {
+                        0
+                    };
+
+                    let _ = app_clone.emit(
+                        "lanflare://transfer-progress",
+                        TransferProgressPayload {
+                            session_id: session_id.clone(),
+                            event_type: "file_progress".to_string(),
+                            file_id: Some(file_id),
+                            file_name: Some(file_name),
+                            file_bytes_sent: Some(bytes_received),
+                            file_total_bytes: Some(total_bytes),
+                            session_bytes_sent: Some(session_bytes),
+                            session_total_bytes: None,
+                            bytes_per_second: Some(bytes_per_second),
+                            eta_seconds: None,
+                            error: None,
+                        },
+                    );
+                }
                 ServerTransferEvent::FileCompleted {
                     session_id,
                     file_id,
                     result,
                 } => {
+                    if let Some(tracker) = session_trackers.get_mut(&session_id) {
+                        tracker.file_bytes.insert(file_id.clone(), result.bytes_written);
+                    }
                     let file_name = result
                         .target_path
                         .file_name()
@@ -740,6 +813,7 @@ pub async fn start_receiver_server(
                     session_id,
                     reason,
                 } => {
+                    session_trackers.remove(&session_id);
                     let _ = app_clone.emit(
                         "lanflare://session-finished",
                         serde_json::json!({

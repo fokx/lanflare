@@ -49,6 +49,14 @@ pub enum ServerTransferEvent {
         file_name: String,
         total_bytes: u64,
     },
+    /// A file upload progress update.
+    FileProgress {
+        session_id: String,
+        file_id: String,
+        file_name: String,
+        bytes_received: u64,
+        total_bytes: u64,
+    },
     /// A file upload completed and verified.
     FileCompleted {
         session_id: String,
@@ -594,6 +602,8 @@ pub async fn handle_upload(
     // Stream chunks directly from request body into disk writer
     let mut body = req.into_body();
     let mut stream_error = None;
+    let mut last_progress_emit = std::time::Instant::now();
+    let progress_interval = std::time::Duration::from_millis(100);
 
     while let Some(chunk_res) = body.frame().await {
         match chunk_res {
@@ -605,6 +615,20 @@ pub async fn handle_upload(
                 if let Err(err) = writer.write_chunk(&data).await {
                     stream_error = Some(err);
                     break;
+                }
+
+                let now = std::time::Instant::now();
+                if now.duration_since(last_progress_emit) >= progress_interval {
+                    last_progress_emit = now;
+                    if let Some(ref tx) = state.event_tx {
+                        let _ = tx.try_send(ServerTransferEvent::FileProgress {
+                            session_id: session_id.clone(),
+                            file_id: file_id.clone(),
+                            file_name: session_file.dto.file_name.clone(),
+                            bytes_received: writer.bytes_written(),
+                            total_bytes: session_file.dto.size,
+                        });
+                    }
                 }
             }
             Err(e) => {

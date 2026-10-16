@@ -732,6 +732,7 @@ pub async fn receive(
                     total_bytes as f64 / (1024.0 * 1024.0)
                 );
             }
+            ServerTransferEvent::FileProgress { .. } => {}
             ServerTransferEvent::FileCompleted { result, .. } => {
                 println!(
                     "File saved successfully: {} (SHA-256: {}) ✓",

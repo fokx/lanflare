@@ -144,6 +144,7 @@ export interface TransferQueueItem {
 		size: number;
 		bytesSent: number;
 		status: 'pending' | 'in_progress' | 'completed' | 'failed';
+		path?: string;
 		error?: string;
 	}>;
 	totalBytes: number;

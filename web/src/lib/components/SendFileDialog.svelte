@@ -123,7 +123,8 @@
 						name: item.name,
 						size: item.size || 1048576,
 						bytesSent: 0,
-						status: 'pending'
+						status: 'pending',
+						path: item.path
 					})),
 					totalBytes: appState.totalPreparedSize || 1048576,
 					bytesTransferred: 0,
