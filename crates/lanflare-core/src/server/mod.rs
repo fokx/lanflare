@@ -15,7 +15,9 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-pub use handlers::{ServerState, ServerTransferEvent};
+pub use handlers::{
+    extract_password_from_url, percent_decode, ServerState, ServerTransferEvent,
+};
 pub use router::{route_request, ClientConnectionInfo};
 pub use session::{
     DownloadFile, DownloadManager, DownloadSession, FileTransferStatus, PrepareUploadDecision,
@@ -61,19 +63,37 @@ impl ServerHandle {
     }
 }
 
+/// Helper wrapper allowing start_server to accept either AppConfig or Arc<RwLock<AppConfig>>.
+#[derive(Clone)]
+pub struct ServerConfigHolder(pub Arc<tokio::sync::RwLock<AppConfig>>);
+
+impl From<AppConfig> for ServerConfigHolder {
+    fn from(c: AppConfig) -> Self {
+        ServerConfigHolder(Arc::new(tokio::sync::RwLock::new(c)))
+    }
+}
+
+impl From<Arc<tokio::sync::RwLock<AppConfig>>> for ServerConfigHolder {
+    fn from(a: Arc<tokio::sync::RwLock<AppConfig>>) -> Self {
+        ServerConfigHolder(a)
+    }
+}
+
 /// Starts an HTTP/HTTPS server listening on the configured address.
 ///
 /// If `tls_identity` is `Some`, the server terminates TLS using the identity
 /// and validates client certificates if present (mTLS).
 /// If `tls_identity` is `None`, standard plaintext HTTP/1.1 is served.
 pub async fn start_server(
-    config: AppConfig,
+    config: impl Into<ServerConfigHolder>,
     tls_identity: Option<TlsIdentity>,
     registry: Arc<PeerRegistry>,
     event_tx: Option<mpsc::Sender<ServerTransferEvent>>,
 ) -> anyhow::Result<ServerHandle> {
     let cancel_token = CancellationToken::new();
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let config_holder = config.into();
+    let port = config_holder.0.read().await.port;
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     let listener = TcpListener::bind(addr).await?;
     let bound_port = listener.local_addr()?.port();
 
@@ -102,7 +122,7 @@ pub async fn start_server(
     let download_manager = Arc::new(DownloadManager::new());
 
     let state = ServerState {
-        config: Arc::new(config),
+        config: config_holder.0,
         cert_fingerprint,
         session_manager: Arc::new(SessionManager::new()),
         download_manager: download_manager.clone(),

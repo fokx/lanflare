@@ -613,3 +613,269 @@ async fn test_https_mtls_fingerprint_validation_parity() {
     let res = rogue_client.get_info(&base_url).await;
     assert!(res.is_err(), "Rogue client with mismatched pinned fingerprint must be rejected by TLS handshake");
 }
+
+#[tokio::test]
+async fn test_share_via_link_basic_auth_and_approval() {
+    use base64::Engine;
+
+    let temp_dir = std::env::temp_dir().join(format!("lanflare_link_auth_{}", Uuid::new_v4()));
+    tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+    let server_config = Arc::new(tokio::sync::RwLock::new(AppConfig {
+        alias: "Link Share Node".to_string(),
+        port: 0,
+        download_dir: temp_dir.clone(),
+        share_link_auto_accept: false, // default: auto accept downloads without prompt
+        share_link_require_pin: true,
+        share_link_pin: "abc123pin".to_string(),
+        ..Default::default()
+    }));
+    let registry = PeerRegistry::new();
+    let (server_ev_tx, mut server_ev_rx) = mpsc::channel(10);
+
+    let server_handle = start_server(server_config.clone(), None, registry, Some(server_ev_tx))
+        .await
+        .expect("Server should bind");
+    let port = server_handle.bound_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    // Offer test file
+    let file_path = temp_dir.join("shared.txt");
+    tokio::fs::write(&file_path, b"link transfer payload").await.unwrap();
+    let offered = vec![DownloadFile {
+        dto: FileDto {
+            id: "f-link-1".to_string(),
+            file_name: "shared.txt".to_string(),
+            size: 21,
+            file_type: "text/plain".to_string(),
+            sha256: None,
+            preview: None,
+            metadata: None,
+        },
+        file_path,
+    }];
+    server_handle.download_manager().set_files(offered).await;
+
+    let http_client = reqwest::Client::new();
+
+    // 1. GET / without auth -> 401 Unauthorized with WWW-Authenticate header
+    let res = http_client.get(&base_url).send().await.unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let auth_header = res.headers().get("www-authenticate").unwrap().to_str().unwrap();
+    assert!(auth_header.contains("Basic realm="));
+
+    // 2. GET / with wrong Basic Auth -> 401 Unauthorized
+    let wrong_auth = base64::engine::general_purpose::STANDARD.encode(":wrongpin");
+    let res = http_client
+        .get(&base_url)
+        .header("Authorization", format!("Basic {wrong_auth}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    // 3. GET / with valid Basic Auth (:pin) -> 200 OK HTML
+    let valid_auth = base64::engine::general_purpose::STANDARD.encode(":abc123pin");
+    let res = http_client
+        .get(&base_url)
+        .header("Authorization", format!("Basic {valid_auth}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    let html = res.text().await.unwrap();
+    assert!(html.contains("Link Share Node"));
+    assert!(html.contains("shared.txt"));
+
+    // 4. GET / with ?pin= query parameter -> 200 OK HTML
+    let res = http_client
+        .get(format!("{base_url}/?pin=abc123pin"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+
+    // 5. Download in auto-accept mode (share_link_auto_accept == false)
+    // Access with Basic Auth downloads immediately
+    let res = http_client
+        .get(format!("{base_url}/api/localsend/v2/download?sessionId=web&fileId=f-link-1"))
+        .header("Authorization", format!("Basic {valid_auth}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::OK);
+    assert_eq!(res.bytes().await.unwrap().as_ref(), b"link transfer payload");
+
+    // 6. Change config dynamically: enable share_link_auto_accept == true (manual approval required)
+    {
+        let mut cfg = server_config.write().await;
+        cfg.share_link_auto_accept = true;
+    }
+
+    // 7. Request download: sender declines -> 403 Forbidden
+    let req_url = format!("{base_url}/api/localsend/v2/download?sessionId=web&fileId=f-link-1");
+    let auth_header_val = format!("Basic {valid_auth}");
+    let client_clone = http_client.clone();
+    let dl_task = tokio::spawn(async move {
+        client_clone
+            .get(&req_url)
+            .header("Authorization", auth_header_val)
+            .send()
+            .await
+            .unwrap()
+    });
+
+    // Receive ServerTransferEvent::BrowserDownload and decline
+    let ev = server_ev_rx.recv().await.expect("Expected BrowserDownload event");
+    if let ServerTransferEvent::BrowserDownload { file_name, decision_tx, .. } = ev {
+        assert_eq!(file_name, "shared.txt");
+        let _ = decision_tx.send(false);
+    } else {
+        panic!("Expected BrowserDownload event");
+    }
+
+    let declined_res = dl_task.await.unwrap();
+    assert_eq!(declined_res.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // 8. Request download again: sender accepts -> 200 OK
+    let req_url2 = format!("{base_url}/api/localsend/v2/download?sessionId=web&fileId=f-link-1");
+    let auth_header_val2 = format!("Basic {valid_auth}");
+    let client_clone2 = http_client.clone();
+    let dl_task2 = tokio::spawn(async move {
+        client_clone2
+            .get(&req_url2)
+            .header("Authorization", auth_header_val2)
+            .send()
+            .await
+            .unwrap()
+    });
+
+    let ev2 = server_ev_rx.recv().await.expect("Expected BrowserDownload event");
+    if let ServerTransferEvent::BrowserDownload { file_name, decision_tx, .. } = ev2 {
+        assert_eq!(file_name, "shared.txt");
+        let _ = decision_tx.send(true);
+    } else {
+        panic!("Expected BrowserDownload event");
+    }
+
+    let accepted_res = dl_task2.await.unwrap();
+    assert_eq!(accepted_res.status(), reqwest::StatusCode::OK);
+    assert_eq!(accepted_res.bytes().await.unwrap().as_ref(), b"link transfer payload");
+
+    server_handle.stop();
+    let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+}
+
+#[test]
+fn test_extract_password_from_special_url() {
+    use lanflare_core::server::extract_password_from_url;
+
+    // The user's exact special case:
+    assert_eq!(
+        extract_password_from_url("https://:b7asiojoij@@:e7z3@10.40.1.133:53317"),
+        "b7asiojoij@@:e7z3"
+    );
+
+    // Authority without scheme:
+    assert_eq!(
+        extract_password_from_url(":b7asiojoij@@:e7z3@10.40.1.133:53317"),
+        "b7asiojoij@@:e7z3"
+    );
+
+    // With explicit username:
+    assert_eq!(
+        extract_password_from_url("http://admin:b7asiojoij@@:e7z3@10.40.1.133:53317"),
+        "b7asiojoij@@:e7z3"
+    );
+
+    // Query parameter:
+    assert_eq!(
+        extract_password_from_url("http://10.40.1.133:53317/?pin=b7asiojoij@@:e7z3"),
+        "b7asiojoij@@:e7z3"
+    );
+
+    // Percent-encoded password in URL:
+    assert_eq!(
+        extract_password_from_url("https://:b7asiojoij%40%40%3Ae7z3@10.40.1.133:53317"),
+        "b7asiojoij@@:e7z3"
+    );
+
+    // Plain raw password without URL:
+    assert_eq!(
+        extract_password_from_url("b7asiojoij@@:e7z3"),
+        "b7asiojoij@@:e7z3"
+    );
+    assert_eq!(extract_password_from_url("regularPIN"), "regularPIN");
+}
+
+#[tokio::test]
+async fn test_share_link_special_password_auth() {
+    use base64::Engine;
+
+    let temp_dir = std::env::temp_dir().join(format!("lanflare_pw_test_{}", Uuid::new_v4()));
+    let _ = tokio::fs::create_dir_all(&temp_dir).await;
+
+    // Configure with special password containing @@ and :
+    let special_pw = "b7asiojoij@@:e7z3";
+    let config = AppConfig {
+        alias: "SpecialPwNode".to_string(),
+        port: 0,
+        download_dir: temp_dir.clone(),
+        auto_accept: true,
+        save_to_history: true,
+        multicast_address: "224.0.0.167".to_string(),
+        share_link_auto_accept: false, // auto-approve downloads
+        share_link_require_pin: true,
+        share_link_pin: special_pw.to_string(),
+        ..Default::default()
+    };
+    let registry = PeerRegistry::new();
+
+    let server_handle = start_server(
+        config,
+        None,
+        registry,
+        None,
+    )
+    .await
+    .expect("Failed to start server");
+
+    let port = server_handle.bound_port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let http_client = reqwest::Client::new();
+
+    // 1. Unauthenticated request to / -> 401
+    let unauth_res = http_client.get(format!("{base_url}/")).send().await.unwrap();
+    assert_eq!(unauth_res.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    // 2. Authenticated via Basic Auth with :special_pw -> 200 OK
+    let auth_header = base64::engine::general_purpose::STANDARD.encode(format!(":{special_pw}"));
+    let auth_res = http_client
+        .get(format!("{base_url}/"))
+        .header("Authorization", format!("Basic {auth_header}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(auth_res.status(), reqwest::StatusCode::OK);
+
+    // 3. Authenticated via query parameter ?pin=b7asiojoij@@:e7z3 -> 200 OK
+    let query_res = http_client
+        .get(format!("{base_url}/?pin={special_pw}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(query_res.status(), reqwest::StatusCode::OK);
+
+    // 4. Authenticated via query parameter with full URL passed as PIN -> 200 OK
+    let full_url = format!("https://:{special_pw}@10.40.1.133:53317");
+    let full_url_query_res = http_client
+        .get(format!("{base_url}/?pin={full_url}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(full_url_query_res.status(), reqwest::StatusCode::OK);
+
+    server_handle.stop();
+    let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+}
+

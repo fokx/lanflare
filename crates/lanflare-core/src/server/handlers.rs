@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
+use base64::Engine;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::body::Incoming;
@@ -65,17 +66,182 @@ pub enum ServerTransferEvent {
         session_id: String,
         reason: SessionEndReason,
     },
+    /// A browser requested a file download in share via link mode.
+    BrowserDownload {
+        download_id: String,
+        remote_ip: IpAddr,
+        file_name: String,
+        file_size: u64,
+        decision_tx: oneshot::Sender<bool>,
+    },
 }
 
 /// Shared application state injected into hyper request handlers.
 #[derive(Clone)]
 pub struct ServerState {
-    pub config: Arc<AppConfig>,
+    pub config: Arc<tokio::sync::RwLock<AppConfig>>,
     pub cert_fingerprint: String,
     pub session_manager: Arc<SessionManager>,
     pub download_manager: Arc<DownloadManager>,
     pub registry: Arc<PeerRegistry>,
     pub event_tx: Option<mpsc::Sender<ServerTransferEvent>>,
+}
+
+/// Helper decoding percent-encoded strings (e.g. `%40` -> `@`, `%3A` -> `:`).
+pub fn percent_decode(input: &str) -> String {
+    let mut result = Vec::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h1), Some(h2)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                result.push((h1 * 16 + h2) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(result).unwrap_or_else(|_| input.to_string())
+}
+
+/// Helper extracting password/PIN from a raw input string or full URL.
+///
+/// Specifically handles special cases such as:
+/// `https://:b7asiojoij@@:e7z3@10.40.1.133:53317`
+/// where `b7asiojoij@@:e7z3` is the password.
+pub fn extract_password_from_url(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let authority_and_beyond = if let Some(idx) = trimmed.find("://") {
+        &trimmed[idx + 3..]
+    } else if let Some(rest) = trimmed.strip_prefix("//") {
+        rest
+    } else if let Some(last_at) = trimmed.rfind('@') {
+        let after_at = &trimmed[last_at + 1..];
+        // If after the last '@' looks like a host (e.g. 192.168.1.1:53317, localhost:53317, not starting with ':')
+        if !after_at.starts_with(':') && (after_at.contains('.') || after_at.contains(':')) {
+            trimmed
+        } else {
+            return trimmed.to_string();
+        }
+    } else {
+        return trimmed.to_string();
+    };
+
+    let (authority, query_part) = match authority_and_beyond.find(|c| c == '/' || c == '?' || c == '#') {
+        Some(idx) => (&authority_and_beyond[..idx], &authority_and_beyond[idx..]),
+        None => (authority_and_beyond, ""),
+    };
+
+    // The userinfo delimiter is before the LAST '@' in the authority
+    if let Some(last_at) = authority.rfind('@') {
+        let userinfo = &authority[..last_at];
+        let pass = if let Some(stripped) = userinfo.strip_prefix(':') {
+            stripped
+        } else if let Some((_user, pass)) = userinfo.split_once(':') {
+            pass
+        } else {
+            userinfo
+        };
+        return percent_decode(pass);
+    }
+
+    // If no userinfo in authority, check query string for ?pin=... or &pin=...
+    if let Some(q_idx) = query_part.find('?') {
+        let q_str = &query_part[q_idx + 1..];
+        for pair in q_str.split('&') {
+            if let Some(val) = pair.strip_prefix("pin=") {
+                let clean_val = val.split('#').next().unwrap_or(val);
+                return percent_decode(clean_val);
+            }
+        }
+    }
+
+    trimmed.to_string()
+}
+
+/// Helper verifying HTTP Basic Auth or pin query param against share_link_pin.
+pub fn check_share_link_auth(req: &Request<Incoming>, config: &AppConfig) -> bool {
+    if !config.share_link_require_pin {
+        return true;
+    }
+
+    let expected_pin = config.share_link_pin.trim();
+    if expected_pin.is_empty() {
+        return true;
+    }
+    let expected_decoded = percent_decode(expected_pin);
+
+    // 1. Check Authorization header: Basic <base64>
+    if let Some(auth_val) = req.headers().get(hyper::header::AUTHORIZATION) {
+        if let Ok(auth_str) = auth_val.to_str() {
+            if let Some(token) = auth_str.strip_prefix("Basic ").or_else(|| auth_str.strip_prefix("basic ")) {
+                if let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(token.trim()) {
+                    if let Ok(decoded_str) = std::str::from_utf8(&decoded_bytes) {
+                        // Decoded could be ":pass", "user:pass", "pass", or full URL
+                        let pass_candidates = if let Some(stripped) = decoded_str.strip_prefix(':') {
+                            vec![stripped, decoded_str]
+                        } else if let Some((user, pass)) = decoded_str.split_once(':') {
+                            vec![pass, user, decoded_str]
+                        } else {
+                            vec![decoded_str]
+                        };
+
+                        for cand in pass_candidates {
+                            let cand_trimmed = cand.trim();
+                            if cand_trimmed == expected_pin
+                                || cand_trimmed == expected_decoded
+                                || percent_decode(cand_trimmed) == expected_decoded
+                                || extract_password_from_url(cand_trimmed) == expected_pin
+                                || extract_password_from_url(cand_trimmed) == expected_decoded
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Check query param: ?pin=...
+    if let Some(q) = req.uri().query() {
+        let query_map = parse_query(Some(q));
+        if let Some(pin) = query_map.get("pin") {
+            let pin_trimmed = pin.trim();
+            if pin_trimmed == expected_pin
+                || pin_trimmed == expected_decoded
+                || percent_decode(pin_trimmed) == expected_decoded
+                || extract_password_from_url(pin_trimmed) == expected_pin
+                || extract_password_from_url(pin_trimmed) == expected_decoded
+            {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+/// Helper creating HTTP 401 response with WWW-Authenticate header.
+pub fn unauthorized_response() -> Response<Full<Bytes>> {
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header(
+            hyper::header::WWW_AUTHENTICATE,
+            "Basic realm=\"LanFlare Share\", charset=\"UTF-8\"",
+        )
+        .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(Full::new(Bytes::from("401 Unauthorized - Authentication required\n")))
+        .unwrap()
 }
 
 /// Helper creating an empty hyper response with given status code.
@@ -146,13 +312,14 @@ pub fn parse_query(query_str: Option<&str>) -> HashMap<String, String> {
 /// Handler for `GET /api/localsend/v2/info` and `GET /api/localsend/v1/info`.
 pub async fn handle_info(state: &ServerState) -> Response<Full<Bytes>> {
     let files = state.download_manager.get_file_dtos().await;
+    let cfg = state.config.read().await;
     let resp = InfoResponseDtoV2 {
-        alias: state.config.alias.clone(),
+        alias: cfg.alias.clone(),
         version: PROTOCOL_VERSION_V2.to_string(),
         device_model: Some(std::env::consts::OS.to_string()),
         device_type: Some(lanflare_proto::discovery::DeviceType::Desktop),
         fingerprint: state.cert_fingerprint.clone(),
-        port: Some(state.config.port),
+        port: Some(cfg.port),
         protocol: Some(ProtocolType::Https),
         download: !files.is_empty(),
     };
@@ -194,8 +361,9 @@ pub async fn handle_register(
     }
 
     let files = state.download_manager.get_file_dtos().await;
+    let cfg = state.config.read().await;
     let resp = RegisterResponseDtoV2 {
-        alias: state.config.alias.clone(),
+        alias: cfg.alias.clone(),
         version: PROTOCOL_VERSION_V2.to_string(),
         device_model: Some(std::env::consts::OS.to_string()),
         device_type: Some(lanflare_proto::discovery::DeviceType::Desktop),
@@ -215,11 +383,16 @@ pub async fn handle_prepare_upload(
     let query = parse_query(req.uri().query());
     let provided_pin = query.get("pin").map(|s| s.as_str());
 
+    let (auto_accept, pin_requirement) = {
+        let cfg = state.config.read().await;
+        (cfg.auto_accept, cfg.pin.clone())
+    };
+
     // Validate PIN
     if let Err(status) = state
         .session_manager
         .pin_tracker()
-        .check_pin(state.config.pin.as_deref(), provided_pin, remote_ip)
+        .check_pin(pin_requirement.as_deref(), provided_pin, remote_ip)
         .await
     {
         return empty_response(status);
@@ -252,7 +425,7 @@ pub async fn handle_prepare_upload(
     }
 
     // Determine decision: if auto_accept is enabled in AppConfig, accept all files immediately
-    let decision = if state.config.auto_accept {
+    let decision = if auto_accept {
         PrepareUploadDecision::Accept(payload.files.keys().cloned().collect())
     } else if let Some(ref tx) = state.event_tx {
         let (decision_tx, decision_rx) = oneshot::channel();
@@ -314,10 +487,11 @@ pub async fn handle_prepare_upload(
         }
 
         let token = Uuid::new_v4().to_string();
-        let target_path = match resolve_unique_destination_path(&state.config.download_dir, &file_dto.file_name)
+        let download_dir = state.config.read().await.download_dir.clone();
+        let target_path = match resolve_unique_destination_path(&download_dir, &file_dto.file_name)
             .or_else(|_| {
                 let fallback = format!("file_{}.bin", Uuid::new_v4().simple());
-                resolve_unique_destination_path(&state.config.download_dir, &fallback)
+                resolve_unique_destination_path(&download_dir, &fallback)
             })
         {
             Ok(p) => p,
@@ -564,6 +738,11 @@ pub async fn handle_prepare_download(
     let query = parse_query(req.uri().query());
     let provided_pin = query.get("pin").map(|s| s.as_str());
 
+    let (alias, port, pin_req) = {
+        let cfg = state.config.read().await;
+        (cfg.alias.clone(), cfg.port, cfg.pin.clone())
+    };
+
     // Check if client is already accepted for this session
     if let Some(session_id) = query.get("sessionId")
         && state
@@ -574,12 +753,12 @@ pub async fn handle_prepare_download(
         let files = state.download_manager.get_file_dtos().await;
         let resp = PrepareDownloadResponseDtoV2 {
             info: InfoResponseDtoV2 {
-                alias: state.config.alias.clone(),
+                alias,
                 version: PROTOCOL_VERSION_V2.to_string(),
                 device_model: Some(std::env::consts::OS.to_string()),
                 device_type: Some(lanflare_proto::discovery::DeviceType::Desktop),
                 fingerprint: state.cert_fingerprint.clone(),
-                port: Some(state.config.port),
+                port: Some(port),
                 protocol: Some(ProtocolType::Https),
                 download: true,
             },
@@ -593,7 +772,7 @@ pub async fn handle_prepare_download(
     if let Err(status) = state
         .session_manager
         .pin_tracker()
-        .check_pin(state.config.pin.as_deref(), provided_pin, remote_ip)
+        .check_pin(pin_req.as_deref(), provided_pin, remote_ip)
         .await
     {
         return empty_response(status);
@@ -611,12 +790,12 @@ pub async fn handle_prepare_download(
 
     let resp = PrepareDownloadResponseDtoV2 {
         info: InfoResponseDtoV2 {
-            alias: state.config.alias.clone(),
+            alias,
             version: PROTOCOL_VERSION_V2.to_string(),
             device_model: Some(std::env::consts::OS.to_string()),
             device_type: Some(lanflare_proto::discovery::DeviceType::Desktop),
             fingerprint: state.cert_fingerprint.clone(),
-            port: Some(state.config.port),
+            port: Some(port),
             protocol: Some(ProtocolType::Https),
             download: true,
         },
@@ -643,6 +822,15 @@ pub async fn handle_download(
         _ => "web".to_string(),
     };
 
+    let (is_web, auto_accept) = {
+        let is_web = session_id == "web";
+        let cfg = state.config.read().await;
+        if is_web && !check_share_link_auth(&req, &cfg) {
+            return unauthorized_response();
+        }
+        (is_web, cfg.share_link_auto_accept)
+    };
+
     // For browser direct downloads, ensure session is prepared
     if session_id == "web" {
         state
@@ -660,6 +848,51 @@ pub async fn handle_download(
         Err(status) => return empty_response(status),
     };
 
+    let file_name = file_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("download.bin")
+        .to_string();
+
+    let file_size = tokio::fs::metadata(&file_path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    // If share_link_auto_accept is true and this is a browser download, user has to click to accept!
+    if is_web && auto_accept {
+        if let Some(event_tx) = &state.event_tx {
+            let (decision_tx, decision_rx) = oneshot::channel::<bool>();
+            let download_id = Uuid::new_v4().to_string();
+
+            let event = ServerTransferEvent::BrowserDownload {
+                download_id: download_id.clone(),
+                remote_ip,
+                file_name: file_name.clone(),
+                file_size,
+                decision_tx,
+            };
+
+            if event_tx.send(event).await.is_err() {
+                return empty_response(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+
+            match tokio::time::timeout(std::time::Duration::from_secs(60), decision_rx).await {
+                Ok(Ok(true)) => {
+                    tracing::info!("Browser download approved for {file_name} from {remote_ip}");
+                }
+                Ok(Ok(false)) => {
+                    tracing::info!("Browser download declined for {file_name} from {remote_ip}");
+                    return empty_response(StatusCode::FORBIDDEN);
+                }
+                _ => {
+                    tracing::warn!("Browser download timed out or cancelled for {file_name}");
+                    return empty_response(StatusCode::REQUEST_TIMEOUT);
+                }
+            }
+        }
+    }
+
     let content = match tokio::fs::read(&file_path).await {
         Ok(c) => c,
         Err(e) => {
@@ -667,11 +900,6 @@ pub async fn handle_download(
             return empty_response(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
-
-    let file_name = file_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("download.bin");
 
     Response::builder()
         .status(StatusCode::OK)
@@ -713,9 +941,16 @@ fn escape_html(input: &str) -> String {
 }
 
 /// Handler serving the web portal for browser downloads (Share via link).
-pub async fn handle_web_portal(state: &ServerState) -> Response<Full<Bytes>> {
+pub async fn handle_web_portal(req: &Request<Incoming>, state: &ServerState) -> Response<Full<Bytes>> {
+    let alias = {
+        let cfg = state.config.read().await;
+        if !check_share_link_auth(req, &cfg) {
+            return unauthorized_response();
+        }
+        escape_html(&cfg.alias)
+    };
+
     let files = state.download_manager.get_file_dtos().await;
-    let alias = escape_html(&state.config.alias);
 
     let mut files_html = String::new();
     if files.is_empty() {

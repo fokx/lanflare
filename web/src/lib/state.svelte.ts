@@ -7,7 +7,8 @@ import type {
 	TransferQueueItem,
 	FileReceivedPayload,
 	SendMode,
-	PreparedSendItem
+	PreparedSendItem,
+	BrowserDownloadRequest
 } from './types';
 import {
 	getNodeStatus,
@@ -25,7 +26,8 @@ import {
 	readClipboard,
 	saveClipboardImage,
 	isTauri,
-	sendFiles
+	sendFiles,
+	respondBrowserDownload
 } from './api';
 import { readText as tauriReadText, readImage as tauriReadImage } from '@tauri-apps/plugin-clipboard-manager';
 
@@ -53,6 +55,9 @@ export class AppState {
 
 	// Pending Incoming Transfer Modal State
 	pendingIncoming = $state<IncomingTransferEventPayload | null>(null);
+
+	// Pending Browser Download Requests (when share_link_auto_accept is true)
+	pendingBrowserDownloads = $state<BrowserDownloadRequest[]>([]);
 
 	// Active and Recent Transfers
 	transfers = $state<TransferQueueItem[]>([]);
@@ -165,11 +170,19 @@ export class AppState {
 	addFiles(filePaths: string[]) {
 		for (const p of filePaths) {
 			if (!this.preparedItems.some((item) => item.path === p)) {
-				const name = p.split('/').pop()?.split('\\').pop() || p;
+				let rawName = p.split('/').pop()?.split('\\').pop() || p;
+				try {
+					rawName = decodeURIComponent(rawName);
+				} catch {
+					// keep rawName
+				}
+				if (p.startsWith('content://') && !rawName.includes('.')) {
+					rawName = `Item_${rawName}`;
+				}
 				this.preparedItems.push({
 					id: p,
 					type: 'file',
-					name,
+					name: rawName,
 					path: p,
 					size: 0,
 					summary: 'File'
@@ -429,6 +442,16 @@ export class AppState {
 			}
 		);
 
+		// 2b. Browser download request approval prompt (when share_link_auto_accept is true)
+		await tauriListen<BrowserDownloadRequest>(
+			'lanflare://browser-download-request',
+			(payload) => {
+				if (!this.pendingBrowserDownloads.some((d) => d.downloadId === payload.downloadId)) {
+					this.pendingBrowserDownloads.push(payload);
+				}
+			}
+		);
+
 		// 3. Incoming transfer auto-accepted
 		await tauriListen<IncomingTransferEventPayload>('lanflare://incoming-transfer', (payload) => {
 			this.transfers.unshift({
@@ -665,6 +688,18 @@ export class AppState {
 			} finally {
 				this.pendingIncoming = null;
 			}
+		}
+	}
+
+	async respondBrowserDownload(downloadId: string, accept: boolean) {
+		try {
+			await respondBrowserDownload(downloadId, accept);
+		} catch (e) {
+			console.error('Failed to respond to browser download request:', e);
+		} finally {
+			this.pendingBrowserDownloads = this.pendingBrowserDownloads.filter(
+				(d) => d.downloadId !== downloadId
+			);
 		}
 	}
 

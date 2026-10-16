@@ -13,6 +13,9 @@ export interface NodeStatusDto {
 	fingerprint: string;
 	saveToHistory: boolean;
 	multicastAddress: string;
+	shareLinkAutoAccept: boolean;
+	shareLinkRequirePin: boolean;
+	shareLinkPin: string;
 	interfaces: NetworkInterfaceDto[];
 }
 
@@ -24,6 +27,16 @@ export interface UpdateConfigPayload {
 	pin?: string | null;
 	saveToHistory?: boolean;
 	multicastAddress?: string;
+	shareLinkAutoAccept?: boolean;
+	shareLinkRequirePin?: boolean;
+	shareLinkPin?: string;
+}
+
+export interface BrowserDownloadRequest {
+	downloadId: string;
+	remoteIp: string;
+	fileName: string;
+	fileSize: number;
 }
 
 export type SendMode = 'single' | 'multiple' | 'link';

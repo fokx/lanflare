@@ -5,6 +5,7 @@
 	import DeviceGrid from '$lib/components/DeviceGrid.svelte';
 	import TransferQueue from '$lib/components/TransferQueue.svelte';
 	import IncomingTransferModal from '$lib/components/IncomingTransferModal.svelte';
+	import IncomingBrowserDownloadModal from '$lib/components/IncomingBrowserDownloadModal.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
 	import TextMessageModal from '$lib/components/TextMessageModal.svelte';
 	import SendFileDialog from '$lib/components/SendFileDialog.svelte';
@@ -301,6 +302,7 @@
 
 <!-- Modals -->
 <IncomingTransferModal />
+<IncomingBrowserDownloadModal />
 <SettingsModal />
 <TextMessageModal />
 

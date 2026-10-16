@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { appState } from '$lib/state.svelte';
-	import { formatBytes, shortenFingerprint } from '$lib/format';
+	import { formatBytes, shortenFingerprint, extractPasswordFromUrl } from '$lib/format';
 	import type { DiscoveredPeer } from '$lib/types';
 	import { open } from '@tauri-apps/plugin-dialog';
-	import { isTauri } from '$lib/api';
+	import { isTauri, isAndroid } from '$lib/api';
 	import ShareViaLinkView from '$lib/components/ShareViaLinkView.svelte';
 	import {
 		Laptop,
@@ -66,6 +66,10 @@
 	}
 
 	async function pickFolder() {
+		if (isAndroid()) {
+			alert('Folder selection is not supported on Android due to Scoped Storage. Please use the Files button to select files.');
+			return;
+		}
 		if (isTauri()) {
 			try {
 				const res = await open({ directory: true, multiple: false });
@@ -100,7 +104,8 @@
 		if (appState.preparedItems.length === 0 || appState.selectedRecipients.length === 0) return;
 		isMultipleSending = true;
 		try {
-			await appState.sendPreparedToMultiple(pinInput.trim() || undefined);
+			const cleanPin = pinInput.trim() ? extractPasswordFromUrl(pinInput.trim()) : undefined;
+			await appState.sendPreparedToMultiple(cleanPin);
 		} finally {
 			isMultipleSending = false;
 		}
@@ -135,8 +140,8 @@
 				{/if}
 			</div>
 
-			<!-- 4 Action Buttons -->
-			<div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+			<!-- Action Buttons -->
+			<div class="grid grid-cols-2 {isAndroid() ? 'sm:grid-cols-3' : 'sm:grid-cols-4'} gap-2">
 				<button
 					onclick={pickFiles}
 					class="flex items-center justify-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer group shadow-2xs"
@@ -144,13 +149,15 @@
 					<FilePlus class="w-4 h-4 text-indigo-500 group-hover:scale-110 transition-transform" />
 					<span>Files</span>
 				</button>
-				<button
-					onclick={pickFolder}
-					class="flex items-center justify-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer group shadow-2xs"
-				>
-					<FolderPlus class="w-4 h-4 text-amber-500 group-hover:scale-110 transition-transform" />
-					<span>Folder</span>
-				</button>
+				{#if !isAndroid()}
+					<button
+						onclick={pickFolder}
+						class="flex items-center justify-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer group shadow-2xs"
+					>
+						<FolderPlus class="w-4 h-4 text-amber-500 group-hover:scale-110 transition-transform" />
+						<span>Folder</span>
+					</button>
+				{/if}
 				<button
 					onclick={() => (appState.showTextModal = true)}
 					class="flex items-center justify-center gap-2 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/50 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer group shadow-2xs"

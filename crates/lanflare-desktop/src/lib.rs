@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod state;
+#[cfg(desktop)]
 pub mod tray;
 
 use std::sync::Arc;
@@ -11,6 +12,7 @@ pub use commands::*;
 pub use state::DesktopState;
 
 /// Entry point to configure and run the Tauri application.
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::registry()
         .with(
@@ -33,6 +35,16 @@ pub fn run() {
         .setup({
             let state_setup = state.clone();
             move |app| {
+                use tauri::Manager;
+                let app_h = app.handle();
+                let config_dir = app_h.path().app_config_dir().ok();
+                let data_dir = app_h.path().app_data_dir().ok();
+                let download_dir = app_h.path().download_dir().ok();
+                let state_paths = state_setup.clone();
+                tauri::async_runtime::spawn(async move {
+                    state_paths.init_paths(config_dir, data_dir, download_dir).await;
+                });
+
                 let registry = state_setup.registry.clone();
                 tauri::async_runtime::spawn(async move {
                     registry.start_eviction_task();
@@ -48,6 +60,7 @@ pub fn run() {
                     }
                 });
 
+                #[cfg(desktop)]
                 tray::setup_tray(app.handle(), state_setup)?;
                 Ok(())
             }
@@ -73,6 +86,8 @@ pub fn run() {
             commands::clear_transfer_history,
             commands::read_clipboard,
             commands::save_clipboard_image,
+            commands::regenerate_share_link_pin,
+            commands::respond_browser_download,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running LanFlare Desktop application");

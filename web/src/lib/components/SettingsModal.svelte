@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { appState } from '$lib/state.svelte';
 	import { themeManager } from '$lib/theme.svelte';
-	import { updateConfig, isTauri } from '$lib/api';
+	import { updateConfig, isTauri, isAndroid } from '$lib/api';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import {
 		Settings,
@@ -44,6 +44,10 @@
 	});
 
 	async function pickDownloadDirectory() {
+		if (isAndroid()) {
+			alert('Custom directory selection is not supported on Android due to Scoped Storage.');
+			return;
+		}
 		if (isTauri()) {
 			try {
 				const selected = await open({
@@ -201,17 +205,19 @@
 						>
 							<span class="truncate block">{downloadDir || 'Default download folder'}</span>
 						</div>
-						<button
-							type="button"
-							onclick={pickDownloadDirectory}
-							class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-50 dark:bg-indigo-600/20 hover:bg-indigo-100 dark:hover:bg-indigo-600/30 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 text-xs font-medium cursor-pointer transition-colors flex-shrink-0"
-						>
-							<FolderOpen class="w-4 h-4" />
-							<span>Choose Folder...</span>
-						</button>
+						{#if !isAndroid()}
+							<button
+								type="button"
+								onclick={pickDownloadDirectory}
+								class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-50 dark:bg-indigo-600/20 hover:bg-indigo-100 dark:hover:bg-indigo-600/30 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 text-xs font-medium cursor-pointer transition-colors flex-shrink-0"
+							>
+								<FolderOpen class="w-4 h-4" />
+								<span>Choose Folder...</span>
+							</button>
+						{/if}
 					</div>
 					<p class="text-[11px] text-slate-400 dark:text-slate-500">
-						Incoming files and folders will be saved to this folder.
+						{isAndroid() ? 'Incoming files are saved to your device Downloads/LanFlare directory.' : 'Incoming files and folders will be saved to this folder.'}
 					</p>
 				</div>
 

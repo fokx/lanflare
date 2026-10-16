@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { appState } from '$lib/state.svelte';
-	import { formatBytes } from '$lib/format';
-	import { isTauri } from '$lib/api';
+	import { formatBytes, extractPasswordFromUrl } from '$lib/format';
+	import { isTauri, isAndroid, updateConfig, regenerateShareLinkPin } from '$lib/api';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import {
 		ArrowLeft,
@@ -18,28 +18,130 @@
 		X,
 		ShieldCheck,
 		Radio,
-		AlertCircle
+		AlertCircle,
+		Key,
+		RefreshCw,
+		Eye,
+		EyeOff
 	} from 'lucide-svelte';
 
 	let copiedUrl = $state<string | null>(null);
 	let activeQrUrl = $state<string | null>(null);
 	let encryptionEnabled = $state(true);
-	let autoAccept = $state(appState.status?.autoAccept || false);
-	let requirePin = $state(appState.status?.pinEnabled || false);
+	let autoAccept = $state(appState.status?.shareLinkAutoAccept ?? false);
+	let requirePin = $state(appState.status?.shareLinkRequirePin ?? true);
+	let pin = $state(appState.status?.shareLinkPin ?? '');
+	let isRegeneratingPin = $state(false);
+	let copiedPin = $state(false);
+	let showPin = $state(true);
+	let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
-	// Derived list of valid interface URLs
+	function onPinInput(val: string) {
+		const extracted = extractPasswordFromUrl(val);
+		pin = extracted;
+		if (saveTimeout) clearTimeout(saveTimeout);
+		saveTimeout = setTimeout(async () => {
+			try {
+				await updateConfig({ shareLinkPin: pin });
+				if (appState.status) {
+					appState.status.shareLinkPin = pin;
+				}
+			} catch (e) {
+				console.error('Failed to update shareLinkPin:', e);
+			}
+		}, 300);
+	}
+
+	async function onPinBlur() {
+		if (saveTimeout) clearTimeout(saveTimeout);
+		const extracted = extractPasswordFromUrl(pin);
+		pin = extracted;
+		try {
+			await updateConfig({ shareLinkPin: pin });
+			if (appState.status) {
+				appState.status.shareLinkPin = pin;
+			}
+		} catch (e) {
+			console.error('Failed to update shareLinkPin:', e);
+		}
+	}
+
+	function onPinPaste(e: ClipboardEvent) {
+		const pastedText = e.clipboardData?.getData('text') ?? '';
+		if (pastedText) {
+			e.preventDefault();
+			const extracted = extractPasswordFromUrl(pastedText);
+			pin = extracted;
+			onPinBlur();
+		}
+	}
+
+	// Derived list of valid interface URLs (including Basic Auth credentials when PIN is required)
 	let downloadUrls = $derived.by(() => {
 		const port = appState.status?.port || 53317;
 		const proto = encryptionEnabled ? 'https' : 'http';
 		const ifaces = appState.status?.interfaces || [];
+		const authPrefix = requirePin && pin ? `:${pin}@` : '';
 
 		// Filter to IPv4 addresses first for clean browser URLs
 		const v4 = ifaces.filter((i) => !i.isIpv6 && i.address && i.address !== '127.0.0.1');
 		if (v4.length === 0) {
-			return [`${proto}://127.0.0.1:${port}`];
+			return [`${proto}://${authPrefix}127.0.0.1:${port}`];
 		}
-		return v4.map((i) => `${proto}://${i.address}:${port}`);
+		return v4.map((i) => `${proto}://${authPrefix}${i.address}:${port}`);
 	});
+
+	async function handleAutoAcceptChange() {
+		try {
+			await updateConfig({ shareLinkAutoAccept: autoAccept });
+			if (appState.status) {
+				appState.status.shareLinkAutoAccept = autoAccept;
+			}
+		} catch (e) {
+			console.error('Failed to update shareLinkAutoAccept:', e);
+		}
+	}
+
+	async function handleRequirePinChange() {
+		try {
+			await updateConfig({ shareLinkRequirePin: requirePin });
+			if (appState.status) {
+				appState.status.shareLinkRequirePin = requirePin;
+			}
+		} catch (e) {
+			console.error('Failed to update shareLinkRequirePin:', e);
+		}
+	}
+
+	async function handleRegeneratePin() {
+		isRegeneratingPin = true;
+		try {
+			const newPin = await regenerateShareLinkPin();
+			pin = newPin;
+			if (appState.status) {
+				appState.status.shareLinkPin = newPin;
+			}
+		} catch (e) {
+			console.error('Failed to regenerate PIN:', e);
+		} finally {
+			setTimeout(() => {
+				isRegeneratingPin = false;
+			}, 350);
+		}
+	}
+
+	async function copyPinToClipboard() {
+		if (!pin) return;
+		try {
+			await navigator.clipboard.writeText(pin);
+			copiedPin = true;
+			setTimeout(() => {
+				copiedPin = false;
+			}, 2000);
+		} catch (e) {
+			console.error('Failed to copy PIN:', e);
+		}
+	}
 
 	async function copyToClipboard(url: string) {
 		try {
@@ -75,6 +177,10 @@
 	}
 
 	async function pickFolder() {
+		if (isAndroid()) {
+			alert('Folder selection is not supported on Android due to Scoped Storage. Please use Files.');
+			return;
+		}
 		if (isTauri()) {
 			try {
 				const res = await open({ directory: true, multiple: false });
@@ -182,6 +288,52 @@
 		</div>
 	</div>
 
+	<!-- Requests Section (Matching LocalSend layout) -->
+	{#if appState.pendingBrowserDownloads.length > 0}
+		<div class="space-y-2">
+			<div class="flex items-center justify-between">
+				<h3 class="text-xs font-semibold text-slate-700 dark:text-slate-300">
+					Requests ({appState.pendingBrowserDownloads.length})
+				</h3>
+				<span class="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
+					Click to approve or decline download
+				</span>
+			</div>
+			<div class="space-y-2">
+				{#each appState.pendingBrowserDownloads as req (req.downloadId)}
+					<div
+						class="flex items-center justify-between p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl shadow-xs"
+					>
+						<div class="truncate max-w-[75%]">
+							<div class="text-xs font-semibold text-slate-900 dark:text-slate-100 truncate" title={req.fileName}>
+								{req.fileName}
+							</div>
+							<div class="text-[11px] text-slate-500 dark:text-slate-400 font-mono mt-0.5">
+								{req.remoteIp} {req.fileSize > 0 ? `• ${formatBytes(req.fileSize)}` : ''}
+							</div>
+						</div>
+						<div class="flex items-center gap-2 flex-shrink-0">
+							<button
+								onclick={() => appState.respondBrowserDownload(req.downloadId, false)}
+								class="p-1.5 rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/50 transition-colors cursor-pointer"
+								title="Decline download request"
+							>
+								<X class="w-5 h-5" />
+							</button>
+							<button
+								onclick={() => appState.respondBrowserDownload(req.downloadId, true)}
+								class="p-1.5 rounded-lg text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-950/50 transition-colors cursor-pointer"
+								title="Accept and start download"
+							>
+								<Check class="w-5 h-5" />
+							</button>
+						</div>
+					</div>
+				{/each}
+			</div>
+		</div>
+	{/if}
+
 	<!-- Shared Content Basket -->
 	<div class="space-y-3">
 		<div class="flex items-center justify-between">
@@ -201,13 +353,15 @@
 					<FilePlus class="w-3.5 h-3.5" />
 					<span>Files</span>
 				</button>
-				<button
-					onclick={pickFolder}
-					class="flex items-center gap-1 py-1 px-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-medium transition-colors cursor-pointer"
-				>
-					<FolderPlus class="w-3.5 h-3.5" />
-					<span>Folder</span>
-				</button>
+				{#if !isAndroid()}
+					<button
+						onclick={pickFolder}
+						class="flex items-center gap-1 py-1 px-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-medium transition-colors cursor-pointer"
+					>
+						<FolderPlus class="w-3.5 h-3.5" />
+						<span>Folder</span>
+					</button>
+				{/if}
 				<button
 					onclick={() => (appState.showTextModal = true)}
 					class="flex items-center gap-1 py-1 px-2.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-medium transition-colors cursor-pointer"
@@ -281,28 +435,96 @@
 			</div>
 		</div>
 
-		<div class="flex items-center gap-3">
+		<div class="flex items-start gap-3">
 			<input
 				type="checkbox"
 				id="auto-accept-chk"
 				bind:checked={autoAccept}
-				class="w-4 h-4 accent-indigo-600 rounded cursor-pointer"
+				onchange={handleAutoAcceptChange}
+				class="mt-1 w-4 h-4 accent-indigo-600 rounded cursor-pointer"
 			/>
-			<label for="auto-accept-chk" class="text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
-				Automatically accept requests
-			</label>
+			<div>
+				<label for="auto-accept-chk" class="text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
+					Automatically accept requests
+				</label>
+				<p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+					{autoAccept
+						? 'Manual approval required: each browser download request must be accepted'
+						: 'Downloads proceed automatically without manual approval'}
+				</p>
+			</div>
 		</div>
 
-		<div class="flex items-center gap-3">
+		<div class="flex items-start gap-3">
 			<input
 				type="checkbox"
 				id="require-pin-chk"
 				bind:checked={requirePin}
-				class="w-4 h-4 accent-indigo-600 rounded cursor-pointer"
+				onchange={handleRequirePinChange}
+				class="mt-1 w-4 h-4 accent-indigo-600 rounded cursor-pointer"
 			/>
-			<label for="require-pin-chk" class="text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
-				Require PIN
-			</label>
+			<div class="flex-1 space-y-1.5">
+				<label for="require-pin-chk" class="text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
+					Require PIN
+				</label>
+				<p class="text-[11px] text-slate-500 dark:text-slate-400">
+					Protects the link with HTTP Basic Auth password. Included in the share link and QR code.
+				</p>
+				{#if requirePin}
+					<div class="flex flex-wrap items-center gap-2 pt-1.5">
+						<!-- Editable PIN / Password Input Field -->
+						<div
+							class="flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-500/20 rounded-xl text-xs shadow-xs transition-all flex-1 min-w-[200px] max-w-sm"
+						>
+							<Key class="w-3.5 h-3.5 text-indigo-500 flex-shrink-0" />
+							<input
+								type={showPin ? 'text' : 'password'}
+								value={pin}
+								oninput={(e) => onPinInput(e.currentTarget.value)}
+								onblur={onPinBlur}
+								onpaste={onPinPaste}
+								placeholder="Enter password or paste link"
+								class="bg-transparent border-none outline-none font-mono font-medium text-slate-800 dark:text-slate-100 placeholder:text-slate-400 text-xs w-full"
+								title="Custom password / PIN. Pasting full share links will automatically extract the password."
+							/>
+							<button
+								type="button"
+								onclick={() => (showPin = !showPin)}
+								class="p-1 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer flex-shrink-0"
+								title={showPin ? 'Hide password' : 'Show password'}
+							>
+								{#if showPin}
+									<EyeOff class="w-3.5 h-3.5" />
+								{:else}
+									<Eye class="w-3.5 h-3.5" />
+								{/if}
+							</button>
+							<button
+								type="button"
+								onclick={copyPinToClipboard}
+								class="p-1 rounded text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-300 transition-colors cursor-pointer flex-shrink-0"
+								title="Copy password"
+							>
+								{#if copiedPin}
+									<Check class="w-3.5 h-3.5 text-emerald-500" />
+								{:else}
+									<Copy class="w-3.5 h-3.5" />
+								{/if}
+							</button>
+						</div>
+
+						<button
+							type="button"
+							onclick={handleRegeneratePin}
+							class="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-medium transition-colors cursor-pointer border border-slate-200 dark:border-slate-700/60 shadow-xs flex-shrink-0"
+							title="Regenerate random PIN"
+						>
+							<RefreshCw class="w-3.5 h-3.5 {isRegeneratingPin ? 'animate-spin' : ''}" />
+							<span>Regenerate PIN</span>
+						</button>
+					</div>
+				{/if}
+			</div>
 		</div>
 	</div>
 </div>

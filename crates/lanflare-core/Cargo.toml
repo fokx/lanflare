@@ -38,6 +38,7 @@ rsa = { workspace = true }
 pem = { workspace = true }
 x509-parser = { workspace = true }
 rand = { workspace = true }
+base64 = "0.22"
 
 # Error & Logging
 anyhow = { workspace = true }

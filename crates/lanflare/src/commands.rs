@@ -742,6 +742,21 @@ pub async fn receive(
             ServerTransferEvent::FileFailed { file_id, error, .. } => {
                 eprintln!("File transfer failed [ID: {file_id}]: {error}");
             }
+            ServerTransferEvent::BrowserDownload {
+                remote_ip,
+                file_name,
+                file_size,
+                decision_tx,
+                ..
+            } => {
+                println!(
+                    "Browser download requested by {} for '{}' ({:.2} MB). Auto-accepting.",
+                    remote_ip,
+                    file_name,
+                    file_size as f64 / (1024.0 * 1024.0)
+                );
+                let _ = decision_tx.send(true);
+            }
             ServerTransferEvent::SessionEnded { session_id, reason } => {
                 println!("Transfer session ended [ID: {session_id}]: {reason:?}\n");
             }

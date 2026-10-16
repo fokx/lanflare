@@ -84,6 +84,9 @@ pub struct NodeStatusDto {
     pub fingerprint: String,
     pub save_to_history: bool,
     pub multicast_address: String,
+    pub share_link_auto_accept: bool,
+    pub share_link_require_pin: bool,
+    pub share_link_pin: String,
     pub interfaces: Vec<NetworkInterfaceDto>,
 }
 
@@ -107,6 +110,9 @@ pub struct UpdateConfigPayload {
     pub pin: Option<Option<String>>,
     pub save_to_history: Option<bool>,
     pub multicast_address: Option<String>,
+    pub share_link_auto_accept: Option<bool>,
+    pub share_link_require_pin: Option<bool>,
+    pub share_link_pin: Option<String>,
 }
 
 /// Payload emitted over Tauri events when an incoming transfer request arrives.
@@ -185,6 +191,9 @@ pub async fn get_node_status(state: State<'_, Arc<DesktopState>>) -> Result<Node
         fingerprint,
         save_to_history: cfg.save_to_history,
         multicast_address: cfg.multicast_address,
+        share_link_auto_accept: cfg.share_link_auto_accept,
+        share_link_require_pin: cfg.share_link_require_pin,
+        share_link_pin: cfg.share_link_pin,
         interfaces: ifaces,
     })
 }
@@ -215,10 +224,19 @@ pub async fn update_config(
         cfg.auto_accept = auto_accept;
     }
     if let Some(pin_opt) = payload.pin {
-        cfg.pin = pin_opt;
+        cfg.pin = pin_opt.map(|p| lanflare_core::server::extract_password_from_url(&p));
     }
     if let Some(save_hist) = payload.save_to_history {
         cfg.save_to_history = save_hist;
+    }
+    if let Some(sla) = payload.share_link_auto_accept {
+        cfg.share_link_auto_accept = sla;
+    }
+    if let Some(slrp) = payload.share_link_require_pin {
+        cfg.share_link_require_pin = slrp;
+    }
+    if let Some(slpin) = payload.share_link_pin {
+        cfg.share_link_pin = lanflare_core::server::extract_password_from_url(&slpin);
     }
     if let Some(mc_addr_str) = payload.multicast_address {
         let trimmed = mc_addr_str.trim();
@@ -234,7 +252,7 @@ pub async fn update_config(
         cfg.multicast_address = trimmed.to_string();
     }
 
-    if let Err(e) = crate::state::save_config(&cfg) {
+    if let Err(e) = state.save_config_current(&cfg).await {
         tracing::warn!("Failed to persist configuration to disk: {e}");
     }
 
@@ -500,11 +518,10 @@ pub async fn start_receiver_server(
         return Ok(h.bound_port());
     }
 
-    let cfg = state.config.read().await.clone();
     let (event_tx, mut event_rx) = mpsc::channel::<ServerTransferEvent>(100);
 
     let handle = start_server(
-        cfg.clone(),
+        state.config.clone(),
         Some(state.identity.clone()),
         Arc::clone(&state.registry),
         Some(event_tx),
@@ -602,9 +619,11 @@ pub async fn start_receiver_server(
 
                         // Ensure main window is visible, unminimized, and focused
                         if let Some(window) = app_clone.get_webview_window("main") {
+                            #[cfg(desktop)]
                             let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
+                            #[cfg(desktop)]
                             let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
                         }
 
@@ -619,6 +638,51 @@ pub async fn start_receiver_server(
                             },
                         );
                     }
+                }
+                ServerTransferEvent::BrowserDownload {
+                    download_id,
+                    remote_ip,
+                    file_name,
+                    file_size,
+                    decision_tx,
+                } => {
+                    state_clone
+                        .pending_browser_downloads
+                        .lock()
+                        .await
+                        .insert(download_id.clone(), decision_tx);
+
+                    // Show system notification
+                    let notif_body = format!(
+                        "Browser at {} requested to download \"{}\"",
+                        remote_ip, file_name
+                    );
+                    let _ = app_clone
+                        .notification()
+                        .builder()
+                        .title("LanFlare - Browser Download Request")
+                        .body(&notif_body)
+                        .show();
+
+                    // Focus main window
+                    if let Some(window) = app_clone.get_webview_window("main") {
+                        #[cfg(desktop)]
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                        #[cfg(desktop)]
+                        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
+                    }
+
+                    let _ = app_clone.emit(
+                        "lanflare://browser-download-request",
+                        serde_json::json!({
+                            "downloadId": download_id,
+                            "remoteIp": remote_ip.to_string(),
+                            "fileName": file_name,
+                            "fileSize": file_size,
+                        }),
+                    );
                 }
                 ServerTransferEvent::FileStarted {
                     session_id,
@@ -689,6 +753,36 @@ pub async fn start_receiver_server(
     });
 
     Ok(port)
+}
+
+/// Regenerates a new random share link PIN and persists configuration.
+#[tauri::command]
+pub async fn regenerate_share_link_pin(
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<String, String> {
+    let mut cfg = state.config.write().await;
+    let new_pin = lanflare_core::config::generate_share_link_pin();
+    cfg.share_link_pin = new_pin.clone();
+    if let Err(e) = state.save_config_current(&cfg).await {
+        tracing::warn!("Failed to persist config after pin regeneration: {e}");
+    }
+    Ok(new_pin)
+}
+
+/// Responds to an incoming browser download request (accept or decline).
+#[tauri::command]
+pub async fn respond_browser_download(
+    state: State<'_, Arc<DesktopState>>,
+    download_id: String,
+    accept: bool,
+) -> Result<(), String> {
+    let mut pending = state.pending_browser_downloads.lock().await;
+    if let Some(tx) = pending.remove(&download_id) {
+        let _ = tx.send(accept);
+        Ok(())
+    } else {
+        Err("No pending download request with that ID".to_string())
+    }
 }
 
 /// Responds to a pending incoming transfer request (accept or decline).
@@ -839,7 +933,7 @@ pub async fn send_files(
         .ok_or_else(|| "Target peer has no valid IP address".to_string())?;
 
     // 2. Prepare outgoing files (including recursive expansion of folders)
-    let outgoing = collect_outgoing_files(&payload.files).await?;
+    let outgoing = collect_outgoing_files(&app, &payload.files).await?;
     let total_bytes: u64 = outgoing.iter().map(|f| f.size).sum();
 
     // 3. Create client with pinned certificate verifier
@@ -868,7 +962,7 @@ pub async fn send_files(
     let cancel_token = CancellationToken::new();
     let transfer_opts = TransferOptions {
         max_concurrency: 4,
-        pin: payload.pin,
+        pin: payload.pin.map(|p| lanflare_core::server::extract_password_from_url(&p)),
         cancel_token: Some(cancel_token.clone()),
         progress_interval: Duration::from_millis(100),
         ..Default::default()
@@ -1124,10 +1218,66 @@ pub async fn cancel_outgoing_transfer(
 }
 
 /// Helper to asynchronously collect files, recursively traversing directories and recording relative paths.
-async fn collect_outgoing_files(paths: &[String]) -> Result<Vec<OutgoingFile>, String> {
+/// Supports both filesystem paths and Android content:// URIs.
+async fn collect_outgoing_files(
+    #[allow(unused)] app: &AppHandle,
+    paths: &[String],
+) -> Result<Vec<OutgoingFile>, String> {
     let mut collected = Vec::new();
 
     for path_str in paths {
+        if path_str.starts_with("content://") {
+            #[cfg(target_os = "android")]
+            {
+                use tauri_plugin_fs::FsExt;
+                let file_name = app
+                    .path()
+                    .file_name(path_str)
+                    .unwrap_or_else(|| {
+                        path_str.rsplit('/').next().unwrap_or("file").to_string()
+                    });
+
+                let cache_dir = app
+                    .path()
+                    .cache_dir()
+                    .unwrap_or_else(|_| std::env::temp_dir())
+                    .join("lanflare_outgoing");
+                tokio::fs::create_dir_all(&cache_dir)
+                    .await
+                    .map_err(|e| format!("Failed to create outgoing cache dir: {e}"))?;
+
+                let dest_path = cache_dir.join(&file_name);
+                let url = url::Url::parse(path_str)
+                    .map_err(|e| format!("Invalid content URI {path_str}: {e}"))?;
+                let file_path = tauri_plugin_fs::FilePath::Url(url);
+                let mut opts = tauri_plugin_fs::OpenOptions::default();
+                opts.read(true);
+                let mut src_file = app
+                    .fs()
+                    .open(file_path, opts)
+                    .map_err(|e| format!("Failed to open content URI {path_str}: {e}"))?;
+
+                let mut dst_file = std::fs::File::create(&dest_path)
+                    .map_err(|e| format!("Failed to create cached outgoing file: {e}"))?;
+
+                std::io::copy(&mut src_file, &mut dst_file)
+                    .map_err(|e| format!("Failed to copy content URI data: {e}"))?;
+
+                let out_file = OutgoingFile::from_path_with_name(&dest_path, file_name)
+                    .await
+                    .map_err(|e| format!("Failed to read {}: {e}", dest_path.display()))?
+                    .with_computed_sha256()
+                    .await
+                    .map_err(|e| format!("Failed to hash {}: {e}", dest_path.display()))?;
+                collected.push(out_file);
+                continue;
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                return Err(format!("Content URIs are only supported on Android: {path_str}"));
+            }
+        }
+
         let path = PathBuf::from(path_str);
         if !path.exists() {
             return Err(format!("File does not exist: {}", path.display()));
@@ -1195,10 +1345,12 @@ fn collect_dir_entries_recursive<'a>(
 /// Creates a temporary text message file on disk so it can be sent via standard transfer protocols.
 #[tauri::command]
 pub async fn create_temp_text_file(
+    app: AppHandle,
     content: String,
     file_name: Option<String>,
 ) -> Result<String, String> {
-    let dir = std::env::temp_dir().join("lanflare_messages");
+    let base_dir = app.path().cache_dir().unwrap_or_else(|_| std::env::temp_dir());
+    let dir = base_dir.join("lanflare_messages");
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| format!("Failed to create temporary directory: {e}"))?;
@@ -1218,6 +1370,7 @@ pub async fn create_temp_text_file(
 /// Registers files with the download manager for "Share via link" browser downloads.
 #[tauri::command]
 pub async fn offer_download_files(
+    #[allow(unused)] app: AppHandle,
     state: State<'_, Arc<DesktopState>>,
     files: Vec<String>,
 ) -> Result<(), String> {
@@ -1228,6 +1381,64 @@ pub async fn offer_download_files(
 
     let mut download_files = Vec::new();
     for path_str in files {
+        if path_str.starts_with("content://") {
+            #[cfg(target_os = "android")]
+            {
+                use tauri_plugin_fs::FsExt;
+                let file_name = app
+                    .path()
+                    .file_name(&path_str)
+                    .unwrap_or_else(|| "file".to_string());
+                let cache_dir = app
+                    .path()
+                    .cache_dir()
+                    .unwrap_or_else(|_| std::env::temp_dir())
+                    .join("lanflare_download_offer");
+                tokio::fs::create_dir_all(&cache_dir)
+                    .await
+                    .map_err(|e| format!("Failed to create cache dir: {e}"))?;
+
+                let dest_path = cache_dir.join(&file_name);
+                let url = url::Url::parse(&path_str)
+                    .map_err(|e| format!("Invalid content URI {path_str}: {e}"))?;
+                let file_path = tauri_plugin_fs::FilePath::Url(url);
+                let mut opts = tauri_plugin_fs::OpenOptions::default();
+                opts.read(true);
+                let mut src_file = app
+                    .fs()
+                    .open(file_path, opts)
+                    .map_err(|e| format!("Failed to open content URI {path_str}: {e}"))?;
+                let mut dst_file = std::fs::File::create(&dest_path)
+                    .map_err(|e| format!("Failed to create cached file: {e}"))?;
+                std::io::copy(&mut src_file, &mut dst_file)
+                    .map_err(|e| format!("Failed to copy content URI data: {e}"))?;
+
+                let meta = tokio::fs::metadata(&dest_path)
+                    .await
+                    .map_err(|e| format!("Failed to stat {}: {e}", dest_path.display()))?;
+                let file_type = lanflare_core::client::transfer::mime_guess_simple(&file_name);
+                let file_id = uuid::Uuid::new_v4().to_string();
+
+                download_files.push(lanflare_core::server::DownloadFile {
+                    dto: lanflare_proto::transfer::FileDto {
+                        id: file_id,
+                        file_name,
+                        size: meta.len(),
+                        file_type,
+                        sha256: None,
+                        preview: None,
+                        metadata: None,
+                    },
+                    file_path: dest_path,
+                });
+                continue;
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                return Err(format!("Content URIs are only supported on Android: {path_str}"));
+            }
+        }
+
         let path = PathBuf::from(&path_str);
         if !path.exists() {
             return Err(format!("File does not exist: {}", path.display()));
@@ -1317,20 +1528,27 @@ pub async fn get_download_files(
 
 /// Loads persistent transfer history entries from disk.
 #[tauri::command]
-pub fn get_transfer_history() -> Result<Vec<serde_json::Value>, String> {
-    Ok(crate::state::load_history())
+pub async fn get_transfer_history(
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<Vec<serde_json::Value>, String> {
+    Ok(state.load_history_current().await)
 }
 
 /// Saves persistent transfer history entries to disk.
 #[tauri::command]
-pub fn save_transfer_history(items: Vec<serde_json::Value>) -> Result<(), String> {
-    crate::state::save_history(&items).map_err(|e| format!("Failed to save history: {e}"))
+pub async fn save_transfer_history(
+    state: State<'_, Arc<DesktopState>>,
+    items: Vec<serde_json::Value>,
+) -> Result<(), String> {
+    state.save_history_current(&items).await.map_err(|e| format!("Failed to save history: {e}"))
 }
 
 /// Clears persistent transfer history from disk.
 #[tauri::command]
-pub fn clear_transfer_history() -> Result<(), String> {
-    crate::state::save_history(&[]).map_err(|e| format!("Failed to clear history: {e}"))
+pub async fn clear_transfer_history(
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<(), String> {
+    state.save_history_current(&[]).await.map_err(|e| format!("Failed to clear history: {e}"))
 }
 
 /// DTO for clipboard content (files, image, or text).
@@ -1348,94 +1566,113 @@ pub enum ClipboardContentDto {
 
 /// Reads image, file paths, or text directly from the OS system clipboard.
 #[tauri::command]
-pub async fn read_clipboard() -> Result<ClipboardContentDto, String> {
-    tokio::task::spawn_blocking(|| {
-        let mut clipboard = arboard::Clipboard::new()
-            .map_err(|e| format!("Failed to access clipboard: {e}"))?;
+pub async fn read_clipboard(
+    #[allow(unused)] app: AppHandle,
+) -> Result<ClipboardContentDto, String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        tokio::task::spawn_blocking(move || {
+            let mut clipboard = arboard::Clipboard::new()
+                .map_err(|e| format!("Failed to access clipboard: {e}"))?;
 
-        // 1. Try reading an image
-        if let Ok(img) = clipboard.get_image() {
-            if img.width > 0 && img.height > 0 && !img.bytes.is_empty() {
-                let dir = std::env::temp_dir().join("lanflare_clipboard");
-                let _ = std::fs::create_dir_all(&dir);
-                let now = chrono::Local::now();
-                let file_name = format!("clipboard_{}.png", now.format("%Y%m%d_%H%M%S"));
-                let path = dir.join(&file_name);
+            // 1. Try reading an image
+            if let Ok(img) = clipboard.get_image() {
+                if img.width > 0 && img.height > 0 && !img.bytes.is_empty() {
+                    let base_dir = app.path().cache_dir().unwrap_or_else(|_| std::env::temp_dir());
+                    let dir = base_dir.join("lanflare_clipboard");
+                    let _ = std::fs::create_dir_all(&dir);
+                    let now = chrono::Local::now();
+                    let file_name = format!("clipboard_{}.png", now.format("%Y%m%d_%H%M%S"));
+                    let path = dir.join(&file_name);
 
-                if let Ok(file) = std::fs::File::create(&path) {
-                    let mut encoder = png::Encoder::new(file, img.width as u32, img.height as u32);
-                    encoder.set_color(png::ColorType::Rgba);
-                    encoder.set_depth(png::BitDepth::Eight);
-                    if let Ok(mut writer) = encoder.write_header() {
-                        if writer.write_image_data(&img.bytes).is_ok() {
-                            let size = std::fs::metadata(&path)
-                                .map(|m| m.len() as usize)
-                                .unwrap_or(img.bytes.len());
-                            return Ok(ClipboardContentDto::Image {
-                                path: path.to_string_lossy().to_string(),
-                                name: file_name,
-                                size,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Try reading text or file URLs
-        if let Ok(text) = clipboard.get_text() {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                // Check if the text contains copied file paths / file:// URLs
-                let mut existing_files = Vec::new();
-                for line in trimmed.lines() {
-                    let line = line.trim();
-                    if line.is_empty() || line == "copy" || line == "cut" || line.starts_with("x-special/") {
-                        continue;
-                    }
-
-                    // Try url parsing (file://...)
-                    if let Ok(url) = url::Url::parse(line) {
-                        if url.scheme() == "file" {
-                            if let Ok(p) = url.to_file_path() {
-                                if p.exists() {
-                                    existing_files.push(p.to_string_lossy().to_string());
-                                    continue;
-                                }
+                    if let Ok(file) = std::fs::File::create(&path) {
+                        let mut encoder = png::Encoder::new(file, img.width as u32, img.height as u32);
+                        encoder.set_color(png::ColorType::Rgba);
+                        encoder.set_depth(png::BitDepth::Eight);
+                        if let Ok(mut writer) = encoder.write_header() {
+                            if writer.write_image_data(&img.bytes).is_ok() {
+                                let size = std::fs::metadata(&path)
+                                    .map(|m| m.len() as usize)
+                                    .unwrap_or(img.bytes.len());
+                                return Ok(ClipboardContentDto::Image {
+                                    path: path.to_string_lossy().to_string(),
+                                    name: file_name,
+                                    size,
+                                });
                             }
                         }
                     }
+                }
+            }
 
-                    // Try direct filesystem path
-                    let p = std::path::Path::new(line);
-                    if p.exists() {
-                        existing_files.push(p.to_string_lossy().to_string());
+            // 2. Try reading text or file URLs
+            if let Ok(text) = clipboard.get_text() {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    // Check if the text contains copied file paths / file:// URLs
+                    let mut existing_files = Vec::new();
+                    for line in trimmed.lines() {
+                        let line = line.trim();
+                        if line.is_empty() || line == "copy" || line == "cut" || line.starts_with("x-special/") {
+                            continue;
+                        }
+
+                        // Try url parsing (file://...)
+                        if let Ok(url) = url::Url::parse(line) {
+                            if url.scheme() == "file" {
+                                if let Ok(p) = url.to_file_path() {
+                                    if p.exists() {
+                                        existing_files.push(p.to_string_lossy().to_string());
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Try direct filesystem path
+                        let p = std::path::Path::new(line);
+                        if p.exists() {
+                            existing_files.push(p.to_string_lossy().to_string());
+                        }
                     }
-                }
 
-                if !existing_files.is_empty() {
-                    return Ok(ClipboardContentDto::Files(existing_files));
-                }
+                    if !existing_files.is_empty() {
+                        return Ok(ClipboardContentDto::Files(existing_files));
+                    }
 
-                // Plain text
+                    // Plain text
+                    return Ok(ClipboardContentDto::Text(trimmed.to_string()));
+                }
+            }
+
+            Err("Clipboard is empty or contains unsupported content".to_string())
+        })
+        .await
+        .map_err(|e| format!("Clipboard task failed: {e}"))?
+    }
+    #[cfg(target_os = "android")]
+    {
+        use tauri_plugin_clipboard_manager::ClipboardExt;
+        if let Ok(text) = app.clipboard().read_text() {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
                 return Ok(ClipboardContentDto::Text(trimmed.to_string()));
             }
         }
-
         Err("Clipboard is empty or contains unsupported content".to_string())
-    })
-    .await
-    .map_err(|e| format!("Clipboard task failed: {e}"))?
+    }
 }
 
 /// Saves an RGBA image buffer (from clipboard) to a temporary PNG file.
 #[tauri::command]
 pub async fn save_clipboard_image(
+    app: AppHandle,
     rgba: Vec<u8>,
     width: u32,
     height: u32,
 ) -> Result<String, String> {
-    let dir = std::env::temp_dir().join("lanflare_clipboard");
+    let base_dir = app.path().cache_dir().unwrap_or_else(|_| std::env::temp_dir());
+    let dir = base_dir.join("lanflare_clipboard");
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| format!("Failed to create clipboard temp dir: {e}"))?;

@@ -15,6 +15,11 @@ export const isTauri = (): boolean => {
 	return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 };
 
+// Check if running on Android platform
+export const isAndroid = (): boolean => {
+	return typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent);
+};
+
 // Safe wrapper around invoke for browser mock fallback during web development
 export async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
 	if (!isTauri()) {
@@ -123,6 +128,14 @@ export async function clearTransferHistory(): Promise<void> {
 	return tauriInvoke<void>('clear_transfer_history');
 }
 
+export async function regenerateShareLinkPin(): Promise<string> {
+	return tauriInvoke<string>('regenerate_share_link_pin');
+}
+
+export async function respondBrowserDownload(downloadId: string, accept: boolean): Promise<void> {
+	return tauriInvoke<void>('respond_browser_download', { downloadId, accept });
+}
+
 // Fallback mocks for Vite standalone dev/test in browser
 function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 	switch (cmd) {
@@ -136,8 +149,15 @@ function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 				fingerprint: '3FA85F647990AFDDF6872B2F139FF30B00000000000000000000000000000000',
 				saveToHistory: true,
 				multicastAddress: '224.0.0.167',
+				shareLinkAutoAccept: false,
+				shareLinkRequirePin: true,
+				shareLinkPin: 'k7m9xp',
 				interfaces: [{ name: 'eth0', address: '192.168.1.100', isIpv6: false }]
 			} as T;
+		case 'regenerate_share_link_pin':
+			return 'k7m9xp' as T;
+		case 'respond_browser_download':
+			return undefined as T;
 		case 'get_discovered_peers':
 			return [
 				{

@@ -32,7 +32,7 @@ pub async fn route_request(
     let response = match (method, path) {
         // Web portal for browser download (Share via link)
         (&Method::GET, "/") | (&Method::GET, "/index.html") => {
-            handle_web_portal(state).await
+            handle_web_portal(&req, state).await
         }
 
         // v1/v2 Device Information: GET /api/localsend/v2/info or GET /api/localsend/v1/info
