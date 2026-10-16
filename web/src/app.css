@@ -5,12 +5,22 @@
 @layer base {
 	:root {
 		color-scheme: light;
+		--safe-area-inset-top: 0px;
+		--safe-area-inset-bottom: 0px;
+		--safe-area-inset-left: 0px;
+		--safe-area-inset-right: 0px;
+		--safe-top: max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px));
+		--safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--safe-area-inset-bottom, 0px));
+		--safe-left: max(env(safe-area-inset-left, 0px), var(--safe-area-inset-left, 0px));
+		--safe-right: max(env(safe-area-inset-right, 0px), var(--safe-area-inset-right, 0px));
 	}
 	:root.dark {
 		color-scheme: dark;
 	}
 	body {
 		@apply bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans min-h-screen overflow-x-hidden;
+		padding-left: var(--safe-left);
+		padding-right: var(--safe-right);
 	}
 }
 

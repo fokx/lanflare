@@ -93,15 +93,16 @@ pub fn percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(h1), Some(h2)) = (
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(h1), Some(h2)) = (
                 (bytes[i + 1] as char).to_digit(16),
                 (bytes[i + 2] as char).to_digit(16),
-            ) {
-                result.push((h1 * 16 + h2) as u8);
-                i += 3;
-                continue;
-            }
+            )
+        {
+            result.push((h1 * 16 + h2) as u8);
+            i += 3;
+            continue;
         }
         result.push(bytes[i]);
         i += 1;
@@ -136,7 +137,7 @@ pub fn extract_password_from_url(input: &str) -> String {
         return trimmed.to_string();
     };
 
-    let (authority, query_part) = match authority_and_beyond.find(|c| c == '/' || c == '?' || c == '#') {
+    let (authority, query_part) = match authority_and_beyond.find(['/', '?', '#']) {
         Some(idx) => (&authority_and_beyond[..idx], &authority_and_beyond[idx..]),
         None => (authority_and_beyond, ""),
     };
@@ -181,33 +182,30 @@ pub fn check_share_link_auth(req: &Request<Incoming>, config: &AppConfig) -> boo
     let expected_decoded = percent_decode(expected_pin);
 
     // 1. Check Authorization header: Basic <base64>
-    if let Some(auth_val) = req.headers().get(hyper::header::AUTHORIZATION) {
-        if let Ok(auth_str) = auth_val.to_str() {
-            if let Some(token) = auth_str.strip_prefix("Basic ").or_else(|| auth_str.strip_prefix("basic ")) {
-                if let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(token.trim()) {
-                    if let Ok(decoded_str) = std::str::from_utf8(&decoded_bytes) {
-                        // Decoded could be ":pass", "user:pass", "pass", or full URL
-                        let pass_candidates = if let Some(stripped) = decoded_str.strip_prefix(':') {
-                            vec![stripped, decoded_str]
-                        } else if let Some((user, pass)) = decoded_str.split_once(':') {
-                            vec![pass, user, decoded_str]
-                        } else {
-                            vec![decoded_str]
-                        };
+    if let Some(auth_val) = req.headers().get(hyper::header::AUTHORIZATION)
+        && let Ok(auth_str) = auth_val.to_str()
+        && let Some(token) = auth_str.strip_prefix("Basic ").or_else(|| auth_str.strip_prefix("basic "))
+        && let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(token.trim())
+        && let Ok(decoded_str) = std::str::from_utf8(&decoded_bytes)
+    {
+        // Decoded could be ":pass", "user:pass", "pass", or full URL
+        let pass_candidates = if let Some(stripped) = decoded_str.strip_prefix(':') {
+            vec![stripped, decoded_str]
+        } else if let Some((user, pass)) = decoded_str.split_once(':') {
+            vec![pass, user, decoded_str]
+        } else {
+            vec![decoded_str]
+        };
 
-                        for cand in pass_candidates {
-                            let cand_trimmed = cand.trim();
-                            if cand_trimmed == expected_pin
-                                || cand_trimmed == expected_decoded
-                                || percent_decode(cand_trimmed) == expected_decoded
-                                || extract_password_from_url(cand_trimmed) == expected_pin
-                                || extract_password_from_url(cand_trimmed) == expected_decoded
-                            {
-                                return true;
-                            }
-                        }
-                    }
-                }
+        for cand in pass_candidates {
+            let cand_trimmed = cand.trim();
+            if cand_trimmed == expected_pin
+                || cand_trimmed == expected_decoded
+                || percent_decode(cand_trimmed) == expected_decoded
+                || extract_password_from_url(cand_trimmed) == expected_pin
+                || extract_password_from_url(cand_trimmed) == expected_decoded
+            {
+                return true;
             }
         }
     }
@@ -860,9 +858,10 @@ pub async fn handle_download(
         .unwrap_or(0);
 
     // If share_link_auto_accept is true and this is a browser download, user has to click to accept!
-    if is_web && auto_accept {
-        if let Some(event_tx) = &state.event_tx {
-            let (decision_tx, decision_rx) = oneshot::channel::<bool>();
+    if is_web && auto_accept
+        && let Some(event_tx) = &state.event_tx
+    {
+        let (decision_tx, decision_rx) = oneshot::channel::<bool>();
             let download_id = Uuid::new_v4().to_string();
 
             let event = ServerTransferEvent::BrowserDownload {
@@ -891,7 +890,6 @@ pub async fn handle_download(
                 }
             }
         }
-    }
 
     let content = match tokio::fs::read(&file_path).await {
         Ok(c) => c,

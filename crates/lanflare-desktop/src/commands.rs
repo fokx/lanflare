@@ -51,10 +51,10 @@ impl From<&DiscoveredPeer> for DiscoveredPeerDto {
         for ep in &p.endpoints {
             endpoints.push(format!("{}:{}", ep.ip, p.port));
         }
-        if endpoints.is_empty() {
-            if let Some(ip) = p.primary_ip() {
-                endpoints.push(format!("{}:{}", ip, p.port));
-            }
+        if endpoints.is_empty()
+            && let Some(ip) = p.primary_ip()
+        {
+            endpoints.push(format!("{}:{}", ip, p.port));
         }
         Self {
             fingerprint: p.fingerprint.clone(),
@@ -872,13 +872,12 @@ pub async fn send_files(
                                 std::net::IpAddr::V4(v4) => format!("{proto_str}://{v4}:{port}"),
                                 std::net::IpAddr::V6(v6) => format!("{proto_str}://[{v6}]:{port}"),
                             };
-                            if let Ok(info) = probe_client.get_info(&base_url).await {
-                                if info.fingerprint.eq_ignore_ascii_case(&payload.target_fingerprint)
-                                    || payload.target_fingerprint.is_empty()
-                                {
-                                    resolved_peer = state.registry.handle_info(ip, port, proto, &info).await;
-                                    break;
-                                }
+                            if let Ok(info) = probe_client.get_info(&base_url).await
+                                && (info.fingerprint.eq_ignore_ascii_case(&payload.target_fingerprint)
+                                    || payload.target_fingerprint.is_empty())
+                            {
+                                resolved_peer = state.registry.handle_info(ip, port, proto, &info).await;
+                                break;
                             }
                         }
                     }
@@ -1137,10 +1136,10 @@ pub async fn send_files(
         // Clean up active outgoing session if this session is still active
         {
             let mut active = state_task_clone.active_outgoing.lock().await;
-            if let Some(ref s) = *active {
-                if s.session_id == sess_id_err {
-                    *active = None;
-                }
+            if let Some(ref s) = *active
+                && s.session_id == sess_id_err
+            {
+                *active = None;
             }
         }
 
@@ -1576,31 +1575,31 @@ pub async fn read_clipboard(
                 .map_err(|e| format!("Failed to access clipboard: {e}"))?;
 
             // 1. Try reading an image
-            if let Ok(img) = clipboard.get_image() {
-                if img.width > 0 && img.height > 0 && !img.bytes.is_empty() {
-                    let base_dir = app.path().cache_dir().unwrap_or_else(|_| std::env::temp_dir());
-                    let dir = base_dir.join("lanflare_clipboard");
-                    let _ = std::fs::create_dir_all(&dir);
-                    let now = chrono::Local::now();
-                    let file_name = format!("clipboard_{}.png", now.format("%Y%m%d_%H%M%S"));
-                    let path = dir.join(&file_name);
+            if let Ok(img) = clipboard.get_image()
+                && img.width > 0 && img.height > 0 && !img.bytes.is_empty()
+            {
+                let base_dir = app.path().cache_dir().unwrap_or_else(|_| std::env::temp_dir());
+                let dir = base_dir.join("lanflare_clipboard");
+                let _ = std::fs::create_dir_all(&dir);
+                let now = chrono::Local::now();
+                let file_name = format!("clipboard_{}.png", now.format("%Y%m%d_%H%M%S"));
+                let path = dir.join(&file_name);
 
-                    if let Ok(file) = std::fs::File::create(&path) {
-                        let mut encoder = png::Encoder::new(file, img.width as u32, img.height as u32);
-                        encoder.set_color(png::ColorType::Rgba);
-                        encoder.set_depth(png::BitDepth::Eight);
-                        if let Ok(mut writer) = encoder.write_header() {
-                            if writer.write_image_data(&img.bytes).is_ok() {
-                                let size = std::fs::metadata(&path)
-                                    .map(|m| m.len() as usize)
-                                    .unwrap_or(img.bytes.len());
-                                return Ok(ClipboardContentDto::Image {
-                                    path: path.to_string_lossy().to_string(),
-                                    name: file_name,
-                                    size,
-                                });
-                            }
-                        }
+                if let Ok(file) = std::fs::File::create(&path) {
+                    let mut encoder = png::Encoder::new(file, img.width as u32, img.height as u32);
+                    encoder.set_color(png::ColorType::Rgba);
+                    encoder.set_depth(png::BitDepth::Eight);
+                    if let Ok(mut writer) = encoder.write_header()
+                        && writer.write_image_data(&img.bytes).is_ok()
+                    {
+                        let size = std::fs::metadata(&path)
+                            .map(|m| m.len() as usize)
+                            .unwrap_or(img.bytes.len());
+                        return Ok(ClipboardContentDto::Image {
+                            path: path.to_string_lossy().to_string(),
+                            name: file_name,
+                            size,
+                        });
                     }
                 }
             }
@@ -1618,15 +1617,13 @@ pub async fn read_clipboard(
                         }
 
                         // Try url parsing (file://...)
-                        if let Ok(url) = url::Url::parse(line) {
-                            if url.scheme() == "file" {
-                                if let Ok(p) = url.to_file_path() {
-                                    if p.exists() {
-                                        existing_files.push(p.to_string_lossy().to_string());
-                                        continue;
-                                    }
-                                }
-                            }
+                        if let Ok(url) = url::Url::parse(line)
+                            && url.scheme() == "file"
+                            && let Ok(p) = url.to_file_path()
+                            && p.exists()
+                        {
+                            existing_files.push(p.to_string_lossy().to_string());
+                            continue;
                         }
 
                         // Try direct filesystem path

@@ -83,9 +83,12 @@
 	}
 </script>
 
-<div class="flex flex-col md:flex-row h-screen w-screen overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-100 transition-colors duration-150">
+<div class="flex flex-col md:flex-row h-screen h-[100dvh] w-screen overflow-hidden bg-slate-50 dark:bg-slate-950 font-sans text-slate-800 dark:text-slate-100 transition-colors duration-150">
 	<!-- Mobile Top Navigation Bar (Visible only on < md screens) -->
-	<header class="md:hidden flex-none flex items-center justify-between px-4 py-2.5 bg-white dark:bg-slate-950/90 border-b border-slate-200 dark:border-slate-900 z-20 shadow-xs">
+	<header
+		class="md:hidden flex-none flex items-center justify-between px-4 py-2.5 bg-white dark:bg-slate-950/90 border-b border-slate-200 dark:border-slate-900 z-20 shadow-xs"
+		style="padding-top: calc(0.625rem + var(--safe-top)); padding-left: calc(1rem + var(--safe-left)); padding-right: calc(1rem + var(--safe-right));"
+	>
 		<div class="flex items-center gap-2.5">
 			<div class="p-1.5 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-sm">
 				<Flame class="w-5 h-5 fill-white/20 stroke-[2.2]" />
@@ -134,7 +137,10 @@
 	</header>
 
 	<!-- Desktop Left Sidebar (Hidden on mobile < md) -->
-	<aside class="hidden md:flex w-64 border-r border-slate-200 dark:border-slate-900 bg-white dark:bg-slate-950/80 flex-col justify-between p-4 shadow-sm dark:shadow-none transition-colors duration-150 flex-none">
+	<aside
+		class="hidden md:flex w-64 border-r border-slate-200 dark:border-slate-900 bg-white dark:bg-slate-950/80 flex-col justify-between p-4 shadow-sm dark:shadow-none transition-colors duration-150 flex-none"
+		style="padding-top: calc(1rem + var(--safe-top)); padding-bottom: calc(1rem + var(--safe-bottom)); padding-left: calc(1rem + var(--safe-left));"
+	>
 		<!-- Brand & Logo -->
 		<div class="space-y-6">
 			<div class="flex items-center gap-3 px-2 py-1">
@@ -256,7 +262,10 @@
 	</aside>
 
 	<!-- Main Content Canvas -->
-	<main class="flex-1 min-w-0 h-full overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-950 transition-colors duration-150">
+	<main
+		class="flex-1 min-w-0 h-full overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-950 transition-colors duration-150"
+		style="padding-left: var(--safe-left); padding-right: var(--safe-right);"
+	>
 		{#if activeTab === 'radar'}
 			<DeviceGrid onSelectPeer={handleSelectPeer} />
 		{:else}
@@ -265,7 +274,10 @@
 	</main>
 
 	<!-- Mobile Bottom Navigation Bar (Visible only on < md screens) -->
-	<nav class="md:hidden flex-none flex items-center justify-around bg-white dark:bg-slate-950/95 border-t border-slate-200 dark:border-slate-900 px-3 py-2 z-20 shadow-md">
+	<nav
+		class="md:hidden flex-none flex items-center justify-around bg-white dark:bg-slate-950/95 border-t border-slate-200 dark:border-slate-900 px-3 py-2 z-20 shadow-md"
+		style="padding-bottom: calc(0.5rem + var(--safe-bottom)); padding-left: calc(0.75rem + var(--safe-left)); padding-right: calc(0.75rem + var(--safe-right));"
+	>
 		<button
 			onclick={() => (activeTab = 'radar')}
 			class="flex flex-col items-center gap-1 px-4 py-1.5 rounded-xl transition-all {activeTab === 'radar'

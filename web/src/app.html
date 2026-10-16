@@ -3,10 +3,9 @@
 	<head>
 		<meta charset="utf-8" />
 		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
-		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 		<script>
-			// Inline script to prevent theme flash:
-			// Auto detect system dark setting; default to light theme on failure or absence
+			// Inline script to prevent theme flash and apply safe area insets:
 			try {
 				const saved = localStorage.getItem('lanflare_theme');
 				let isDark = false;
@@ -34,6 +33,20 @@
 				document.documentElement.classList.remove('dark');
 				document.documentElement.style.colorScheme = 'light';
 			}
+
+			// Synchronously query Android safe insets if injected early by native webview
+			try {
+				if (window.AndroidSafeInsets) {
+					const top = window.AndroidSafeInsets.getTop();
+					const bottom = window.AndroidSafeInsets.getBottom();
+					const left = window.AndroidSafeInsets.getLeft();
+					const right = window.AndroidSafeInsets.getRight();
+					if (typeof top === 'number' && top > 0) document.documentElement.style.setProperty('--safe-area-inset-top', top + 'px');
+					if (typeof bottom === 'number' && bottom > 0) document.documentElement.style.setProperty('--safe-area-inset-bottom', bottom + 'px');
+					if (typeof left === 'number' && left > 0) document.documentElement.style.setProperty('--safe-area-inset-left', left + 'px');
+					if (typeof right === 'number' && right > 0) document.documentElement.style.setProperty('--safe-area-inset-right', right + 'px');
+				}
+			} catch (_) {}
 		</script>
 		%sveltekit.head%
 	</head>

@@ -287,6 +287,20 @@
     - Self-discovered fingerprints matching local TLS identity are suppressed from registry ingestion.
     - Verified live end-to-end against physical Android LocalSend device (`Sec` at `10.40.1.121:53317`) with 100% discovery rate and sub-2.3s total sweep time across multi-interface networks.
 
+- **ADR-021: Mobile Edge-to-Edge Safe Area Inset Bridge & Responsive Layout Adaptation**
+  - *Context*: On mobile Android and iOS devices, modern operating systems run webviews in edge-to-edge display mode where the webview canvas spans underneath translucent system bars (top status/notification bar with clock, battery, camera cutout; bottom navigation bar with 3-button or gesture pill). Android WebViews running in edge-to-edge mode return `0px` for standard CSS `env(safe-area-inset-*)`, causing the top navigation bar and bottom navigation tabs to be occluded by system controls.
+  - *Decision*:
+    1. Implement native Android Javascript Bridge (`AndroidSafeInsets`) in `MainActivity.kt` using `ViewCompat.setOnApplyWindowInsetsListener(webView)` to calculate pixel-to-dp insets from `WindowInsetsCompat.Type.systemBars()` and `displayCutout()`, dynamically evaluating JavaScript to update CSS root variables `--safe-area-inset-top`, `--safe-area-inset-bottom`, `--safe-area-inset-left`, and `--safe-area-inset-right`.
+    2. Add `viewport-fit=cover` to `<meta name="viewport">` in `app.html` with a synchronous inline script reading `window.AndroidSafeInsets` before DOM hydration to avoid layout flicker.
+    3. Define unified CSS fallback variables in `app.css`:
+       `--safe-top: max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px))` (and bottom/left/right equivalents), working identically across Android WebView, iOS Safari/WebKit, and desktop browsers.
+    4. Apply dynamic safe-area insets to mobile top header (`padding-top: calc(0.625rem + var(--safe-top))`), mobile bottom nav (`padding-bottom: calc(0.5rem + var(--safe-bottom))`), aside/main containers, and all modal backdrops/dialogs (`IncomingTransferModal`, `SettingsModal`, `SendFileDialog`, `TextMessageModal`, `IncomingBrowserDownloadModal`).
+    5. Set root layout viewport to `h-screen h-[100dvh]` to account for dynamic browser bar resizing.
+  - *Invariants*:
+    - UI elements never clip or overlap behind native system bars or notches on any platform.
+    - Zero regression on desktop when resizing windows down to mobile widths (safe insets evaluate to `0px`).
+    - Zero compiler or clippy warnings across Rust, Kotlin, and TypeScript.
+
 ---
 
 ## Known Debt & Blockers

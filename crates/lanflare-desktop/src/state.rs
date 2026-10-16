@@ -76,14 +76,14 @@ pub fn config_path() -> PathBuf {
 /// Loads persisted application configuration, falling back to defaults.
 pub fn load_config() -> AppConfig {
     let path = config_path();
-    if let Ok(content) = std::fs::read_to_string(&path) {
-        if let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content) {
-            if cfg.share_link_pin.trim().is_empty() {
-                cfg.share_link_pin = lanflare_core::config::generate_share_link_pin();
-                let _ = save_config(&cfg);
-            }
-            return cfg;
+    if let Ok(content) = std::fs::read_to_string(&path)
+        && let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content)
+    {
+        if cfg.share_link_pin.trim().is_empty() {
+            cfg.share_link_pin = lanflare_core::config::generate_share_link_pin();
+            let _ = save_config(&cfg);
         }
+        return cfg;
     }
     let default_cfg = AppConfig::default();
     let _ = save_config(&default_cfg);
@@ -115,10 +115,10 @@ pub fn history_path() -> PathBuf {
 
 /// Loads persistent transfer history entries from a specific path.
 pub fn load_history_file(path: &Path) -> Vec<serde_json::Value> {
-    if let Ok(content) = std::fs::read_to_string(path) {
-        if let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
-            return items;
-        }
+    if let Ok(content) = std::fs::read_to_string(path)
+        && let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(&content)
+    {
+        return items;
     }
     Vec::new()
 }
@@ -174,10 +174,10 @@ impl DesktopState {
         if let Some(cfg_dir) = config_dir {
             let path = cfg_dir.join("lanflare").join("config.json");
             *self.config_file.write().await = path.clone();
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(cfg) = serde_json::from_str::<AppConfig>(&content) {
-                    *self.config.write().await = cfg;
-                }
+            if let Ok(content) = std::fs::read_to_string(&path)
+                && let Ok(cfg) = serde_json::from_str::<AppConfig>(&content)
+            {
+                *self.config.write().await = cfg;
             }
         }
         if let Some(d_dir) = data_dir {
