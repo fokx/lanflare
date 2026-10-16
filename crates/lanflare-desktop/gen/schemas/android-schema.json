@@ -6327,6 +6327,36 @@
           "markdownDescription": "This enables all file write related commands without any pre-configured accessible paths."
         },
         {
+          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-pop-intent-queue`\n- `allow-pop-intent-queue-and-extract-text`",
+          "type": "string",
+          "const": "mobile-sharetarget:default",
+          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-pop-intent-queue`\n- `allow-pop-intent-queue-and-extract-text`"
+        },
+        {
+          "description": "Enables the pop_intent_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "mobile-sharetarget:allow-pop-intent-queue",
+          "markdownDescription": "Enables the pop_intent_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pop_intent_queue_and_extract_text command without any pre-configured scope.",
+          "type": "string",
+          "const": "mobile-sharetarget:allow-pop-intent-queue-and-extract-text",
+          "markdownDescription": "Enables the pop_intent_queue_and_extract_text command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pop_intent_queue command without any pre-configured scope.",
+          "type": "string",
+          "const": "mobile-sharetarget:deny-pop-intent-queue",
+          "markdownDescription": "Denies the pop_intent_queue command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pop_intent_queue_and_extract_text command without any pre-configured scope.",
+          "type": "string",
+          "const": "mobile-sharetarget:deny-pop-intent-queue-and-extract-text",
+          "markdownDescription": "Denies the pop_intent_queue_and_extract_text command without any pre-configured scope."
+        },
+        {
           "description": "This permission set configures which\nnotification features are by default exposed.\n\n#### Granted Permissions\n\nIt allows all notification related features.\n\n\n#### This default permission set includes:\n\n- `allow-is-permission-granted`\n- `allow-request-permission`\n- `allow-notify`\n- `allow-register-action-types`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-cancel`\n- `allow-get-pending`\n- `allow-remove-active`\n- `allow-get-active`\n- `allow-check-permissions`\n- `allow-show`\n- `allow-batch`\n- `allow-list-channels`\n- `allow-delete-channel`\n- `allow-create-channel`\n- `allow-permission-state`",
           "type": "string",
           "const": "notification:default",

@@ -24,14 +24,23 @@ pub fn run() {
 
     let state = Arc::new(DesktopState::new().expect("Failed to initialize LanFlare desktop state"));
 
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_clipboard_manager::init());
+
+    #[cfg(mobile)]
+    {
+        builder = builder.plugin(tauri_plugin_mobile_sharetarget::init());
+    }
+
+    builder
         .manage(state.clone())
+
         .setup({
             let state_setup = state.clone();
             move |app| {

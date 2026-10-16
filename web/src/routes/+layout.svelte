@@ -12,16 +12,18 @@
 		const syncAndroidInsets = () => {
 			if (typeof window !== 'undefined' && 'AndroidSafeInsets' in window) {
 				try {
-					// @ts-ignore
-					const bridge = window.AndroidSafeInsets;
-					const top = bridge.getTop();
-					const bottom = bridge.getBottom();
-					const left = bridge.getLeft();
-					const right = bridge.getRight();
-					if (typeof top === 'number' && top > 0) document.documentElement.style.setProperty('--safe-area-inset-top', `${top}px`);
-					if (typeof bottom === 'number' && bottom > 0) document.documentElement.style.setProperty('--safe-area-inset-bottom', `${bottom}px`);
-					if (typeof left === 'number' && left > 0) document.documentElement.style.setProperty('--safe-area-inset-left', `${left}px`);
-					if (typeof right === 'number' && right > 0) document.documentElement.style.setProperty('--safe-area-inset-right', `${right}px`);
+					const bridge = (window as any).AndroidSafeInsets;
+					if (bridge) {
+						const top = bridge.getTop?.();
+						const bottom = bridge.getBottom?.();
+						const left = bridge.getLeft?.();
+						const right = bridge.getRight?.();
+						if (typeof top === 'number' && top > 0) document.documentElement.style.setProperty('--safe-area-inset-top', `${top}px`);
+						if (typeof bottom === 'number' && bottom > 0) document.documentElement.style.setProperty('--safe-area-inset-bottom', `${bottom}px`);
+						if (typeof left === 'number' && left > 0) document.documentElement.style.setProperty('--safe-area-inset-left', `${left}px`);
+						if (typeof right === 'number' && right > 0) document.documentElement.style.setProperty('--safe-area-inset-right', `${right}px`);
+					}
+
 				} catch (_) {}
 			}
 		};

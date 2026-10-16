@@ -20,12 +20,14 @@
 		Moon
 	} from 'lucide-svelte';
 	import { announcePresence } from '$lib/api';
+	import { initShareTarget } from '$lib/shareTarget';
 
 	let activeTab = $state<'radar' | 'transfers'>('radar');
 	let isRefreshing = $state(false);
 
 	onMount(() => {
 		appState.init();
+		const cleanupShareTarget = initShareTarget();
 
 		async function handleWindowKeydown(e: KeyboardEvent) {
 			if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
@@ -51,10 +53,12 @@
 		window.addEventListener('paste', handleWindowPaste);
 
 		return () => {
+			cleanupShareTarget();
 			window.removeEventListener('keydown', handleWindowKeydown);
 			window.removeEventListener('paste', handleWindowPaste);
 		};
 	});
+
 
 	async function handleRefresh() {
 		isRefreshing = true;
