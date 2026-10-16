@@ -137,6 +137,7 @@
 
 			// Single recipient: Sends files to one recipient. Selection will be cleared after finished files transfer.
 			appState.clearPreparedItems();
+			appState.activeTab = 'transfers';
 			onClose();
 		} catch (e) {
 			errorMsg = String(e);

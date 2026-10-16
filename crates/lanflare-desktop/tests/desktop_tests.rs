@@ -102,6 +102,7 @@ async fn test_pending_incoming_session_and_decision() {
             file_name: "photo.jpg".to_string(),
             size: 1024,
             file_type: "image/jpeg".to_string(),
+            path: None,
         }],
         decision_tx: Some(decision_tx),
     };

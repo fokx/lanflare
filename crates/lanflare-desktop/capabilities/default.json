@@ -8,6 +8,8 @@
     "notification:default",
     "dialog:default",
     "opener:default",
+    "opener:allow-open-path",
+    "opener:allow-reveal-item-in-dir",
     "fs:default",
     "shell:default",
     "clipboard-manager:default"

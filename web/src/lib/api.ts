@@ -16,6 +16,12 @@ export async function openFile(filePath: string): Promise<void> {
 	if (!filePath) return;
 	if (isTauri()) {
 		try {
+			await tauriInvoke('open_path_in_system', { path: filePath });
+			return;
+		} catch (e) {
+			console.warn('open_path_in_system command failed, falling back to plugin-opener:', e);
+		}
+		try {
 			await openPath(filePath);
 		} catch (e) {
 			console.error('Failed to open file via opener:', e);
@@ -25,10 +31,16 @@ export async function openFile(filePath: string): Promise<void> {
 	}
 }
 
-// Open / reveal the folder containing a file or the folder itself in file manager
+// Open / reveal the folder containing a file or the folder itself in file manager, selecting the file
 export async function openFolder(folderOrFilePath: string): Promise<void> {
 	if (!folderOrFilePath) return;
 	if (isTauri()) {
+		try {
+			await tauriInvoke('reveal_in_folder', { path: folderOrFilePath });
+			return;
+		} catch (e) {
+			console.warn('reveal_in_folder command failed, falling back to plugin-opener:', e);
+		}
 		try {
 			await revealItemInDir(folderOrFilePath);
 		} catch (_) {

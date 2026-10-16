@@ -37,6 +37,8 @@ pub struct IncomingFileInfo {
     pub file_name: String,
     pub size: u64,
     pub file_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// Active outgoing transfer session managed from the desktop GUI.

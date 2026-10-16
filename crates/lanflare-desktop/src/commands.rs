@@ -575,6 +575,7 @@ pub async fn start_receiver_server(
                             file_name: f.file_name.clone(),
                             size: f.size,
                             file_type: f.file_type.clone(),
+                            path: None,
                         });
                     }
 
@@ -1064,6 +1065,7 @@ pub async fn send_files(
             file_name: f.file_name.clone(),
             size: f.size,
             file_type: f.file_type.clone(),
+            path: Some(f.path.to_string_lossy().to_string()),
         })
         .collect();
 
@@ -1073,6 +1075,7 @@ pub async fn send_files(
             "sessionId": session_uuid,
             "targetAlias": target_peer.alias,
             "targetEndpoint": base_url,
+            "targetFingerprint": target_peer.fingerprint,
             "files": outgoing_files_dto,
             "totalBytes": total_bytes,
         }),
@@ -1764,5 +1767,126 @@ pub async fn save_clipboard_image(
         .map_err(|e| format!("Failed to write PNG data: {e}"))?;
 
     Ok(path.to_string_lossy().to_string())
+}
+
+/// Open a file using system's default application.
+#[tauri::command]
+pub async fn open_path_in_system(#[allow(unused)] app: AppHandle, path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err(format!("File does not exist: {path}"));
+    }
+
+    #[cfg(desktop)]
+    {
+        if let Ok(()) = tauri_plugin_opener::open_path(&path, None::<&str>) {
+            return Ok(());
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/C", "start", "", &path])
+                .status()
+                .map_err(|e| format!("Failed to run cmd start: {e}"))?;
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let status = std::process::Command::new("open")
+                .arg(&path)
+                .status()
+                .map_err(|e| format!("Failed to run open: {e}"))?;
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let status = std::process::Command::new("xdg-open")
+                .arg(&path)
+                .status()
+                .map_err(|e| format!("Failed to run xdg-open: {e}"))?;
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        Err("Failed to open file with default application".to_string())
+    }
+
+    #[cfg(not(desktop))]
+    {
+        Err("Direct file opening not supported on this platform".to_string())
+    }
+}
+
+/// Reveal a file or folder in the system's file manager, marking the file as selected.
+#[tauri::command]
+pub async fn reveal_in_folder(#[allow(unused)] app: AppHandle, path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.exists() {
+        return Err(format!("Path does not exist: {path}"));
+    }
+
+    #[cfg(desktop)]
+    {
+        if let Ok(()) = tauri_plugin_opener::reveal_item_in_dir(&path) {
+            return Ok(());
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let status = std::process::Command::new("explorer")
+                .arg(format!("/select,\"{}\"", p.display()))
+                .status()
+                .map_err(|e| format!("Failed to launch explorer: {e}"))?;
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let status = std::process::Command::new("open")
+                .args(["-R", &path])
+                .status()
+                .map_err(|e| format!("Failed to launch macOS finder: {e}"))?;
+            if status.success() {
+                return Ok(());
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            for fm in &["nautilus", "dolphin", "nemo", "caja", "thunar"] {
+                if let Ok(mut child) = std::process::Command::new(fm)
+                    .args(["--select", &path])
+                    .spawn()
+                {
+                    let _ = child.wait();
+                    return Ok(());
+                }
+            }
+
+            if let Some(parent) = p.parent() {
+                let _ = std::process::Command::new("xdg-open")
+                    .arg(parent)
+                    .spawn();
+                return Ok(());
+            }
+        }
+
+        Err("Failed to reveal item in file manager".to_string())
+    }
+
+    #[cfg(not(desktop))]
+    {
+        Err("Revealing item not supported on this platform".to_string())
+    }
 }
 

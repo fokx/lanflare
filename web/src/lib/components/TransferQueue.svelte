@@ -15,7 +15,8 @@
 		Trash2,
 		Clock,
 		FolderOpen,
-		ExternalLink
+		ExternalLink,
+		RotateCcw
 	} from 'lucide-svelte';
 
 	function formatDateTime(timestamp: number): string {
@@ -42,6 +43,8 @@
 	function handleOpenFolder(path?: string, name?: string) {
 		if (path) {
 			openFolder(path);
+		} else if (appState.status?.downloadDir && name) {
+			openFolder(`${appState.status.downloadDir}/${name}`);
 		} else if (appState.status?.downloadDir) {
 			openFolder(appState.status.downloadDir);
 		}
@@ -180,15 +183,16 @@
 							</div>
 						</div>
 
-						<!-- Action: Open folder, Cancel if active/waiting, or Delete from history if completed/failed -->
+						<!-- Action: Retry if failed/declined, Cancel if active/waiting, or Delete from history if completed/failed -->
 						<div class="flex items-center gap-1">
-							{#if transfer.status === 'completed' || transfer.files.some((f) => f.status === 'completed')}
+							{#if (transfer.status === 'failed' || transfer.status === 'declined') && transfer.direction === 'outgoing' && transfer.files.some((f) => f.path)}
 								<button
-									onclick={() => handleOpenFolder(transfer.files[0]?.path, transfer.files[0]?.name)}
-									class="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-500/10 transition-colors cursor-pointer"
-									title="Open containing folder in file manager"
+									onclick={() => appState.retryTransfer(transfer.id)}
+									class="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 transition-colors cursor-pointer"
+									title="Retry transfer"
 								>
-									<FolderOpen class="w-4 h-4" />
+									<RotateCcw class="w-3.5 h-3.5" />
+									<span>Retry</span>
 								</button>
 							{/if}
 							{#if transfer.status === 'active' || transfer.status === 'waiting'}
@@ -276,16 +280,16 @@
 									>
 										<FileText class="w-3.5 h-3.5 text-slate-400 group-hover/file:text-indigo-500 flex-shrink-0" />
 										<span class="truncate text-slate-800 dark:text-slate-300 group-hover/file:underline font-medium">{f.name}</span>
-										<ExternalLink class="w-3 h-3 text-slate-400 opacity-0 group-hover/file:opacity-100 transition-opacity flex-shrink-0" />
+										<ExternalLink class="w-3.5 h-3.5 text-slate-400 dark:text-slate-500 group-hover/file:text-indigo-500 flex-shrink-0" />
 									</button>
 									<div class="flex items-center gap-2 font-mono text-[11px] flex-shrink-0">
 										<span>{formatBytes(f.size)}</span>
-										{#if f.status === 'completed'}
+										{#if f.status === 'completed' || transfer.status === 'completed'}
 											<button
 												type="button"
 												onclick={() => handleOpenFolder(f.path, f.name)}
 												class="p-1 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded transition-colors cursor-pointer"
-												title="Open folder containing this file"
+												title="Open containing folder and select file"
 											>
 												<FolderOpen class="w-3.5 h-3.5" />
 											</button>

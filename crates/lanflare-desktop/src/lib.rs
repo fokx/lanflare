@@ -101,6 +101,8 @@ pub fn run() {
             commands::save_clipboard_image,
             commands::regenerate_share_link_pin,
             commands::respond_browser_download,
+            commands::open_path_in_system,
+            commands::reveal_in_folder,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running LanFlare Desktop application");

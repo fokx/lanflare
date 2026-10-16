@@ -22,7 +22,6 @@
 	import { announcePresence } from '$lib/api';
 	import { initShareTarget } from '$lib/shareTarget';
 
-	let activeTab = $state<'radar' | 'transfers'>('radar');
 	let isRefreshing = $state(false);
 
 	onMount(() => {
@@ -169,18 +168,18 @@
 			<!-- Navigation Links -->
 			<nav class="space-y-1">
 				<button
-					onclick={() => (activeTab = 'radar')}
-					class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all {activeTab ===
+					onclick={() => (appState.activeTab = 'radar')}
+					class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all {appState.activeTab ===
 					'radar'
 						? 'bg-indigo-50 dark:bg-indigo-600/15 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 shadow-sm'
 						: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900'}"
 				>
 					<div class="flex items-center gap-2.5">
-						<Radio class="w-4 h-4 {activeTab === 'radar' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}" />
+						<Radio class="w-4 h-4 {appState.activeTab === 'radar' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}" />
 						<span>Discovered Devices</span>
 					</div>
 					<span
-						class="text-[10px] px-1.5 py-0.5 rounded-full font-mono {activeTab === 'radar'
+						class="text-[10px] px-1.5 py-0.5 rounded-full font-mono {appState.activeTab === 'radar'
 							? 'bg-indigo-100 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300'
 							: 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'}"
 					>
@@ -189,15 +188,15 @@
 				</button>
 
 				<button
-					onclick={() => (activeTab = 'transfers')}
-					class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all {activeTab ===
+					onclick={() => (appState.activeTab = 'transfers')}
+					class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all {appState.activeTab ===
 					'transfers'
 						? 'bg-indigo-50 dark:bg-indigo-600/15 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 shadow-sm'
 						: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900'}"
 				>
 					<div class="flex items-center gap-2.5">
 						<Activity
-							class="w-4 h-4 {activeTab === 'transfers' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}"
+							class="w-4 h-4 {appState.activeTab === 'transfers' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}"
 						/>
 						<span>Transfer Queue</span>
 					</div>
@@ -270,7 +269,7 @@
 		class="flex-1 min-w-0 h-full overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-950 transition-colors duration-150"
 		style="padding-left: var(--safe-left); padding-right: var(--safe-right);"
 	>
-		{#if activeTab === 'radar'}
+		{#if appState.activeTab === 'radar'}
 			<DeviceGrid onSelectPeer={handleSelectPeer} />
 		{:else}
 			<TransferQueue />
@@ -283,8 +282,8 @@
 		style="padding-bottom: calc(0.5rem + var(--safe-bottom)); padding-left: calc(0.75rem + var(--safe-left)); padding-right: calc(0.75rem + var(--safe-right));"
 	>
 		<button
-			onclick={() => (activeTab = 'radar')}
-			class="flex flex-col items-center gap-1 px-4 py-1.5 rounded-xl transition-all {activeTab === 'radar'
+			onclick={() => (appState.activeTab = 'radar')}
+			class="flex flex-col items-center gap-1 px-4 py-1.5 rounded-xl transition-all {appState.activeTab === 'radar'
 				? 'text-indigo-600 dark:text-indigo-400 font-semibold'
 				: 'text-slate-500 dark:text-slate-400'}"
 		>
@@ -300,8 +299,8 @@
 		</button>
 
 		<button
-			onclick={() => (activeTab = 'transfers')}
-			class="flex flex-col items-center gap-1 px-4 py-1.5 rounded-xl transition-all {activeTab === 'transfers'
+			onclick={() => (appState.activeTab = 'transfers')}
+			class="flex flex-col items-center gap-1 px-4 py-1.5 rounded-xl transition-all {appState.activeTab === 'transfers'
 				? 'text-indigo-600 dark:text-indigo-400 font-semibold'
 				: 'text-slate-500 dark:text-slate-400'}"
 		>
@@ -327,7 +326,7 @@
 		peer={appState.selectedPeer}
 		onClose={() => {
 			appState.showSendDialog = false;
-			activeTab = 'transfers';
+			appState.activeTab = 'transfers';
 		}}
 	/>
 {/if}

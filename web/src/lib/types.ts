@@ -78,6 +78,7 @@ export interface IncomingFileInfo {
 	fileName: string;
 	size: number;
 	fileType?: string;
+	path?: string;
 }
 
 export interface IncomingTransferEventPayload {
@@ -120,6 +121,7 @@ export interface OutgoingTransferInitiatedPayload {
 	sessionId: string;
 	targetAlias: string;
 	targetEndpoint?: string;
+	targetFingerprint?: string;
 	files: IncomingFileInfo[];
 	totalBytes: number;
 }
@@ -138,6 +140,7 @@ export interface TransferQueueItem {
 	direction: 'outgoing' | 'incoming';
 	peerAlias: string;
 	peerEndpoint?: string;
+	targetFingerprint?: string;
 	files: Array<{
 		id: string;
 		name: string;

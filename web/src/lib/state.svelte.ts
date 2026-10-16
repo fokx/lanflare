@@ -59,6 +59,9 @@ export class AppState {
 	// Pending Browser Download Requests (when share_link_auto_accept is true)
 	pendingBrowserDownloads = $state<BrowserDownloadRequest[]>([]);
 
+	// Active Tab ('radar' | 'transfers')
+	activeTab = $state<'radar' | 'transfers'>('radar');
+
 	// Active and Recent Transfers
 	transfers = $state<TransferQueueItem[]>([]);
 
@@ -384,6 +387,7 @@ export class AppState {
 		const filePaths = this.preparedItems.map((i) => i.path);
 
 		try {
+			this.activeTab = 'transfers';
 			await sendFiles({
 				targetFingerprint: peer.fingerprint,
 				targetEndpoint: peer.endpoints[0],
@@ -404,6 +408,7 @@ export class AppState {
 
 	async sendPreparedToMultiple(pin?: string) {
 		if (this.preparedItems.length === 0 || this.selectedRecipients.length === 0) return;
+		this.activeTab = 'transfers';
 		const filePaths = this.preparedItems.map((i) => i.path);
 		const targetPeers = this.peers.filter((p) => this.selectedRecipients.includes(p.fingerprint));
 
@@ -474,6 +479,7 @@ export class AppState {
 				status: 'active',
 				startTime: Date.now()
 			});
+			this.activeTab = 'transfers';
 			this.persistHistory();
 		});
 
@@ -534,13 +540,14 @@ export class AppState {
 						direction: 'outgoing',
 						peerAlias: payload.targetAlias,
 						peerEndpoint: payload.targetEndpoint,
+						targetFingerprint: payload.targetFingerprint,
 						files: payload.files.map((f) => ({
 							id: f.id,
 							name: f.fileName,
 							size: f.size,
 							bytesSent: 0,
 							status: 'pending' as const,
-							path: preparedMap.get(f.fileName) || f.id
+							path: f.path || preparedMap.get(f.fileName) || undefined
 						})),
 						totalBytes: payload.totalBytes,
 						bytesTransferred: 0,
@@ -551,6 +558,7 @@ export class AppState {
 					});
 					this.persistHistory();
 				}
+				this.activeTab = 'transfers';
 			}
 		);
 
@@ -677,7 +685,8 @@ export class AppState {
 						name: f.fileName,
 						size: f.size,
 						bytesSent: 0,
-						status: 'pending'
+						status: 'pending',
+						path: f.path || (this.status?.downloadDir ? `${this.status.downloadDir}/${f.fileName}` : undefined)
 					})),
 					totalBytes: payload.totalBytes,
 					bytesTransferred: 0,
@@ -686,6 +695,7 @@ export class AppState {
 					status: 'active',
 					startTime: Date.now()
 				});
+				this.activeTab = 'transfers';
 				this.persistHistory();
 			} catch (e) {
 				console.error('Failed to accept transfer:', e);
@@ -729,6 +739,56 @@ export class AppState {
 			}
 		} catch (e) {
 			console.error('Failed to cancel transfer:', e);
+		}
+	}
+
+	async retryTransfer(transferId: string) {
+		const item = this.transfers.find((t) => t.id === transferId);
+		if (!item) return;
+
+		// Get all files that have paths
+		const filePaths = item.files
+			.map((f) => f.path)
+			.filter((p): p is string => typeof p === 'string' && p.length > 0);
+
+		if (filePaths.length === 0) {
+			console.error('Cannot retry transfer: file paths not found on disk');
+			return;
+		}
+
+		item.status = 'waiting';
+		item.error = undefined;
+		item.bytesTransferred = 0;
+		item.speedBytesPerSec = 0;
+		item.etaSeconds = null;
+		item.startTime = Date.now();
+		for (const f of item.files) {
+			f.status = 'pending';
+			f.bytesSent = 0;
+			f.error = undefined;
+		}
+		this.activeTab = 'transfers';
+		this.persistHistory();
+
+		try {
+			const peer = this.peers.find(
+				(p) =>
+					(item.targetFingerprint && p.fingerprint === item.targetFingerprint) ||
+					(item.peerEndpoint && p.endpoints.includes(item.peerEndpoint))
+			);
+
+			const newSessionId = await sendFiles({
+				targetFingerprint: item.targetFingerprint || peer?.fingerprint || '',
+				targetEndpoint: item.peerEndpoint || peer?.endpoints[0],
+				files: filePaths
+			});
+
+			item.id = newSessionId;
+			this.persistHistory();
+		} catch (e) {
+			item.status = 'failed';
+			item.error = String(e);
+			this.persistHistory();
 		}
 	}
 }
