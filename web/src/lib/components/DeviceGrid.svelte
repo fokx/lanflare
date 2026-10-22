@@ -5,6 +5,8 @@
 	import { open } from '@tauri-apps/plugin-dialog';
 	import { isTauri, isAndroid } from '$lib/api';
 	import ShareViaLinkView from '$lib/components/ShareViaLinkView.svelte';
+	import ServeFolderView from '$lib/components/ServeFolderView.svelte';
+	import DirectoryPickerModal from '$lib/components/DirectoryPickerModal.svelte';
 	import {
 		Laptop,
 		Smartphone,
@@ -34,6 +36,7 @@
 
 	let pinInput = $state('');
 	let isMultipleSending = $state(false);
+	let showDirectoryPickerModal = $state(false);
 
 	function getDeviceIcon(deviceType?: string) {
 		switch (deviceType?.toLowerCase()) {
@@ -67,7 +70,7 @@
 
 	async function pickFolder() {
 		if (isAndroid()) {
-			alert('Folder selection is not supported on Android due to Scoped Storage. Please use the Files button to select files.');
+			showDirectoryPickerModal = true;
 			return;
 		}
 		if (isTauri()) {
@@ -77,10 +80,11 @@
 					appState.addFolder(res);
 				}
 			} catch (e) {
-				console.error('Folder dialog error:', e);
+				console.warn('Native folder dialog failed, falling back to modal:', e);
+				showDirectoryPickerModal = true;
 			}
 		} else {
-			appState.addFolder('/home/user/Projects/LanFlareDemo');
+			showDirectoryPickerModal = true;
 		}
 	}
 
@@ -114,6 +118,8 @@
 
 {#if appState.sendMode === 'link'}
 	<ShareViaLinkView />
+{:else if appState.sendMode === 'dufs'}
+	<ServeFolderView />
 {:else}
 	<div class="flex flex-col h-full overflow-hidden p-3 sm:p-5 gap-3 sm:gap-4">
 		<!-- 1. Compact Selection Toolbar (What to send) -->
@@ -128,15 +134,13 @@
 						<FilePlus class="w-3.5 h-3.5 text-indigo-500" />
 						<span>Files</span>
 					</button>
-					{#if !isAndroid()}
-						<button
-							onclick={pickFolder}
-							class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer shadow-2xs"
-						>
-							<FolderPlus class="w-3.5 h-3.5 text-amber-500" />
-							<span>Folder</span>
-						</button>
-					{/if}
+					<button
+						onclick={pickFolder}
+						class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer shadow-2xs"
+					>
+						<FolderPlus class="w-3.5 h-3.5 text-amber-500" />
+						<span>Folder</span>
+					</button>
 					<button
 						onclick={() => (appState.showTextModal = true)}
 						class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 hover:border-indigo-300 dark:hover:border-indigo-600 text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 text-xs font-semibold transition-all cursor-pointer shadow-2xs"
@@ -247,6 +251,17 @@
 					>
 						<Link class="w-3.5 h-3.5" />
 						<span>Link</span>
+					</button>
+
+					<button
+						onclick={() => (appState.sendMode = 'dufs')}
+						class="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer {(appState.sendMode as string) === 'dufs'
+							? 'bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 shadow-2xs'
+							: 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}"
+						title="Serve Folder: Expose entire folder via dufs HTTP server to peers"
+					>
+						<Folder class="w-3.5 h-3.5 text-amber-500" />
+						<span>Serve Folder</span>
 					</button>
 				</div>
 
@@ -422,3 +437,9 @@
 		{/if}
 	</div>
 {/if}
+
+<DirectoryPickerModal
+	isOpen={showDirectoryPickerModal}
+	onClose={() => (showDirectoryPickerModal = false)}
+	onSelect={(path) => appState.addFolder(path)}
+/>

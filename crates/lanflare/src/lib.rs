@@ -34,6 +34,9 @@ pub enum Commands {
     /// Run receiver daemon
     Receive(ReceiveArgs),
 
+    /// Serve an entire directory to peers on localnet via dufs-compatible file server
+    Serve(ServeArgs),
+
     /// Print local status and identity
     Status,
 }
@@ -95,6 +98,33 @@ pub struct ReceiveArgs {
     pub pin: Option<String>,
 }
 
+#[derive(Args, Debug)]
+pub struct ServeArgs {
+    /// Directory path to serve
+    #[arg(required = true)]
+    pub path: PathBuf,
+
+    /// Port to listen on (defaults to configured port or 53317)
+    #[arg(long, short)]
+    pub port: Option<u16>,
+
+    /// Allow peers to upload files into the folder
+    #[arg(long)]
+    pub allow_upload: bool,
+
+    /// Allow peers to delete files in the folder
+    #[arg(long)]
+    pub allow_delete: bool,
+
+    /// Require PIN/password for access (defaults to generating a strong PIN)
+    #[arg(long)]
+    pub pin: Option<String>,
+
+    /// Disable PIN authentication (allow open access without password)
+    #[arg(long)]
+    pub no_auth: bool,
+}
+
 /// Executes the CLI application lifecycle based on parsed command line arguments.
 pub async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -137,6 +167,21 @@ pub async fn run() -> anyhow::Result<()> {
                 pin: args.pin,
             };
             commands::receive(&config, &identity, &receive_opts).await?;
+        }
+        Some(Commands::Serve(args)) => {
+            let pin = if args.no_auth {
+                None
+            } else {
+                Some(args.pin.unwrap_or_else(lanflare_core::config::generate_share_link_pin))
+            };
+            let serve_opts = commands::ServeOptions {
+                path: args.path,
+                port: args.port,
+                allow_upload: args.allow_upload,
+                allow_delete: args.allow_delete,
+                pin,
+            };
+            commands::serve(&config, &identity, &serve_opts).await?;
         }
         Some(Commands::Status) | None => {
             commands::status(&config, &identity).await?;

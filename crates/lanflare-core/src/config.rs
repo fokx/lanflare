@@ -17,12 +17,12 @@ fn default_share_link_require_pin() -> bool {
     true
 }
 
-/// Generates a reasonable random 6-character PIN containing no '@', ':', or '/'
+/// Generates a strong random 10-character password containing no '@', ':', or '/'
 pub fn generate_share_link_pin() -> String {
     use rand::Rng;
-    const CHARSET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyz";
+    const CHARSET: &[u8] = b"23456789abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ";
     let mut rng = rand::rng();
-    (0..6)
+    (0..10)
         .map(|_| {
             let idx = rng.random_range(0..CHARSET.len());
             CHARSET[idx] as char

@@ -767,3 +767,86 @@ pub async fn receive(
     server_handle.wait().await;
     Ok(())
 }
+
+/// Options for the `lanflare serve` command.
+#[derive(Clone, Debug)]
+pub struct ServeOptions {
+    pub path: PathBuf,
+    pub port: Option<u16>,
+    pub allow_upload: bool,
+    pub allow_delete: bool,
+    pub pin: Option<String>,
+}
+
+/// Serves a directory to peers on local network using dufs-compatible file server.
+pub async fn serve(
+    config: &AppConfig,
+    _identity: &TlsIdentity,
+    options: &ServeOptions,
+) -> anyhow::Result<()> {
+    let folder = &options.path;
+    if !folder.is_dir() {
+        anyhow::bail!("Directory does not exist or is not accessible: {}", folder.display());
+    }
+
+    let folder_canon = folder.canonicalize().unwrap_or_else(|_| folder.clone());
+    let folder_name = folder_canon
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Shared Folder")
+        .to_string();
+
+    let port = options.port.unwrap_or(config.port);
+    let title = format!("{} ({})", folder_name, config.alias);
+
+    let dufs_config = lanflare_core::server::DufsConfig {
+        root_path: folder_canon.clone(),
+        path_prefix: String::new(),
+        allow_upload: options.allow_upload,
+        allow_delete: options.allow_delete,
+        auth_pin: options.pin.clone(),
+        title,
+    };
+
+    let handle = lanflare_core::server::dufs::start_standalone_dufs_server(dufs_config, port).await?;
+    let bound_port = handle.port;
+
+    println!("============================================================");
+    println!(" LanFlare Dufs File Server Active");
+    println!("============================================================");
+    println!(" Serving Directory:  {}", folder_canon.display());
+    println!(" Bound Port:         {}", bound_port);
+    println!(" Uploads Allowed:    {}", if options.allow_upload { "Yes" } else { "No" });
+    println!(" Deletions Allowed:  {}", if options.allow_delete { "Yes" } else { "No" });
+    if let Some(ref pin) = options.pin {
+        println!(" PIN Protection:     Required (PIN: {})", pin);
+        println!(" Login Hint:         Enter Password only (no username required)");
+    } else {
+        println!(" PIN Protection:     Open Access (No PIN)");
+    }
+    println!();
+    println!(" Local Network Access URLs:");
+
+    let auth_prefix = match &options.pin {
+        Some(p) if !p.is_empty() => format!(":{p}@"),
+        _ => String::new(),
+    };
+
+    let filter = InterfaceFilter::default();
+    if let Ok(interfaces) = local_interfaces(&filter) {
+        for v4 in interfaces.v4 {
+            if v4.address.to_string() != "127.0.0.1" {
+                println!("   http://{}{}:{}/", auth_prefix, v4.address, bound_port);
+            }
+        }
+    }
+    println!("   http://{}127.0.0.1:{}/", auth_prefix, bound_port);
+    println!();
+    println!("Peers on your Wi-Fi/LAN can open any of the above URLs in a browser.");
+    println!("Press Ctrl+C to stop the server.\n");
+
+    tokio::signal::ctrl_c().await?;
+    println!("\nShutting down Dufs server...");
+    handle.stop();
+    Ok(())
+}

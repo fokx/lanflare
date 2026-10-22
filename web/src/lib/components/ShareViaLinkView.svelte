@@ -3,6 +3,7 @@
 	import { formatBytes, extractPasswordFromUrl } from '$lib/format';
 	import { isTauri, isAndroid, updateConfig, regenerateShareLinkPin } from '$lib/api';
 	import { open } from '@tauri-apps/plugin-dialog';
+	import DirectoryPickerModal from '$lib/components/DirectoryPickerModal.svelte';
 	import {
 		ArrowLeft,
 		Copy,
@@ -34,6 +35,7 @@
 	let isRegeneratingPin = $state(false);
 	let copiedPin = $state(false);
 	let showPin = $state(true);
+	let showDirectoryPickerModal = $state(false);
 	let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	function onPinInput(val: string) {
@@ -178,20 +180,27 @@
 
 	async function pickFolder() {
 		if (isAndroid()) {
-			alert('Folder selection is not supported on Android due to Scoped Storage. Please use Files.');
+			showDirectoryPickerModal = true;
 			return;
 		}
 		if (isTauri()) {
 			try {
 				const res = await open({ directory: true, multiple: false });
 				if (res && typeof res === 'string') {
-					appState.addFolder(res);
-					await appState.startShareViaLink();
+					await onFolderSelected(res);
 				}
 			} catch (e) {
-				console.error('Pick folder error:', e);
+				console.warn('Pick folder error, falling back to modal:', e);
+				showDirectoryPickerModal = true;
 			}
+		} else {
+			showDirectoryPickerModal = true;
 		}
+	}
+
+	async function onFolderSelected(path: string) {
+		appState.addFolder(path);
+		await appState.startShareViaLink();
 	}
 
 	async function pasteClipboard() {
@@ -571,3 +580,9 @@
 		</div>
 	</div>
 {/if}
+
+<DirectoryPickerModal
+	isOpen={showDirectoryPickerModal}
+	onClose={() => (showDirectoryPickerModal = false)}
+	onSelect={onFolderSelected}
+/>

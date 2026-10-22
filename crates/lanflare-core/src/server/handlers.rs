@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::config::AppConfig;
 use crate::discovery::registry::PeerRegistry;
+use crate::server::dufs::DufsManager;
 use crate::server::session::{
     DownloadManager, FileTransferStatus, PrepareUploadDecision, SessionEndReason, SessionFile,
     SessionManager,
@@ -93,6 +94,7 @@ pub struct ServerState {
     pub download_manager: Arc<DownloadManager>,
     pub registry: Arc<PeerRegistry>,
     pub event_tx: Option<mpsc::Sender<ServerTransferEvent>>,
+    pub dufs_manager: Arc<DufsManager>,
 }
 
 /// Helper decoding percent-encoded strings (e.g. `%40` -> `@`, `%3A` -> `:`).
@@ -243,10 +245,10 @@ pub fn unauthorized_response() -> Response<Full<Bytes>> {
         .status(StatusCode::UNAUTHORIZED)
         .header(
             hyper::header::WWW_AUTHENTICATE,
-            "Basic realm=\"LanFlare Share\", charset=\"UTF-8\"",
+            "Basic realm=\"Enter Password (Leave Username Blank / Not Required) - LanFlare Share\", charset=\"UTF-8\"",
         )
         .header(hyper::header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Full::new(Bytes::from("401 Unauthorized - Authentication required\n")))
+        .body(Full::new(Bytes::from("401 Unauthorized - Enter password only (no username required)\n")))
         .unwrap()
 }
 

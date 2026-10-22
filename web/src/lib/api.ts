@@ -8,7 +8,11 @@ import type {
 	IncomingTransferEventPayload,
 	TransferProgressPayload,
 	SendFilesPayload,
-	ClipboardContentDto
+	ClipboardContentDto,
+	DirListingDto,
+	QuickDirDto,
+	StartDufsShareDto,
+	DufsShareStatusDto
 } from './types';
 
 // Open a file using system default application
@@ -181,6 +185,27 @@ export async function respondBrowserDownload(downloadId: string, accept: boolean
 	return tauriInvoke<void>('respond_browser_download', { downloadId, accept });
 }
 
+// Directory Navigation & Dufs Folder Sharing API
+export async function getCommonDirectories(): Promise<QuickDirDto[]> {
+	return tauriInvoke<QuickDirDto[]>('get_common_directories');
+}
+
+export async function listDirectory(path?: string): Promise<DirListingDto> {
+	return tauriInvoke<DirListingDto>('list_directory', { path });
+}
+
+export async function startDufsShare(options: StartDufsShareDto): Promise<DufsShareStatusDto> {
+	return tauriInvoke<DufsShareStatusDto>('start_dufs_share', { options });
+}
+
+export async function stopDufsShare(): Promise<void> {
+	return tauriInvoke<void>('stop_dufs_share');
+}
+
+export async function getDufsShareStatus(): Promise<DufsShareStatusDto | null> {
+	return tauriInvoke<DufsShareStatusDto | null>('get_dufs_share_status');
+}
+
 // Fallback mocks for Vite standalone dev/test in browser
 function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 	switch (cmd) {
@@ -245,6 +270,44 @@ function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 		case 'get_transfer_history':
 		case 'get_download_files':
 			return [] as T;
+		case 'get_common_directories':
+			return [
+				{ label: 'Downloads', path: '/storage/emulated/0/Download', exists: true },
+				{ label: 'Documents', path: '/storage/emulated/0/Documents', exists: true },
+				{ label: 'DCIM', path: '/storage/emulated/0/DCIM', exists: true },
+				{ label: 'Pictures', path: '/storage/emulated/0/Pictures', exists: true }
+			] as T;
+		case 'list_directory':
+			return {
+				currentPath: '/storage/emulated/0/Download',
+				parentPath: '/storage/emulated/0',
+				isAndroid: true,
+				entries: [
+					{ name: 'Photos', path: '/storage/emulated/0/Download/Photos', isDir: true, size: 0, modified: Date.now() / 1000 },
+					{ name: 'document.pdf', path: '/storage/emulated/0/Download/document.pdf', isDir: false, size: 2048576, modified: Date.now() / 1000 }
+				],
+				commonPaths: [
+					{ label: 'Downloads', path: '/storage/emulated/0/Download', exists: true },
+					{ label: 'Documents', path: '/storage/emulated/0/Documents', exists: true }
+				]
+			} as T;
+		case 'start_dufs_share':
+			return {
+				isActive: true,
+				folderPath: '/storage/emulated/0/Download',
+				folderName: 'Download',
+				port: 53317,
+				urls: ['https://192.168.1.100:53317/'],
+				allowUpload: true,
+				allowDelete: false,
+				authPin: undefined,
+				fileCount: 42,
+				totalSize: 104857600
+			} as T;
+		case 'get_dufs_share_status':
+			return null as T;
+		case 'stop_dufs_share':
+			return undefined as T;
 		default:
 			return undefined as T;
 	}

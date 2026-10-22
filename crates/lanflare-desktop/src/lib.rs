@@ -103,6 +103,11 @@ pub fn run() {
             commands::respond_browser_download,
             commands::open_path_in_system,
             commands::reveal_in_folder,
+            commands::get_common_directories,
+            commands::list_directory,
+            commands::start_dufs_share,
+            commands::stop_dufs_share,
+            commands::get_dufs_share_status,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running LanFlare Desktop application");

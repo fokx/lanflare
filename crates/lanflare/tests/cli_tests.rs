@@ -54,6 +54,22 @@ fn test_cli_parsing_receive() {
     }
 }
 
+#[test]
+fn test_cli_parsing_serve() {
+    let cli = Cli::try_parse_from(["lanflare", "serve", "/tmp/my_folder", "-p", "8080", "--allow-upload", "--allow-delete", "--pin", "5555"])
+        .expect("parse serve");
+    match cli.command {
+        Some(Commands::Serve(args)) => {
+            assert_eq!(args.path.to_str(), Some("/tmp/my_folder"));
+            assert_eq!(args.port, Some(8080));
+            assert!(args.allow_upload);
+            assert!(args.allow_delete);
+            assert_eq!(args.pin.as_deref(), Some("5555"));
+        }
+        _ => panic!("expected Serve command"),
+    }
+}
+
 #[tokio::test]
 async fn test_cli_status_handler() {
     let config = AppConfig::default();

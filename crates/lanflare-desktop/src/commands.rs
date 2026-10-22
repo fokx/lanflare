@@ -20,7 +20,7 @@ use lanflare_core::discovery::multicast::{
 };
 use lanflare_core::discovery::registry::DiscoveredPeer;
 use lanflare_core::server::{
-    start_server, PrepareUploadDecision, ServerTransferEvent,
+    PrepareUploadDecision, ServerTransferEvent,
 };
 use lanflare_proto::discovery::{DeviceType, ProtocolType, RegisterDtoV2};
 
@@ -529,11 +529,13 @@ pub async fn start_receiver_server(
 
     let (event_tx, mut event_rx) = mpsc::channel::<ServerTransferEvent>(100);
 
-    let handle = start_server(
+    let handle = lanflare_core::server::start_server_ext(
         state.config.clone(),
         Some(state.identity.clone()),
         Arc::clone(&state.registry),
         Some(event_tx),
+        None,
+        Some(Arc::clone(&state.dufs_manager)),
     )
     .await
     .map_err(|e| format!("Failed to start server: {e}"))?;
@@ -1888,5 +1890,408 @@ pub async fn reveal_in_folder(#[allow(unused)] app: AppHandle, path: String) -> 
     {
         Err("Revealing item not supported on this platform".to_string())
     }
+}
+
+// ----------------------------------------------------------------------------
+// Dufs-alike Folder Sharing & Directory Navigation Commands
+// ----------------------------------------------------------------------------
+
+/// Common directory preset item.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuickDirDto {
+    pub label: String,
+    pub path: String,
+    pub exists: bool,
+}
+
+/// Directory entry item returned by directory browser.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntryDto {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub modified: u64,
+}
+
+/// Directory listing result for folder navigation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirListingDto {
+    pub current_path: String,
+    pub parent_path: Option<String>,
+    pub entries: Vec<DirEntryDto>,
+    pub is_android: bool,
+    pub common_paths: Vec<QuickDirDto>,
+}
+
+/// Retrieves list of common directories on the platform.
+#[tauri::command]
+pub async fn get_common_directories() -> Result<Vec<QuickDirDto>, String> {
+    let mut dirs_list = Vec::new();
+
+    #[cfg(target_os = "android")]
+    {
+        let standard_android_dirs = [
+            ("Downloads", "/storage/emulated/0/Download"),
+            ("Documents", "/storage/emulated/0/Documents"),
+            ("DCIM (Camera)", "/storage/emulated/0/DCIM"),
+            ("Pictures", "/storage/emulated/0/Pictures"),
+            ("Music", "/storage/emulated/0/Music"),
+            ("Movies", "/storage/emulated/0/Movies"),
+            ("Internal Storage", "/storage/emulated/0"),
+        ];
+
+        for (label, p) in standard_android_dirs {
+            let path_buf = PathBuf::from(p);
+            let exists = path_buf.is_dir();
+            dirs_list.push(QuickDirDto {
+                label: label.to_string(),
+                path: p.to_string(),
+                exists,
+            });
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        if let Some(p) = dirs::download_dir() {
+            dirs_list.push(QuickDirDto {
+                label: "Downloads".to_string(),
+                path: p.to_string_lossy().to_string(),
+                exists: p.is_dir(),
+            });
+        }
+        if let Some(p) = dirs::document_dir() {
+            dirs_list.push(QuickDirDto {
+                label: "Documents".to_string(),
+                path: p.to_string_lossy().to_string(),
+                exists: p.is_dir(),
+            });
+        }
+        if let Some(p) = dirs::picture_dir() {
+            dirs_list.push(QuickDirDto {
+                label: "Pictures".to_string(),
+                path: p.to_string_lossy().to_string(),
+                exists: p.is_dir(),
+            });
+        }
+        if let Some(p) = dirs::home_dir() {
+            dirs_list.push(QuickDirDto {
+                label: "Home".to_string(),
+                path: p.to_string_lossy().to_string(),
+                exists: p.is_dir(),
+            });
+        }
+    }
+
+    Ok(dirs_list)
+}
+
+/// Lists directories and files at the given path for custom folder browsing (essential for Android).
+#[tauri::command]
+pub async fn list_directory(
+    path: Option<String>,
+) -> Result<DirListingDto, String> {
+    let is_android = cfg!(target_os = "android");
+
+    let target_path = match path.as_deref() {
+        Some(p) if !p.trim().is_empty() => PathBuf::from(p.trim()),
+        _ => {
+            #[cfg(target_os = "android")]
+            {
+                let dl = PathBuf::from("/storage/emulated/0/Download");
+                if dl.is_dir() {
+                    dl
+                } else {
+                    PathBuf::from("/storage/emulated/0")
+                }
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                dirs::download_dir().or_else(dirs::home_dir).unwrap_or_else(|| PathBuf::from("."))
+            }
+        }
+    };
+
+    if !target_path.is_dir() {
+        return Err(format!("Directory does not exist or is not accessible: {}", target_path.display()));
+    }
+
+    let parent_path = target_path.parent().map(|p| p.to_string_lossy().to_string());
+
+    let mut entries = Vec::new();
+    let mut reader = tokio::fs::read_dir(&target_path)
+        .await
+        .map_err(|e| format!("Failed to read directory {}: {e}", target_path.display()))?;
+
+    while let Ok(Some(entry)) = reader.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+
+        let meta = match entry.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        let is_dir = meta.is_dir();
+        let size = if is_dir { 0 } else { meta.len() };
+        let modified = meta
+            .modified()
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        entries.push(DirEntryDto {
+            name,
+            path: entry.path().to_string_lossy().to_string(),
+            is_dir,
+            size,
+            modified,
+        });
+    }
+
+    // Sort: directories first, then alphabetical by name
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+
+    let common_paths = get_common_directories().await.unwrap_or_default();
+
+    Ok(DirListingDto {
+        current_path: target_path.to_string_lossy().to_string(),
+        parent_path,
+        entries,
+        is_android,
+        common_paths,
+    })
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// DTO for requesting to start a Dufs folder share.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartDufsShareDto {
+    pub folder_path: String,
+    pub allow_upload: bool,
+    pub allow_delete: bool,
+    #[serde(default = "default_true")]
+    pub require_pin: bool,
+    pub pin: Option<String>,
+}
+
+/// Status of the active Dufs folder server.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DufsShareStatusDto {
+    pub is_active: bool,
+    pub folder_path: String,
+    pub folder_name: String,
+    pub port: u16,
+    pub urls: Vec<String>,
+    pub allow_upload: bool,
+    pub allow_delete: bool,
+    pub auth_pin: Option<String>,
+    pub file_count: usize,
+    pub total_size: u64,
+}
+
+/// Starts serving an entire selected folder as a Dufs file server.
+#[tauri::command]
+pub async fn start_dufs_share(
+    state: State<'_, Arc<DesktopState>>,
+    options: StartDufsShareDto,
+) -> Result<DufsShareStatusDto, String> {
+    let folder = PathBuf::from(&options.folder_path);
+    if !folder.is_dir() {
+        return Err(format!("Selected path is not a valid directory: {}", folder.display()));
+    }
+
+    let folder_name = folder
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Shared Folder")
+        .to_string();
+
+    let mut file_count = 0;
+    let mut total_size = 0u64;
+    if let Ok(mut reader) = tokio::fs::read_dir(&folder).await {
+        while let Ok(Some(entry)) = reader.next_entry().await {
+            if let Ok(meta) = entry.metadata().await {
+                if meta.is_file() {
+                    file_count += 1;
+                    total_size += meta.len();
+                } else if meta.is_dir() {
+                    file_count += 1;
+                }
+            }
+        }
+    }
+
+    let pin = if options.require_pin {
+        let p = match options.pin {
+            Some(ref s) if !s.trim().is_empty() => s.trim().to_string(),
+            _ => state.config.read().await.share_link_pin.clone(),
+        };
+        if p.trim().is_empty() {
+            Some(lanflare_core::config::generate_share_link_pin())
+        } else {
+            Some(p.trim().to_string())
+        }
+    } else {
+        None
+    };
+
+    let title = {
+        let cfg = state.config.read().await;
+        format!("{} ({})", folder_name, cfg.alias)
+    };
+
+    let dufs_config = lanflare_core::server::DufsConfig {
+        root_path: folder.clone(),
+        path_prefix: String::new(),
+        allow_upload: options.allow_upload,
+        allow_delete: options.allow_delete,
+        auth_pin: pin.clone(),
+        title,
+    };
+
+    state.dufs_manager.set_config(dufs_config).await;
+
+    let port = {
+        let guard = state.server_handle.read().await;
+        if let Some(ref srv) = *guard {
+            srv.bound_port()
+        } else {
+            state.config.read().await.port
+        }
+    };
+
+    let auth_prefix = match &pin {
+        Some(p) if !p.is_empty() => format!(":{p}@"),
+        _ => String::new(),
+    };
+
+    let scheme = "https";
+    let filter = InterfaceFilter::default();
+    let mut urls = Vec::new();
+    if let Ok(interfaces) = local_interfaces(&filter) {
+        for v4 in interfaces.v4 {
+            let addr_str = v4.address.to_string();
+            if addr_str != "127.0.0.1" {
+                urls.push(format!("{scheme}://{}{}:{port}/", auth_prefix, addr_str));
+            }
+        }
+    }
+    if urls.is_empty() {
+        urls.push(format!("{scheme}://{}127.0.0.1:{port}/", auth_prefix));
+    }
+
+    Ok(DufsShareStatusDto {
+        is_active: true,
+        folder_path: folder.to_string_lossy().to_string(),
+        folder_name,
+        port,
+        urls,
+        allow_upload: options.allow_upload,
+        allow_delete: options.allow_delete,
+        auth_pin: pin,
+        file_count,
+        total_size,
+    })
+}
+
+/// Stops serving the folder.
+#[tauri::command]
+pub async fn stop_dufs_share(
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<(), String> {
+    state.dufs_manager.clear_config().await;
+    Ok(())
+}
+
+/// Retrieves the current status of the Dufs folder share.
+#[tauri::command]
+pub async fn get_dufs_share_status(
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<Option<DufsShareStatusDto>, String> {
+    let cfg = match state.dufs_manager.get_config().await {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+
+    let folder_name = cfg
+        .root_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Shared Folder")
+        .to_string();
+
+    let mut file_count = 0;
+    let mut total_size = 0u64;
+    if let Ok(mut reader) = tokio::fs::read_dir(&cfg.root_path).await {
+        while let Ok(Some(entry)) = reader.next_entry().await {
+            if let Ok(meta) = entry.metadata().await {
+                if meta.is_file() {
+                    file_count += 1;
+                    total_size += meta.len();
+                } else if meta.is_dir() {
+                    file_count += 1;
+                }
+            }
+        }
+    }
+
+    let port = {
+        let guard = state.server_handle.read().await;
+        if let Some(ref srv) = *guard {
+            srv.bound_port()
+        } else {
+            state.config.read().await.port
+        }
+    };
+
+    let auth_prefix = match &cfg.auth_pin {
+        Some(p) if !p.is_empty() => format!(":{p}@"),
+        _ => String::new(),
+    };
+
+    let scheme = "https";
+    let filter = InterfaceFilter::default();
+    let mut urls = Vec::new();
+    if let Ok(interfaces) = local_interfaces(&filter) {
+        for v4 in interfaces.v4 {
+            let addr_str = v4.address.to_string();
+            if addr_str != "127.0.0.1" {
+                urls.push(format!("{scheme}://{}{}:{port}/", auth_prefix, addr_str));
+            }
+        }
+    }
+    if urls.is_empty() {
+        urls.push(format!("{scheme}://{}127.0.0.1:{port}/", auth_prefix));
+    }
+
+    Ok(Some(DufsShareStatusDto {
+        is_active: true,
+        folder_path: cfg.root_path.to_string_lossy().to_string(),
+        folder_name,
+        port,
+        urls,
+        allow_upload: cfg.allow_upload,
+        allow_delete: cfg.allow_delete,
+        auth_pin: cfg.auth_pin,
+        file_count,
+        total_size,
+    }))
 }
 

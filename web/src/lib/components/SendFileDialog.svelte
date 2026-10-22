@@ -4,6 +4,7 @@
 	import type { DiscoveredPeer } from '$lib/types';
 	import { formatBytes, extractPasswordFromUrl } from '$lib/format';
 	import { open } from '@tauri-apps/plugin-dialog';
+	import DirectoryPickerModal from '$lib/components/DirectoryPickerModal.svelte';
 	import {
 		Send,
 		FileText,
@@ -27,6 +28,7 @@
 	let errorMsg = $state<string | null>(null);
 	let isComposingText = $state(false);
 	let inlineTextMessage = $state('');
+	let showDirectoryPickerModal = $state(false);
 
 	async function pickFiles() {
 		isComposingText = false;
@@ -51,10 +53,7 @@
 	async function pickFolder() {
 		isComposingText = false;
 		if (isAndroid()) {
-			errorMsg = 'Folder selection is not supported on Android due to Scoped Storage. Please use Choose Files.';
-			setTimeout(() => {
-				errorMsg = null;
-			}, 4000);
+			showDirectoryPickerModal = true;
 			return;
 		}
 		if (isTauri()) {
@@ -67,10 +66,11 @@
 					appState.addFolder(res);
 				}
 			} catch (e) {
-				console.error('Folder pick dialog error:', e);
+				console.warn('Folder pick dialog error, falling back to modal:', e);
+				showDirectoryPickerModal = true;
 			}
 		} else {
-			appState.addFolder('/home/user/Projects/LanFlareDemo');
+			showDirectoryPickerModal = true;
 		}
 	}
 
@@ -320,3 +320,9 @@
 		</div>
 	</div>
 </div>
+
+<DirectoryPickerModal
+	isOpen={showDirectoryPickerModal}
+	onClose={() => (showDirectoryPickerModal = false)}
+	onSelect={(path) => appState.addFolder(path)}
+/>

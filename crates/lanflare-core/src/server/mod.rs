@@ -1,5 +1,6 @@
 //! Hyper v1 HTTP & HTTPS server implementing LocalSend v2.2 specification.
 
+pub mod dufs;
 pub mod handlers;
 pub mod router;
 pub mod session;
@@ -15,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+pub use dufs::{DufsConfig, DufsManager, DufsServerHandle, ServerResponseBody};
 pub use handlers::{
     extract_password_from_url, percent_decode, ServerState, ServerTransferEvent,
 };
@@ -39,6 +41,8 @@ pub struct ServerHandle {
     join_handle: tokio::task::JoinHandle<()>,
     /// Download manager for registering/unregistering reverse transfer files.
     download_manager: Arc<DownloadManager>,
+    /// Dufs manager for serving shared folders to local peers.
+    dufs_manager: Arc<DufsManager>,
 }
 
 impl ServerHandle {
@@ -50,6 +54,11 @@ impl ServerHandle {
     /// Returns a reference to the download manager.
     pub fn download_manager(&self) -> &Arc<DownloadManager> {
         &self.download_manager
+    }
+
+    /// Returns a reference to the Dufs folder manager.
+    pub fn dufs_manager(&self) -> &Arc<DufsManager> {
+        &self.dufs_manager
     }
 
     /// Signals the server to stop accepting connections and terminate.
@@ -90,6 +99,18 @@ pub async fn start_server(
     registry: Arc<PeerRegistry>,
     event_tx: Option<mpsc::Sender<ServerTransferEvent>>,
 ) -> anyhow::Result<ServerHandle> {
+    start_server_ext(config, tls_identity, registry, event_tx, None, None).await
+}
+
+/// Extended server launcher permitting injected download and dufs managers.
+pub async fn start_server_ext(
+    config: impl Into<ServerConfigHolder>,
+    tls_identity: Option<TlsIdentity>,
+    registry: Arc<PeerRegistry>,
+    event_tx: Option<mpsc::Sender<ServerTransferEvent>>,
+    download_manager: Option<Arc<DownloadManager>>,
+    dufs_manager: Option<Arc<DufsManager>>,
+) -> anyhow::Result<ServerHandle> {
     let cancel_token = CancellationToken::new();
     let config_holder = config.into();
     let port = config_holder.0.read().await.port;
@@ -119,7 +140,8 @@ pub async fn start_server(
         None => None,
     };
 
-    let download_manager = Arc::new(DownloadManager::new());
+    let download_manager = download_manager.unwrap_or_else(|| Arc::new(DownloadManager::new()));
+    let dufs_manager = dufs_manager.unwrap_or_else(|| Arc::new(DufsManager::new()));
 
     let state = ServerState {
         config: config_holder.0,
@@ -128,6 +150,7 @@ pub async fn start_server(
         download_manager: download_manager.clone(),
         registry,
         event_tx,
+        dufs_manager: dufs_manager.clone(),
     };
 
     let cancel = cancel_token.clone();
@@ -175,6 +198,7 @@ pub async fn start_server(
         cancel_token,
         join_handle,
         download_manager,
+        dufs_manager,
     })
 }
 
@@ -185,6 +209,23 @@ async fn serve_connection(
     state: ServerState,
 ) {
     if let Some(acceptor) = tls_acceptor {
+        // Peek at the first byte to detect whether the incoming connection is a TLS handshake
+        // (TLS record ContentType 0x16 = 22) or a plaintext HTTP request (starts with ASCII e.g. 'G', 'P', 'H', etc.)
+        let mut peek_buf = [0u8; 1];
+        match tcp_stream.peek(&mut peek_buf).await {
+            Ok(0) => return, // Connection closed by peer
+            Ok(_) => {
+                if peek_buf[0] != 0x16 {
+                    serve_plaintext_http_redirect(tcp_stream, remote_addr, state).await;
+                    return;
+                }
+            }
+            Err(err) => {
+                tracing::debug!("Failed to peek incoming connection from {remote_addr}: {err}");
+                return;
+            }
+        }
+
         match acceptor.accept(tcp_stream).await {
             Ok(tls_stream) => {
                 let (_, conn) = tls_stream.get_ref();
@@ -210,6 +251,58 @@ async fn serve_connection(
             cert_fingerprint: None,
         };
         serve_http_stream(tcp_stream, client_info, state).await;
+    }
+}
+
+async fn serve_plaintext_http_redirect(
+    stream: tokio::net::TcpStream,
+    remote_addr: SocketAddr,
+    state: ServerState,
+) {
+    let io = TokioIo::new(stream);
+    let state_for_svc = state.clone();
+    let service = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+        let state = state_for_svc.clone();
+        async move {
+            let host_header = req
+                .headers()
+                .get(hyper::header::HOST)
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("");
+
+            let host_part = if !host_header.is_empty() {
+                host_header.to_string()
+            } else {
+                let port = state.config.read().await.port;
+                format!("localhost:{}", port)
+            };
+
+            let uri = req.uri();
+            let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+            let target_url = format!("https://{}{}", host_part, path_and_query);
+
+            let status = match *req.method() {
+                hyper::Method::GET | hyper::Method::HEAD => hyper::StatusCode::MOVED_PERMANENTLY,
+                _ => hyper::StatusCode::TEMPORARY_REDIRECT,
+            };
+
+            let res = hyper::Response::builder()
+                .status(status)
+                .header(hyper::header::LOCATION, target_url)
+                .header(hyper::header::CONNECTION, "close")
+                .header(hyper::header::CONTENT_LENGTH, "0")
+                .body(dufs::full_box_body(bytes::Bytes::new()));
+
+            Ok::<_, std::convert::Infallible>(res.unwrap())
+        }
+    });
+
+    if let Err(err) = hyper::server::conn::http1::Builder::new()
+        .max_buf_size(16 * 1024)
+        .serve_connection(io, service)
+        .await
+    {
+        tracing::debug!("Plaintext HTTP redirect failed with {remote_addr}: {err}");
     }
 }
 

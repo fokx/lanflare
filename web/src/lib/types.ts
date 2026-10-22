@@ -39,7 +39,50 @@ export interface BrowserDownloadRequest {
 	fileSize: number;
 }
 
-export type SendMode = 'single' | 'multiple' | 'link';
+export type SendMode = 'single' | 'multiple' | 'link' | 'dufs';
+
+export interface QuickDirDto {
+	label: string;
+	path: string;
+	exists: boolean;
+}
+
+export interface DirEntryDto {
+	name: string;
+	path: string;
+	isDir: boolean;
+	size: number;
+	modified: number;
+}
+
+export interface DirListingDto {
+	currentPath: string;
+	parentPath: string | null;
+	entries: DirEntryDto[];
+	isAndroid: boolean;
+	commonPaths: QuickDirDto[];
+}
+
+export interface StartDufsShareDto {
+	folderPath: string;
+	allowUpload: boolean;
+	allowDelete: boolean;
+	requirePin: boolean;
+	pin?: string;
+}
+
+export interface DufsShareStatusDto {
+	isActive: boolean;
+	folderPath: string;
+	folderName: string;
+	port: number;
+	urls: string[];
+	allowUpload: boolean;
+	allowDelete: boolean;
+	authPin?: string;
+	fileCount: number;
+	totalSize: number;
+}
 
 export type ClipboardContentDto =
 	| { type: 'files'; data: string[] }
