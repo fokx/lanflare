@@ -18,7 +18,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-lanflare-proto = "0.4.0"
+lanflare-proto = "0.5.0"
 
 ```
 
