@@ -265,13 +265,53 @@ pub async fn update_config(
     get_node_status(state).await
 }
 
-/// Lists all active peers currently in the registry.
+/// Lists all active peers currently in the registry, suppressing self and deduplicating by fingerprint.
 #[tauri::command]
 pub async fn get_discovered_peers(
     state: State<'_, Arc<DesktopState>>,
 ) -> Result<Vec<DiscoveredPeerDto>, String> {
+    let own_fp = lanflare_core::discovery::registry::canonicalize_fingerprint(&state.identity.fingerprint);
     let peers = state.registry.get_all().await;
-    Ok(peers.iter().map(DiscoveredPeerDto::from).collect())
+    let mut unique_by_fp = std::collections::HashMap::new();
+
+    for p in peers {
+        if p.fingerprint.eq_ignore_ascii_case(&own_fp) {
+            continue;
+        }
+        let canon = lanflare_core::discovery::registry::canonicalize_fingerprint(&p.fingerprint);
+        if canon.is_empty() {
+            continue;
+        }
+        unique_by_fp
+            .entry(canon)
+            .and_modify(|existing: &mut lanflare_core::discovery::registry::DiscoveredPeer| {
+                if p.last_seen_ms > existing.last_seen_ms {
+                    *existing = p.clone();
+                }
+            })
+            .or_insert(p);
+    }
+
+    let mut dtos: Vec<DiscoveredPeerDto> = unique_by_fp
+        .into_values()
+        .map(|p| DiscoveredPeerDto::from(&p))
+        .collect();
+    dtos.sort_by(|a, b| b.last_seen.cmp(&a.last_seen).then_with(|| a.alias.cmp(&b.alias)));
+    Ok(dtos)
+}
+
+/// Manually removes a peer from the discovery registry.
+#[tauri::command]
+pub async fn remove_discovered_peer(
+    fingerprint: String,
+    app: AppHandle,
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<bool, String> {
+    let removed = state.registry.remove(&fingerprint).await.is_some();
+    if removed {
+        let _ = app.emit("lanflare://peers-updated", ());
+    }
+    Ok(removed)
 }
 
 /// Starts dual discovery engines (Multicast and mDNS) and emits peer updates to GUI.
@@ -423,12 +463,16 @@ pub async fn start_discovery(
                 let scan_tasks = valid_ifaces.into_iter().map(|iface| {
                     let reg = registry_subnet.clone();
                     let ident = identity_subnet.clone();
+                    let app_cb = app_subnet.clone();
                     async move {
-                        lanflare_core::discovery::scanner::scan_subnet(
+                        lanflare_core::discovery::scanner::scan_subnet_with_callback(
                             iface.address,
                             port_subnet,
                             &ident,
                             &reg,
+                            move |_| {
+                                let _ = app_cb.emit("lanflare://peers-updated", ());
+                            },
                         )
                         .await
                     }
@@ -460,6 +504,50 @@ pub async fn announce_presence(
         let _ = app.emit("lanflare://peers-updated", ());
     }
 
+    // Actively verify existing registered peers: ping each peer via HTTP info; evict if unreachable or cert changed
+    let existing_peers = state.registry.get_all().await;
+    let own_fp = lanflare_core::discovery::registry::canonicalize_fingerprint(&state.identity.fingerprint);
+    let app_verify = app.clone();
+    let reg_verify = Arc::clone(&state.registry);
+    let identity_verify = state.identity.clone();
+
+    tokio::spawn(async move {
+        let client_cfg = lanflare_core::client::LsClientConfig {
+            timeout: std::time::Duration::from_millis(1500),
+            connect_timeout: std::time::Duration::from_millis(1000),
+            tls_identity: Some(identity_verify),
+            target_fingerprint: None,
+        };
+        if let Ok(client) = lanflare_core::client::LsClient::new(client_cfg) {
+            let mut evicted_any = false;
+            for peer in existing_peers {
+                if peer.fingerprint.eq_ignore_ascii_case(&own_fp) {
+                    reg_verify.remove(&peer.fingerprint).await;
+                    evicted_any = true;
+                    continue;
+                }
+                if let Some(base_url) = peer.primary_base_url() {
+                    match client.get_info(&base_url).await {
+                        Ok(info) => {
+                            let info_fp = lanflare_core::discovery::registry::canonicalize_fingerprint(&info.fingerprint);
+                            if !info_fp.eq_ignore_ascii_case(&peer.fingerprint) {
+                                reg_verify.remove(&peer.fingerprint).await;
+                                evicted_any = true;
+                            }
+                        }
+                        Err(_) => {
+                            reg_verify.remove(&peer.fingerprint).await;
+                            evicted_any = true;
+                        }
+                    }
+                }
+            }
+            if evicted_any {
+                let _ = app_verify.emit("lanflare://peers-updated", ());
+            }
+        }
+    });
+
     // Also run a subnet scan sweep in background on refresh
     let registry_subnet = Arc::clone(&state.registry);
     let identity_subnet = state.identity.clone();
@@ -478,12 +566,16 @@ pub async fn announce_presence(
                 let scan_tasks = valid_ifaces.into_iter().map(|iface| {
                     let reg = registry_subnet.clone();
                     let ident = identity_subnet.clone();
+                    let app_cb = app_subnet.clone();
                     async move {
-                        lanflare_core::discovery::scanner::scan_subnet(
+                        lanflare_core::discovery::scanner::scan_subnet_with_callback(
                             iface.address,
                             port_subnet,
                             &ident,
                             &reg,
+                            move |_| {
+                                let _ = app_cb.emit("lanflare://peers-updated", ());
+                            },
                         )
                         .await
                     }
@@ -558,6 +650,8 @@ pub async fn start_receiver_server(
             match event {
                 ServerTransferEvent::DeviceRegistered { ip, info } => {
                     tracing::info!("Registered device: {} from {ip}", info.alias);
+                    state_clone.registry.handle_http_register(ip, &info).await;
+                    let _ = app_clone.emit("lanflare://peers-updated", ());
                 }
                 ServerTransferEvent::PrepareUpload {
                     session_id,
@@ -567,6 +661,9 @@ pub async fn start_receiver_server(
                     decision_tx,
                     ..
                 } => {
+                    state_clone.registry.handle_http_register(sender_ip, &sender_info).await;
+                    let _ = app_clone.emit("lanflare://peers-updated", ());
+
                     let mut file_infos = Vec::new();
                     let mut total_bytes = 0u64;
 

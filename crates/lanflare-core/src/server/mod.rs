@@ -151,6 +151,7 @@ pub async fn start_server_ext(
         registry,
         event_tx,
         dufs_manager: dufs_manager.clone(),
+        tls_identity: tls_identity.clone(),
     };
 
     let cancel = cancel_token.clone();

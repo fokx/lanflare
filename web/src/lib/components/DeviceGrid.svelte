@@ -299,7 +299,7 @@
 				</div>
 			{:else}
 				<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 pb-2">
-					{#each appState.filteredPeers as peer (peer.fingerprint)}
+					{#each appState.filteredPeers as peer, idx (peer.fingerprint || `peer-${idx}`)}
 						{@const Icon = getDeviceIcon(peer.deviceType)}
 						{@const isSelected = appState.selectedRecipients.includes(peer.fingerprint)}
 
@@ -334,13 +334,26 @@
 									</div>
 								</div>
 
-								<!-- Security Badge -->
-								<div
-									class="flex items-center gap-1 text-[10px] sm:text-[11px] px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-medium flex-shrink-0"
-									title="Mutual TLS verified with pinned SHA-256 fingerprint"
-								>
-									<ShieldCheck class="w-3.5 h-3.5" />
-									<span>mTLS</span>
+								<!-- Right Actions: Security Badge & Dismiss Button -->
+								<div class="flex items-center gap-1.5 flex-shrink-0">
+									<div
+										class="flex items-center gap-1 text-[10px] sm:text-[11px] px-1.5 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-medium"
+										title="Mutual TLS verified with pinned SHA-256 fingerprint"
+									>
+										<ShieldCheck class="w-3.5 h-3.5" />
+										<span>mTLS</span>
+									</div>
+									<button
+										type="button"
+										onclick={(e) => {
+											e.stopPropagation();
+											appState.removePeer(peer.fingerprint);
+										}}
+										class="p-1 rounded-md text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
+										title="Dismiss / remove device from list"
+									>
+										<X class="w-3.5 h-3.5" />
+									</button>
 								</div>
 							</div>
 

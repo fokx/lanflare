@@ -15,24 +15,57 @@ use crate::crypto::cert::TlsIdentity;
 use crate::discovery::registry::{DiscoveredPeer, PeerRegistry};
 
 /// Concurrency limit for parallel subnet probing.
-pub const SCAN_CONCURRENCY: usize = 128;
+pub const SCAN_CONCURRENCY: usize = 64;
 
 /// Timeout for probing individual IPs during a subnet scan.
-pub const SCAN_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+pub const SCAN_PROBE_TIMEOUT: Duration = Duration::from_millis(2500);
 
 /// Connect timeout for probing individual IPs during a subnet scan.
-pub const SCAN_CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
+pub const SCAN_CONNECT_TIMEOUT: Duration = Duration::from_millis(1200);
+
+#[cfg(target_os = "linux")]
+fn get_arp_neighbors(base_prefix: [u8; 3]) -> std::collections::HashSet<Ipv4Addr> {
+    let mut arp_ips = std::collections::HashSet::new();
+    if let Ok(content) = std::fs::read_to_string("/proc/net/arp") {
+        for line in content.lines().skip(1) {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 {
+                // flags: 0x2 means ATF_COM (completed ARP resolution)
+                let flags = parts[2];
+                if flags == "0x2" || flags == "2" {
+                    if let Ok(ip) = parts[0].parse::<Ipv4Addr>() {
+                        let oct = ip.octets();
+                        if oct[0] == base_prefix[0] && oct[1] == base_prefix[1] && oct[2] == base_prefix[2] {
+                            arp_ips.insert(ip);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    arp_ips
+}
+
+#[cfg(not(target_os = "linux"))]
+fn get_arp_neighbors(_base_prefix: [u8; 3]) -> std::collections::HashSet<Ipv4Addr> {
+    std::collections::HashSet::new()
+}
 
 /// Scans the `/24` subnet containing `interface_ip` and populates the given `PeerRegistry`.
 ///
 /// Probes every host in `[1..=254]` on the given `port` (defaults to 53317).
 /// Skips `interface_ip` itself and suppresses self-discovered certificates using `identity`.
-pub async fn scan_subnet(
+/// Invokes `on_peer` immediately whenever a peer is discovered.
+pub async fn scan_subnet_with_callback<F>(
     interface_ip: Ipv4Addr,
     port: u16,
     identity: &TlsIdentity,
     registry: &Arc<PeerRegistry>,
-) -> Vec<DiscoveredPeer> {
+    on_peer: F,
+) -> Vec<DiscoveredPeer>
+where
+    F: Fn(&DiscoveredPeer) + Send + Sync,
+{
     let base = interface_ip.octets();
     let client_config = LsClientConfig {
         timeout: SCAN_PROBE_TIMEOUT,
@@ -49,20 +82,31 @@ pub async fn scan_subnet(
         }
     };
 
-    let candidates: Vec<Ipv4Addr> = (1..=254u8)
+    let mut candidates: Vec<Ipv4Addr> = (1..=254u8)
         .map(|host| Ipv4Addr::new(base[0], base[1], base[2], host))
         .filter(|&ip| ip != interface_ip)
         .collect();
 
+    // Prioritize active ARP neighbors so devices currently talking on the LAN are probed first
+    let arp_neighbors = get_arp_neighbors([base[0], base[1], base[2]]);
+    if !arp_neighbors.is_empty() {
+        candidates.sort_by_key(|ip| !arp_neighbors.contains(ip));
+    }
+
     let client_ref = &client;
     let own_fp = identity.fingerprint.clone();
     let reg_ref = registry;
+    let on_peer_ref = &on_peer;
 
     let discovered_peers: Vec<DiscoveredPeer> = stream::iter(candidates)
         .map(|target_ip| {
             let own_fp = own_fp.clone();
             async move {
-                probe_host(client_ref, target_ip, port, &own_fp, reg_ref).await
+                let peer = probe_host(client_ref, target_ip, port, &own_fp, reg_ref).await;
+                if let Some(ref p) = peer {
+                    on_peer_ref(p);
+                }
+                peer
             }
         })
         .buffer_unordered(SCAN_CONCURRENCY)
@@ -71,6 +115,16 @@ pub async fn scan_subnet(
         .await;
 
     discovered_peers
+}
+
+/// Scans the `/24` subnet containing `interface_ip` and populates the given `PeerRegistry`.
+pub async fn scan_subnet(
+    interface_ip: Ipv4Addr,
+    port: u16,
+    identity: &TlsIdentity,
+    registry: &Arc<PeerRegistry>,
+) -> Vec<DiscoveredPeer> {
+    scan_subnet_with_callback(interface_ip, port, identity, registry, |_| {}).await
 }
 
 /// Probes a single host for a LocalSend v2.2 info endpoint.

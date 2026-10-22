@@ -60,7 +60,7 @@ pub async fn route_request(
 
         // v1/v2 Device Information: GET /api/localsend/v2/info or GET /api/localsend/v1/info
         (&Method::GET, "/api/localsend/v2/info") | (&Method::GET, "/api/localsend/v1/info") => {
-            to_box_body(handle_info(state).await)
+            to_box_body(handle_info(client.remote_ip, state).await)
         }
 
         // Two-way discovery registration: POST /api/localsend/v2/register

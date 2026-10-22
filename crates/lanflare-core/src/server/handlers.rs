@@ -95,6 +95,7 @@ pub struct ServerState {
     pub registry: Arc<PeerRegistry>,
     pub event_tx: Option<mpsc::Sender<ServerTransferEvent>>,
     pub dufs_manager: Arc<DufsManager>,
+    pub tls_identity: Option<crate::crypto::cert::TlsIdentity>,
 }
 
 /// Helper decoding percent-encoded strings (e.g. `%40` -> `@`, `%3A` -> `:`).
@@ -318,7 +319,62 @@ pub fn parse_query(query_str: Option<&str>) -> HashMap<String, String> {
 }
 
 /// Handler for `GET /api/localsend/v2/info` and `GET /api/localsend/v1/info`.
-pub async fn handle_info(state: &ServerState) -> Response<Full<Bytes>> {
+pub async fn handle_info(remote_ip: IpAddr, state: &ServerState) -> Response<Full<Bytes>> {
+    // Reverse probe: if an external peer probes us (e.g. Android manual scan),
+    // immediately probe them back on port 53317 so we discover them symmetrically.
+    if !remote_ip.is_loopback() {
+        let registry = Arc::clone(&state.registry);
+        let event_tx = state.event_tx.clone();
+        let tls_identity = state.tls_identity.clone();
+        let own_fp = state.cert_fingerprint.clone();
+        tokio::spawn(async move {
+            let client_config = crate::client::LsClientConfig {
+                timeout: std::time::Duration::from_millis(2500),
+                connect_timeout: std::time::Duration::from_millis(1200),
+                tls_identity,
+                target_fingerprint: None,
+            };
+            if let Ok(client) = crate::client::LsClient::new(client_config) {
+                for proto in [
+                    lanflare_proto::discovery::ProtocolType::Https,
+                    lanflare_proto::discovery::ProtocolType::Http,
+                ] {
+                    let proto_str = proto.as_str();
+                    let port = 53317;
+                    let base_url = format!("{proto_str}://{remote_ip}:{port}");
+                    if let Ok(info) = client.get_info(&base_url).await {
+                        if !info.fingerprint.is_empty()
+                            && info.fingerprint.eq_ignore_ascii_case(&own_fp)
+                        {
+                            return;
+                        }
+                        let peer = registry.handle_info(remote_ip, port, proto, &info).await;
+                        if peer.is_some() {
+                            if let Some(ref tx) = event_tx {
+                                let _ = tx
+                                    .send(ServerTransferEvent::DeviceRegistered {
+                                        ip: remote_ip,
+                                        info: lanflare_proto::discovery::RegisterDtoV2 {
+                                            alias: info.alias,
+                                            version: info.version,
+                                            device_model: info.device_model,
+                                            device_type: info.device_type,
+                                            fingerprint: info.fingerprint,
+                                            port: info.port.unwrap_or(port),
+                                            protocol: info.protocol.unwrap_or(proto),
+                                            download: info.download,
+                                        },
+                                    })
+                                    .await;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     let files = state.download_manager.get_file_dtos().await;
     let cfg = state.config.read().await;
     let resp = InfoResponseDtoV2 {
@@ -414,6 +470,9 @@ pub async fn handle_prepare_upload(
     if payload.files.is_empty() {
         return empty_response(StatusCode::BAD_REQUEST);
     }
+
+    // Ingest the sender into PeerRegistry upon incoming transfer request
+    state.registry.handle_http_register(remote_ip, &payload.info).await;
 
     let session_id = Uuid::new_v4().to_string();
     let cancel = CancellationToken::new();

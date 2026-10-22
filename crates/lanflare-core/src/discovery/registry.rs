@@ -240,7 +240,7 @@ pub struct PeerRegistryConfig {
 impl Default for PeerRegistryConfig {
     fn default() -> Self {
         Self {
-            peer_timeout: Duration::from_secs(45),
+            peer_timeout: Duration::from_secs(90),
             eviction_interval: Duration::from_secs(5),
             max_peers: 256,
             event_buffer_capacity: 128,
@@ -614,10 +614,14 @@ impl PeerRegistry {
     /// Internal merge routine consolidating peer endpoints and attributes.
     async fn merge_peer_internal(
         &self,
-        incoming: DiscoveredPeer,
+        mut incoming: DiscoveredPeer,
         now_ms: u64,
     ) -> Option<DiscoveredPeer> {
+        incoming.fingerprint = canonicalize_fingerprint(&incoming.fingerprint);
         let key = incoming.fingerprint.clone();
+        if key.is_empty() {
+            return None;
+        }
         let mut peers = self.peers.write().await;
 
         if let Some(existing) = peers.get_mut(&key) {
@@ -698,6 +702,28 @@ impl PeerRegistry {
                     .min_by_key(|(_, p)| p.last_seen_ms)
                     .map(|(k, _)| k.clone());
                 if let Some(evicted) = oldest_key.and_then(|k| peers.remove(&k)) {
+                    let _ = self.event_tx.send(RegistryEvent::PeerExpired {
+                        fingerprint: evicted.fingerprint,
+                        alias: evicted.alias,
+                    });
+                }
+            }
+
+            let incoming_base = incoming.primary_base_url();
+            let stale_keys: Vec<String> = peers
+                .iter()
+                .filter(|(k, p)| {
+                    **k != key
+                        && p.alias == incoming.alias
+                        && p.device_model == incoming.device_model
+                        && incoming_base.is_some()
+                        && p.primary_base_url() == incoming_base
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+
+            for stale_k in stale_keys {
+                if let Some(evicted) = peers.remove(&stale_k) {
                     let _ = self.event_tx.send(RegistryEvent::PeerExpired {
                         fingerprint: evicted.fingerprint,
                         alias: evicted.alias,

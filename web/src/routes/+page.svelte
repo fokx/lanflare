@@ -17,12 +17,29 @@
 		Settings,
 		RefreshCw,
 		Sun,
-		Moon
+		Moon,
+		Copy,
+		Check
 	} from 'lucide-svelte';
-	import { announcePresence } from '$lib/api';
+	import { announcePresence, getDiscoveredPeers } from '$lib/api';
 	import { initShareTarget } from '$lib/shareTarget';
+	import { shortenFingerprint } from '$lib/format';
 
 	let isRefreshing = $state(false);
+	let copiedFp = $state(false);
+
+	async function handleCopyFingerprint() {
+		if (!appState.status?.fingerprint) return;
+		try {
+			await navigator.clipboard.writeText(appState.status.fingerprint);
+			copiedFp = true;
+			setTimeout(() => {
+				copiedFp = false;
+			}, 2000);
+		} catch (e) {
+			console.error('Failed to copy fingerprint:', e);
+		}
+	}
 
 	onMount(() => {
 		appState.init();
@@ -63,6 +80,7 @@
 		isRefreshing = true;
 		try {
 			await announcePresence();
+			appState.peers = await getDiscoveredPeers();
 		} catch (e) {
 			console.error('Failed to trigger announcement:', e);
 		} finally {
@@ -214,7 +232,7 @@
 		<!-- Bottom Status & Actions -->
 		<div class="space-y-3 pt-4 border-t border-slate-200 dark:border-slate-900">
 			<!-- Local Node Badge -->
-			<div class="bg-slate-100 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800/80 rounded-xl p-3 space-y-1">
+			<div class="bg-slate-100 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800/80 rounded-xl p-3 space-y-1.5">
 				<div class="flex items-center justify-between">
 					<span class="text-[11px] font-semibold text-slate-700 dark:text-slate-300 truncate">
 						{appState.status?.alias || 'This Device'}
@@ -227,6 +245,24 @@
 				<p class="text-[10px] text-slate-500 font-mono truncate">
 					{appState.status?.downloadDir || 'Downloads'}
 				</p>
+				{#if appState.status?.fingerprint}
+					<div class="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-200/60 dark:border-slate-800/60">
+						<span>Fingerprint:</span>
+						<button
+							type="button"
+							onclick={handleCopyFingerprint}
+							class="flex items-center gap-1 font-mono text-[10px] text-slate-700 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors cursor-pointer group"
+							title="Click to copy full SHA-256 fingerprint: {appState.status.fingerprint}"
+						>
+							<span>{shortenFingerprint(appState.status.fingerprint)}</span>
+							{#if copiedFp}
+								<Check class="w-3 h-3 text-emerald-500" />
+							{:else}
+								<Copy class="w-3 h-3 text-slate-400 group-hover:text-indigo-500" />
+							{/if}
+						</button>
+					</div>
+				{/if}
 			</div>
 
 			<!-- Quick Actions: Scan, Theme Toggle & Settings Buttons -->

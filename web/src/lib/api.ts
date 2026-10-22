@@ -126,6 +126,10 @@ export async function getDiscoveredPeers(): Promise<DiscoveredPeer[]> {
 	return tauriInvoke<DiscoveredPeer[]>('get_discovered_peers');
 }
 
+export async function removeDiscoveredPeer(fingerprint: string): Promise<boolean> {
+	return tauriInvoke<boolean>('remove_discovered_peer', { fingerprint });
+}
+
 export async function startDiscovery(): Promise<void> {
 	return tauriInvoke<void>('start_discovery');
 }

@@ -13,6 +13,7 @@ import type {
 import {
 	getNodeStatus,
 	getDiscoveredPeers,
+	removeDiscoveredPeer,
 	startDiscovery,
 	startReceiverServer,
 	tauriListen,
@@ -75,11 +76,30 @@ export class AppState {
 
 	// Derived: Filtered Peers
 	filteredPeers = $derived.by(() => {
+		const ownFp = this.status?.fingerprint?.toUpperCase();
+		let list = this.peers;
+		if (ownFp) {
+			list = list.filter((p) => p.fingerprint?.toUpperCase() !== ownFp);
+		}
+		// Strict deduplication by fingerprint, keeping newest
+		const seen = new Set<string>();
+		const deduped: DiscoveredPeer[] = [];
+		for (const p of list) {
+			const fp = p.fingerprint?.toUpperCase() || '';
+			if (fp) {
+				if (!seen.has(fp)) {
+					seen.add(fp);
+					deduped.push(p);
+				}
+			} else {
+				deduped.push(p);
+			}
+		}
 		if (!this.searchQuery.trim()) {
-			return this.peers;
+			return deduped;
 		}
 		const q = this.searchQuery.toLowerCase();
-		return this.peers.filter((p) => {
+		return deduped.filter((p) => {
 			return (
 				p.alias.toLowerCase().includes(q) ||
 				p.fingerprint.toLowerCase().includes(q) ||
@@ -359,6 +379,16 @@ export class AppState {
 
 	clearSelectedRecipients() {
 		this.selectedRecipients = [];
+	}
+
+	async removePeer(fingerprint: string) {
+		this.peers = this.peers.filter((p) => p.fingerprint !== fingerprint);
+		this.selectedRecipients = this.selectedRecipients.filter((fp) => fp !== fingerprint);
+		try {
+			await removeDiscoveredPeer(fingerprint);
+		} catch (e) {
+			console.error('Failed to remove peer:', e);
+		}
 	}
 
 	// Share via Link methods

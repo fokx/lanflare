@@ -16,7 +16,9 @@
 		Moon,
 		Monitor,
 		History,
-		AlertCircle
+		AlertCircle,
+		Shield,
+		Copy
 	} from 'lucide-svelte';
 
 	let alias = $state(appState.status?.alias || '');
@@ -31,6 +33,20 @@
 	let saveSuccess = $state(false);
 	let errorMsg = $state<string | null>(null);
 	let hasStoragePermission = $state(true);
+	let copiedFp = $state(false);
+
+	async function handleCopyFingerprint() {
+		if (!appState.status?.fingerprint) return;
+		try {
+			await navigator.clipboard.writeText(appState.status.fingerprint);
+			copiedFp = true;
+			setTimeout(() => {
+				copiedFp = false;
+			}, 2000);
+		} catch (e) {
+			console.error('Failed to copy fingerprint:', e);
+		}
+	}
 
 	function checkStoragePermission() {
 		if (typeof window !== 'undefined' && (window as any).AndroidStorage?.isStorageManager) {
@@ -211,6 +227,37 @@
 						bind:value={alias}
 						class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:border-indigo-500"
 					/>
+				</div>
+
+				<!-- Device Fingerprint / Security Identity -->
+				<div class="p-3 rounded-xl bg-slate-50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800/80 space-y-2">
+					<div class="flex items-center justify-between">
+						<div class="flex items-center gap-1.5 text-xs font-medium text-slate-800 dark:text-slate-200">
+							<Shield class="w-3.5 h-3.5 text-indigo-500" />
+							<span>Device Certificate Fingerprint</span>
+						</div>
+						{#if appState.status?.fingerprint}
+							<button
+								type="button"
+								onclick={handleCopyFingerprint}
+								class="flex items-center gap-1 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 transition-colors cursor-pointer"
+							>
+								{#if copiedFp}
+									<Check class="w-3.5 h-3.5 text-emerald-500" />
+									<span class="text-emerald-500">Copied!</span>
+								{:else}
+									<Copy class="w-3.5 h-3.5" />
+									<span>Copy Full</span>
+								{/if}
+							</button>
+						{/if}
+					</div>
+					<div class="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 font-mono text-[10px] text-slate-600 dark:text-slate-400 break-all select-all">
+						{appState.status?.fingerprint || 'Unavailable'}
+					</div>
+					<p class="text-[10px] text-slate-500 dark:text-slate-400">
+						Unique SHA-256 fingerprint identifying this device for mutual TLS (mTLS) encryption and pinning.
+					</p>
 				</div>
 
 				<!-- Download Directory (Folder Picker) -->

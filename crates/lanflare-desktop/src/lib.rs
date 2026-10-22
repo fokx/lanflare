@@ -82,6 +82,7 @@ pub fn run() {
             commands::get_node_status,
             commands::update_config,
             commands::get_discovered_peers,
+            commands::remove_discovered_peer,
             commands::start_discovery,
             commands::announce_presence,
             commands::stop_discovery,
