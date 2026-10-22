@@ -352,10 +352,10 @@ pub fn check_dufs_auth(req: &Request<Incoming>, config: &DufsConfig) -> bool {
     // 1. Check query parameter: `?pin=<pin>`
     if let Some(query) = req.uri().query() {
         for pair in query.split('&') {
-            if let Some((k, v)) = pair.split_once('=') {
-                if k == "pin" && percent_decode(v) == *expected_pin {
-                    return true;
-                }
+            if let Some((k, v)) = pair.split_once('=')
+                && k == "pin" && percent_decode(v) == *expected_pin
+            {
+                return true;
             }
         }
     }
@@ -887,19 +887,120 @@ pub async fn serve_directory(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
+    <meta name="color-scheme" content="light dark">
     <title>{title_escaped}</title>
+    <script>
+        (function() {{
+            try {{
+                var saved = localStorage.getItem('lanflare_theme');
+                if (saved === 'dark' || saved === 'light') {{
+                    document.documentElement.setAttribute('data-theme', saved);
+                }}
+            }} catch(e) {{}}
+        }})();
+    </script>
     <style>
         :root {{
+            color-scheme: light dark;
+            --bg-body: #f8fafc;
+            --bg-card: #ffffff;
+            --bg-row-hover: #f1f5f9;
+            --border: #e2e8f0;
+            --border-row: rgba(0, 0, 0, 0.05);
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --accent: #4f46e5;
+            --accent-hover: #4338ca;
+            --folder-color: #d97706;
+            --file-color: #4f46e5;
+            --badge-bg: rgba(79, 70, 229, 0.08);
+            --badge-text: #4f46e5;
+            --badge-border: rgba(79, 70, 229, 0.2);
+            --search-bg: #f8fafc;
+            --search-border: #cbd5e1;
+            --th-bg: #f8fafc;
+            --btn-outline-bg: transparent;
+            --btn-outline-border: #cbd5e1;
+            --btn-outline-text: #334155;
+            --btn-outline-hover-bg: #f1f5f9;
+            --btn-outline-hover-border: #94a3b8;
+            --action-btn-bg: #f8fafc;
+            --action-btn-border: #cbd5e1;
+            --action-btn-text: #334155;
+            --card-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+            --header-shadow: 0 2px 12px rgba(0, 0, 0, 0.04);
+            --upload-bar-bg: rgba(79, 70, 229, 0.04);
+            --upload-bar-border: rgba(79, 70, 229, 0.25);
+            --crumb-link: #4f46e5;
+            --name-hover: #4f46e5;
+        }}
+        @media (prefers-color-scheme: dark) {{
+            :root:not([data-theme="light"]) {{
+                --bg-body: #0b0f19;
+                --bg-card: #111827;
+                --bg-row-hover: #1f293d;
+                --border: #1e293b;
+                --border-row: rgba(255, 255, 255, 0.04);
+                --text-main: #f8fafc;
+                --text-muted: #94a3b8;
+                --accent: #6366f1;
+                --accent-hover: #4f46e5;
+                --folder-color: #fbbf24;
+                --file-color: #818cf8;
+                --badge-bg: rgba(99, 102, 241, 0.2);
+                --badge-text: #818cf8;
+                --badge-border: rgba(99, 102, 241, 0.4);
+                --search-bg: #0f172a;
+                --search-border: #1e293b;
+                --th-bg: #0d121f;
+                --btn-outline-bg: transparent;
+                --btn-outline-border: #1e293b;
+                --btn-outline-text: #f8fafc;
+                --btn-outline-hover-bg: #1e293b;
+                --btn-outline-hover-border: #475569;
+                --action-btn-bg: #1e293b;
+                --action-btn-border: #334155;
+                --action-btn-text: #cbd5e1;
+                --card-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+                --header-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+                --upload-bar-bg: rgba(99, 102, 241, 0.06);
+                --upload-bar-border: rgba(99, 102, 241, 0.4);
+                --crumb-link: #818cf8;
+                --name-hover: #818cf8;
+            }}
+        }}
+        :root[data-theme="dark"] {{
             --bg-body: #0b0f19;
             --bg-card: #111827;
             --bg-row-hover: #1f293d;
             --border: #1e293b;
+            --border-row: rgba(255, 255, 255, 0.04);
             --text-main: #f8fafc;
             --text-muted: #94a3b8;
             --accent: #6366f1;
             --accent-hover: #4f46e5;
             --folder-color: #fbbf24;
             --file-color: #818cf8;
+            --badge-bg: rgba(99, 102, 241, 0.2);
+            --badge-text: #818cf8;
+            --badge-border: rgba(99, 102, 241, 0.4);
+            --search-bg: #0f172a;
+            --search-border: #1e293b;
+            --th-bg: #0d121f;
+            --btn-outline-bg: transparent;
+            --btn-outline-border: #1e293b;
+            --btn-outline-text: #f8fafc;
+            --btn-outline-hover-bg: #1e293b;
+            --btn-outline-hover-border: #475569;
+            --action-btn-bg: #1e293b;
+            --action-btn-border: #334155;
+            --action-btn-text: #cbd5e1;
+            --card-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+            --header-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            --upload-bar-bg: rgba(99, 102, 241, 0.06);
+            --upload-bar-border: rgba(99, 102, 241, 0.4);
+            --crumb-link: #818cf8;
+            --name-hover: #818cf8;
         }}
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
@@ -910,6 +1011,7 @@ pub async fn serve_directory(
             display: flex;
             flex-direction: column;
             padding: 16px;
+            transition: background 0.2s ease, color 0.2s ease;
         }}
         .container {{
             max-width: 960px;
@@ -929,7 +1031,8 @@ pub async fn serve_directory(
             background: var(--bg-card);
             border: 1px solid var(--border);
             border-radius: 16px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            box-shadow: var(--header-shadow);
+            transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
         }}
         .brand {{
             display: flex;
@@ -957,9 +1060,9 @@ pub async fn serve_directory(
             font-weight: 600;
             padding: 2px 6px;
             border-radius: 6px;
-            background: rgba(99, 102, 241, 0.2);
-            color: #818cf8;
-            border: 1px solid rgba(99, 102, 241, 0.4);
+            background: var(--badge-bg);
+            color: var(--badge-text);
+            border: 1px solid var(--badge-border);
             margin-left: 6px;
         }}
         .top-actions {{
@@ -974,8 +1077,8 @@ pub async fn serve_directory(
             align-items: center;
         }}
         .search-box input {{
-            background: #0f172a;
-            border: 1px solid var(--border);
+            background: var(--search-bg);
+            border: 1px solid var(--search-border);
             color: var(--text-main);
             padding: 8px 12px 8px 34px;
             border-radius: 10px;
@@ -1014,13 +1117,13 @@ pub async fn serve_directory(
         }}
         .btn-primary:hover {{ background: var(--accent-hover); }}
         .btn-outline {{
-            background: transparent;
-            border: 1px solid var(--border);
-            color: var(--text-main);
+            background: var(--btn-outline-bg);
+            border: 1px solid var(--btn-outline-border);
+            color: var(--btn-outline-text);
         }}
         .btn-outline:hover {{
-            background: #1e293b;
-            border-color: #475569;
+            background: var(--btn-outline-hover-bg);
+            border-color: var(--btn-outline-hover-border);
         }}
         .breadcrumbs-bar {{
             display: flex;
@@ -1035,7 +1138,7 @@ pub async fn serve_directory(
             white-space: nowrap;
         }}
         .crumb-link {{
-            color: #818cf8;
+            color: var(--crumb-link);
             text-decoration: none;
             font-weight: 500;
         }}
@@ -1046,8 +1149,8 @@ pub async fn serve_directory(
             align-items: center;
             gap: 12px;
             padding: 12px 18px;
-            background: rgba(99,102,241,0.06);
-            border: 1px dashed rgba(99,102,241,0.4);
+            background: var(--upload-bar-bg);
+            border: 1px dashed var(--upload-bar-border);
             border-radius: 12px;
         }}
         .upload-tip {{ font-size: 12px; color: var(--text-muted); }}
@@ -1056,7 +1159,7 @@ pub async fn serve_directory(
             border: 1px solid var(--border);
             border-radius: 16px;
             overflow: hidden;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            box-shadow: var(--card-shadow);
         }}
         table {{
             width: 100%;
@@ -1071,12 +1174,12 @@ pub async fn serve_directory(
             color: var(--text-muted);
             border-bottom: 1px solid var(--border);
             font-weight: 600;
-            background: #0d121f;
+            background: var(--th-bg);
         }}
         td {{
             padding: 12px 16px;
             font-size: 13px;
-            border-bottom: 1px solid rgba(255,255,255,0.04);
+            border-bottom: 1px solid var(--border-row);
             vertical-align: middle;
         }}
         .entry-row:hover td {{
@@ -1089,14 +1192,14 @@ pub async fn serve_directory(
         .icon-audio {{ color: #a855f7; }}
         .icon-pdf {{ color: #ef4444; }}
         .icon-zip {{ color: #eab308; }}
-        .icon-file {{ color: #94a3b8; }}
+        .icon-file {{ color: var(--text-muted); }}
         .col-name {{ font-weight: 500; min-width: 180px; }}
         .name-link {{
             color: var(--text-main);
             text-decoration: none;
             word-break: break-all;
         }}
-        .name-link:hover {{ color: #818cf8; text-decoration: underline; }}
+        .name-link:hover {{ color: var(--name-hover); text-decoration: underline; }}
         .col-size {{ width: 110px; font-family: monospace; font-size: 12px; color: var(--text-muted); }}
         .col-date {{ width: 150px; font-size: 12px; color: var(--text-muted); }}
         .col-actions {{ width: 100px; text-align: right; }}
@@ -1106,9 +1209,9 @@ pub async fn serve_directory(
             gap: 4px;
             padding: 5px 10px;
             border-radius: 8px;
-            background: #1e293b;
-            border: 1px solid #334155;
-            color: #cbd5e1;
+            background: var(--action-btn-bg);
+            border: 1px solid var(--action-btn-border);
+            color: var(--action-btn-text);
             font-size: 11px;
             font-weight: 600;
             text-decoration: none;
@@ -1153,6 +1256,11 @@ pub async fn serve_directory(
                     <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                     <input type="text" id="searchInput" placeholder="Filter files..." oninput="filterFiles()" />
                 </div>
+                <button id="themeToggle" class="btn btn-outline" onclick="toggleTheme()" title="Toggle theme (System / Light / Dark)" aria-label="Toggle theme">
+                    <svg id="iconSun" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                    <svg id="iconMoon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    <span id="themeText">Theme</span>
+                </button>
                 <a href="?zip" class="btn btn-outline" title="Download entire folder as ZIP">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                     Download ZIP
@@ -1233,6 +1341,41 @@ pub async fn serve_directory(
             rows.forEach(r => tbody.appendChild(r));
         }}
 
+        // Theme switcher
+        function isDark() {{
+            var t = document.documentElement.getAttribute('data-theme');
+            if (t === 'dark') return true;
+            if (t === 'light') return false;
+            return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        }}
+        function updateThemeUI() {{
+            var dark = isDark();
+            var sun = document.getElementById('iconSun');
+            var moon = document.getElementById('iconMoon');
+            var text = document.getElementById('themeText');
+            if (sun && moon) {{
+                sun.style.display = dark ? 'inline-block' : 'none';
+                moon.style.display = dark ? 'none' : 'inline-block';
+            }}
+            if (text) {{
+                text.textContent = dark ? 'Light' : 'Dark';
+            }}
+        }}
+        function toggleTheme() {{
+            var next = isDark() ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', next);
+            try {{ localStorage.setItem('lanflare_theme', next); }} catch(e) {{}}
+            updateThemeUI();
+        }}
+        updateThemeUI();
+        if (window.matchMedia) {{
+            window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {{
+                if (!localStorage.getItem('lanflare_theme')) {{
+                    updateThemeUI();
+                }}
+            }});
+        }}
+
         // Upload handler if enabled
         const fileInput = document.getElementById('fileInput');
         if (fileInput) {{
@@ -1300,10 +1443,10 @@ pub async fn handle_upload_file(
             Ok(f) => f,
             Err(_) => return Err(StatusCode::BAD_REQUEST),
         };
-        if let Ok(data) = frame.into_data() {
-            if out_file.write_all(&data).await.is_err() {
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
+        if let Ok(data) = frame.into_data()
+            && out_file.write_all(&data).await.is_err()
+        {
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     }
 

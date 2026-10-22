@@ -1015,35 +1015,146 @@ pub async fn handle_web_portal(req: &Request<Incoming>, state: &ServerState) -> 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
     <title>LanFlare - Download Files</title>
+    <script>
+        (function() {{
+            try {{
+                var saved = localStorage.getItem('lanflare_theme');
+                if (saved === 'dark' || saved === 'light') {{
+                    document.documentElement.setAttribute('data-theme', saved);
+                }}
+            }} catch(e) {{}}
+        }})();
+    </script>
     <style>
+        :root {{
+            color-scheme: light dark;
+            --bg-body: #f1f5f9;
+            --bg-card: #ffffff;
+            --border-card: #e2e8f0;
+            --shadow-card: 0 20px 40px -15px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.04);
+            --border-header: #f1f5f9;
+            --text-title: #0f172a;
+            --text-muted: #64748b;
+            --text-bold: #1e293b;
+            --file-item-bg: #f8fafc;
+            --file-item-border: #e2e8f0;
+            --file-item-hover-bg: #f1f5f9;
+            --file-item-hover-border: #6366f1;
+            --file-name: #0f172a;
+            --file-size: #64748b;
+            --file-icon-bg: rgba(99, 102, 241, 0.1);
+            --file-icon-color: #4f46e5;
+            --btn-bg: #4f46e5;
+            --btn-hover: #4338ca;
+            --btn-text: #ffffff;
+            --empty-icon: #cbd5e1;
+            --empty-title: #334155;
+            --empty-desc: #64748b;
+            --footer-text: #94a3b8;
+            --toggle-bg: #f1f5f9;
+            --toggle-border: #e2e8f0;
+            --toggle-color: #475569;
+            --toggle-hover-bg: #e2e8f0;
+        }}
+        @media (prefers-color-scheme: dark) {{
+            :root:not([data-theme="light"]) {{
+                --bg-body: #090d16;
+                --bg-card: #111827;
+                --border-card: #1f2937;
+                --shadow-card: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+                --border-header: #1f2937;
+                --text-title: #f8fafc;
+                --text-muted: #94a3b8;
+                --text-bold: #e2e8f0;
+                --file-item-bg: #1e293b;
+                --file-item-border: #334155;
+                --file-item-hover-bg: #243248;
+                --file-item-hover-border: #6366f1;
+                --file-name: #f1f5f9;
+                --file-size: #94a3b8;
+                --file-icon-bg: rgba(99, 102, 241, 0.15);
+                --file-icon-color: #818cf8;
+                --btn-bg: #4f46e5;
+                --btn-hover: #4338ca;
+                --btn-text: #ffffff;
+                --empty-icon: #475569;
+                --empty-title: #94a3b8;
+                --empty-desc: #64748b;
+                --footer-text: #64748b;
+                --toggle-bg: #1e293b;
+                --toggle-border: #334155;
+                --toggle-color: #94a3b8;
+                --toggle-hover-bg: #2d3d54;
+            }}
+        }}
+        :root[data-theme="dark"] {{
+            --bg-body: #090d16;
+            --bg-card: #111827;
+            --border-card: #1f2937;
+            --shadow-card: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            --border-header: #1f2937;
+            --text-title: #f8fafc;
+            --text-muted: #94a3b8;
+            --text-bold: #e2e8f0;
+            --file-item-bg: #1e293b;
+            --file-item-border: #334155;
+            --file-item-hover-bg: #243248;
+            --file-item-hover-border: #6366f1;
+            --file-name: #f1f5f9;
+            --file-size: #94a3b8;
+            --file-icon-bg: rgba(99, 102, 241, 0.15);
+            --file-icon-color: #818cf8;
+            --btn-bg: #4f46e5;
+            --btn-hover: #4338ca;
+            --btn-text: #ffffff;
+            --empty-icon: #475569;
+            --empty-title: #94a3b8;
+            --empty-desc: #64748b;
+            --footer-text: #64748b;
+            --toggle-bg: #1e293b;
+            --toggle-border: #334155;
+            --toggle-color: #94a3b8;
+            --toggle-hover-bg: #2d3d54;
+        }}
         * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background: #090d16;
-            color: #f1f5f9;
+            background: var(--bg-body);
+            color: var(--text-title);
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
             padding: 20px;
+            transition: background 0.2s ease, color 0.2s ease;
         }}
         .card {{
             width: 100%;
             max-width: 520px;
-            background: #111827;
-            border: 1px solid #1f2937;
+            background: var(--bg-card);
+            border: 1px solid var(--border-card);
             border-radius: 20px;
             padding: 28px;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            box-shadow: var(--shadow-card);
+            transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
         }}
         .header {{
             display: flex;
             align-items: center;
+            justify-content: space-between;
             gap: 14px;
             margin-bottom: 24px;
             padding-bottom: 18px;
-            border-bottom: 1px solid #1f2937;
+            border-bottom: 1px solid var(--border-header);
+        }}
+        .header-main {{
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            min-width: 0;
+            flex: 1;
         }}
         .logo {{
             width: 44px;
@@ -1055,33 +1166,52 @@ pub async fn handle_web_portal(req: &Request<Incoming>, state: &ServerState) -> 
             justify-content: center;
             color: white;
             box-shadow: 0 4px 14px rgba(99, 102, 241, 0.35);
+            flex-shrink: 0;
         }}
-        .title h1 {{ font-size: 18px; font-weight: 700; color: #f8fafc; }}
-        .title p {{ font-size: 13px; color: #94a3b8; margin-top: 2px; }}
-        .title p strong {{ color: #e2e8f0; }}
+        .title h1 {{ font-size: 18px; font-weight: 700; color: var(--text-title); }}
+        .title p {{ font-size: 13px; color: var(--text-muted); margin-top: 2px; }}
+        .title p strong {{ color: var(--text-bold); }}
+        .theme-toggle {{
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            background: var(--toggle-bg);
+            border: 1px solid var(--toggle-border);
+            color: var(--toggle-color);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            flex-shrink: 0;
+        }}
+        .theme-toggle:hover {{
+            background: var(--toggle-hover-bg);
+            color: var(--text-title);
+        }}
         .file-list {{ display: flex; flex-direction: column; gap: 10px; }}
         .file-item {{
             display: flex;
             align-items: center;
             justify-content: space-between;
             padding: 12px 14px;
-            background: #1e293b;
-            border: 1px solid #334155;
+            background: var(--file-item-bg);
+            border: 1px solid var(--file-item-border);
             border-radius: 12px;
             gap: 12px;
             transition: all 0.15s ease;
         }}
         .file-item:hover {{
-            background: #243248;
-            border-color: #6366f1;
+            background: var(--file-item-hover-bg);
+            border-color: var(--file-item-hover-border);
         }}
         .file-info {{ display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }}
         .file-icon {{
             width: 38px;
             height: 38px;
             border-radius: 8px;
-            background: rgba(99, 102, 241, 0.15);
-            color: #818cf8;
+            background: var(--file-icon-bg);
+            color: var(--file-icon-color);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -1091,53 +1221,59 @@ pub async fn handle_web_portal(req: &Request<Incoming>, state: &ServerState) -> 
         .file-name {{
             font-size: 13px;
             font-weight: 600;
-            color: #f1f5f9;
+            color: var(--file-name);
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }}
-        .file-size {{ font-size: 11px; color: #94a3b8; font-family: monospace; margin-top: 2px; }}
+        .file-size {{ font-size: 11px; color: var(--file-size); font-family: monospace; margin-top: 2px; }}
         .download-btn {{
             display: inline-flex;
             align-items: center;
             gap: 6px;
             padding: 8px 14px;
             border-radius: 10px;
-            background: #4f46e5;
-            color: white;
+            background: var(--btn-bg);
+            color: var(--btn-text);
             text-decoration: none;
             font-size: 12px;
             font-weight: 600;
             flex-shrink: 0;
             transition: background 0.15s ease;
         }}
-        .download-btn:hover {{ background: #4338ca; }}
+        .download-btn:hover {{ background: var(--btn-hover); }}
         .empty-state {{
             padding: 40px 20px;
             text-align: center;
-            color: #64748b;
+            color: var(--empty-desc);
         }}
-        .empty-state svg {{ margin: 0 auto 12px; stroke: #475569; }}
-        .empty-state p {{ font-size: 14px; font-weight: 500; color: #94a3b8; }}
-        .empty-state span {{ font-size: 12px; color: #64748b; margin-top: 4px; display: block; }}
+        .empty-state svg {{ margin: 0 auto 12px; stroke: var(--empty-icon); }}
+        .empty-state p {{ font-size: 14px; font-weight: 500; color: var(--empty-title); }}
+        .empty-state span {{ font-size: 12px; color: var(--empty-desc); margin-top: 4px; display: block; }}
         .footer {{
             margin-top: 20px;
             text-align: center;
             font-size: 11px;
-            color: #64748b;
+            color: var(--footer-text);
         }}
     </style>
 </head>
 <body>
     <div class="card">
         <div class="header">
-            <div class="logo">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
+            <div class="header-main">
+                <div class="logo">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
+                </div>
+                <div class="title">
+                    <h1>LanFlare Web Share</h1>
+                    <p>Shared by <strong>{alias}</strong></p>
+                </div>
             </div>
-            <div class="title">
-                <h1>LanFlare Web Share</h1>
-                <p>Shared by <strong>{alias}</strong></p>
-            </div>
+            <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle theme (System / Light / Dark)" aria-label="Toggle theme">
+                <svg id="iconSun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                <svg id="iconMoon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none;"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+            </button>
         </div>
         <div class="file-list">
             {files_html}
@@ -1146,6 +1282,37 @@ pub async fn handle_web_portal(req: &Request<Incoming>, state: &ServerState) -> 
             LocalSend Protocol v2.2 Compatible &bull; Fast Local Wi-Fi Transfer
         </div>
     </div>
+    <script>
+        function isDark() {{
+            var t = document.documentElement.getAttribute('data-theme');
+            if (t === 'dark') return true;
+            if (t === 'light') return false;
+            return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        }}
+        function updateIcons() {{
+            var dark = isDark();
+            var sun = document.getElementById('iconSun');
+            var moon = document.getElementById('iconMoon');
+            if (sun && moon) {{
+                sun.style.display = dark ? 'block' : 'none';
+                moon.style.display = dark ? 'none' : 'block';
+            }}
+        }}
+        function toggleTheme() {{
+            var next = isDark() ? 'light' : 'dark';
+            document.documentElement.setAttribute('data-theme', next);
+            try {{ localStorage.setItem('lanflare_theme', next); }} catch(e) {{}}
+            updateIcons();
+        }}
+        updateIcons();
+        if (window.matchMedia) {{
+            window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function() {{
+                if (!localStorage.getItem('lanflare_theme')) {{
+                    updateIcons();
+                }}
+            }});
+        }}
+    </script>
 </body>
 </html>"#
     );
