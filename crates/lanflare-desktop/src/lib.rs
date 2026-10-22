@@ -81,6 +81,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_node_status,
             commands::update_config,
+            commands::regenerate_identity,
+            commands::generate_random_alias,
             commands::get_discovered_peers,
             commands::remove_discovered_peer,
             commands::start_discovery,

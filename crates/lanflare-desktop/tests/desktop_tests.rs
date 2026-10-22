@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[tokio::test]
 async fn test_desktop_state_initialization() {
     let state = DesktopState::new().expect("State init must succeed");
-    assert_eq!(state.identity.fingerprint.len(), 64);
+    assert_eq!(state.identity.read().await.fingerprint.len(), 64);
     assert_eq!(state.registry.count(), 0);
 
     let cfg = state.config.read().await;

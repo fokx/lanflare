@@ -162,7 +162,7 @@ pub struct TransferProgressPayload {
 #[tauri::command]
 pub async fn get_node_status(state: State<'_, Arc<DesktopState>>) -> Result<NodeStatusDto, String> {
     let cfg = state.config.read().await.clone();
-    let fingerprint = state.identity.fingerprint.clone();
+    let fingerprint = state.identity.read().await.fingerprint.clone();
 
     let mut ifaces = Vec::new();
     let filter = InterfaceFilter::default();
@@ -280,12 +280,49 @@ pub async fn update_config(
     get_node_status(state).await
 }
 
+/// Regenerates the self-signed TLS certificate and fingerprint, persists it, restarts server & discovery.
+#[tauri::command]
+pub async fn regenerate_identity(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<NodeStatusDto, String> {
+    let new_identity = lanflare_core::crypto::cert::generate_self_signed()
+        .map_err(|e| format!("Failed to generate new TLS certificate: {e}"))?;
+
+    let id_file = state.identity_file.read().await.clone();
+    lanflare_core::crypto::cert::save_identity(&id_file, &new_identity)
+        .map_err(|e| format!("Failed to save new identity: {e}"))?;
+
+    *state.identity.write().await = new_identity;
+
+    // Restart server handle to bind with new certificate
+    {
+        let mut srv = state.server_handle.write().await;
+        if let Some(h) = srv.take() {
+            h.stop();
+        }
+    }
+    let _ = start_receiver_server(app.clone(), state.clone()).await;
+
+    // Restart discovery engines and broadcast new fingerprint
+    let _ = start_discovery(app.clone(), state.clone()).await;
+    let _ = announce_presence(app.clone(), state.clone()).await;
+
+    get_node_status(state).await
+}
+
+/// Generates a friendly, two-word random device alias (e.g. "Golden Mango").
+#[tauri::command]
+pub async fn generate_random_alias() -> Result<String, String> {
+    Ok(lanflare_core::config::generate_random_alias())
+}
+
 /// Lists all active peers currently in the registry, suppressing self and deduplicating by fingerprint.
 #[tauri::command]
 pub async fn get_discovered_peers(
     state: State<'_, Arc<DesktopState>>,
 ) -> Result<Vec<DiscoveredPeerDto>, String> {
-    let own_fp = lanflare_core::discovery::registry::canonicalize_fingerprint(&state.identity.fingerprint);
+    let own_fp = lanflare_core::discovery::registry::canonicalize_fingerprint(&state.identity.read().await.fingerprint);
     let peers = state.registry.get_all().await;
     let mut unique_by_fp = std::collections::HashMap::new();
 
@@ -352,7 +389,7 @@ pub async fn start_discovery(
     }
 
     let cfg = state.config.read().await.clone();
-    let fp = state.identity.fingerprint.clone();
+    let fp = state.identity.read().await.fingerprint.clone();
 
     // Sweep any stale peers on discovery restart
     let _ = state.registry.sweep_stale_peers().await;
@@ -460,7 +497,7 @@ pub async fn start_discovery(
 
     // Subnet scan fallback / escalation (matching CLI behavior)
     let registry_subnet = Arc::clone(&state.registry);
-    let identity_subnet = state.identity.clone();
+    let identity_subnet = state.identity.read().await.clone();
     let port_subnet = cfg.port;
     let app_subnet = app.clone();
     tokio::spawn(async move {
@@ -521,10 +558,10 @@ pub async fn announce_presence(
 
     // Actively verify existing registered peers: ping each peer via HTTP info; evict if unreachable or cert changed
     let existing_peers = state.registry.get_all().await;
-    let own_fp = lanflare_core::discovery::registry::canonicalize_fingerprint(&state.identity.fingerprint);
+    let own_fp = lanflare_core::discovery::registry::canonicalize_fingerprint(&state.identity.read().await.fingerprint);
     let app_verify = app.clone();
     let reg_verify = Arc::clone(&state.registry);
-    let identity_verify = state.identity.clone();
+    let identity_verify = state.identity.read().await.clone();
 
     tokio::spawn(async move {
         let client_cfg = lanflare_core::client::LsClientConfig {
@@ -565,7 +602,7 @@ pub async fn announce_presence(
 
     // Also run a subnet scan sweep in background on refresh
     let registry_subnet = Arc::clone(&state.registry);
-    let identity_subnet = state.identity.clone();
+    let identity_subnet = state.identity.read().await.clone();
     let port_subnet = state.config.read().await.port;
     let app_subnet = app.clone();
     tokio::spawn(async move {
@@ -636,10 +673,11 @@ pub async fn try_start_receiver_server_internal(
     }
 
     let (event_tx, mut event_rx) = mpsc::channel::<ServerTransferEvent>(100);
+    let tls_id = state.identity.read().await.clone();
 
     let start_res = lanflare_core::server::start_server_ext(
         state.config.clone(),
-        Some(state.identity.clone()),
+        Some(tls_id),
         Arc::clone(&state.registry),
         Some(event_tx),
         None,
@@ -1126,10 +1164,11 @@ pub async fn send_files(
                 };
 
                 if let Ok(ip) = host_str.parse::<std::net::IpAddr>() {
+                    let probe_ident = state.identity.read().await.clone();
                     let probe_config = LsClientConfig {
                         timeout: Duration::from_secs(3),
                         connect_timeout: Duration::from_secs(2),
-                        tls_identity: Some(state.identity.clone()),
+                        tls_identity: Some(probe_ident),
                         target_fingerprint: None,
                     };
 
@@ -1158,7 +1197,7 @@ pub async fn send_files(
             // Attempt B: If still not found, do a quick network sweep across interfaces
             if resolved_peer.is_none() {
                 let reg = Arc::clone(&state.registry);
-                let ident = state.identity.clone();
+                let ident = state.identity.read().await.clone();
                 let port = state.config.read().await.port;
                 let filter = InterfaceFilter::default();
 
@@ -1206,11 +1245,13 @@ pub async fn send_files(
     let outgoing = collect_outgoing_files(&app, &payload.files).await?;
     let total_bytes: u64 = outgoing.iter().map(|f| f.size).sum();
 
+    let own_identity = state.identity.read().await.clone();
+
     // 3. Create client with pinned certificate verifier
     let client_config = LsClientConfig {
         timeout: Duration::from_secs(60),
         connect_timeout: Duration::from_secs(5),
-        tls_identity: Some(state.identity.clone()),
+        tls_identity: Some(own_identity.clone()),
         target_fingerprint: Some(target_peer.fingerprint.clone()),
     };
     let client = LsClient::new(client_config)
@@ -1222,7 +1263,7 @@ pub async fn send_files(
         version: "2.0".to_string(),
         device_model: Some("LanFlare Desktop".to_string()),
         device_type: Some(DeviceType::Desktop),
-        fingerprint: state.identity.fingerprint.clone(),
+        fingerprint: own_identity.fingerprint.clone(),
         port: cfg.port,
         protocol: ProtocolType::Https,
         download: false,

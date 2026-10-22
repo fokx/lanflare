@@ -5,7 +5,7 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 
 use lanflare_core::config::AppConfig;
-use lanflare_core::crypto::cert::{generate_self_signed, TlsIdentity};
+use lanflare_core::crypto::cert::{load_or_generate_identity, TlsIdentity};
 use lanflare_core::discovery::mdns::MdnsHandle;
 use lanflare_core::discovery::multicast::MulticastHandle;
 use lanflare_core::discovery::registry::PeerRegistry;
@@ -54,7 +54,7 @@ pub struct ActiveOutgoingSession {
 /// Shared desktop application state managed by Tauri.
 pub struct DesktopState {
     pub config: Arc<RwLock<AppConfig>>,
-    pub identity: TlsIdentity,
+    pub identity: Arc<RwLock<TlsIdentity>>,
     pub registry: Arc<PeerRegistry>,
     pub server_handle: RwLock<Option<ServerHandle>>,
     pub dufs_manager: Arc<lanflare_core::server::DufsManager>,
@@ -64,6 +64,7 @@ pub struct DesktopState {
     pub active_outgoing: Mutex<Option<ActiveOutgoingSession>>,
     pub config_file: RwLock<PathBuf>,
     pub history_file: RwLock<PathBuf>,
+    pub identity_file: RwLock<PathBuf>,
     pub port_conflict: Arc<std::sync::atomic::AtomicBool>,
     pub retry_running: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -78,14 +79,30 @@ pub fn config_path() -> PathBuf {
         .join("config.json")
 }
 
+/// Path to persistent TLS certificate identity JSON file.
+pub fn identity_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("lanflare")
+        .join("identity.json")
+}
+
 /// Loads persisted application configuration, falling back to defaults.
 pub fn load_config() -> AppConfig {
     let path = config_path();
     if let Ok(content) = std::fs::read_to_string(&path)
         && let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content)
     {
+        let mut changed = false;
         if cfg.share_link_pin.trim().is_empty() {
             cfg.share_link_pin = lanflare_core::config::generate_share_link_pin();
+            changed = true;
+        }
+        if cfg.alias.trim().is_empty() || cfg.alias == "LanFlare Node" {
+            cfg.alias = lanflare_core::config::generate_random_alias();
+            changed = true;
+        }
+        if changed {
             let _ = save_config(&cfg);
         }
         return cfg;
@@ -149,15 +166,16 @@ pub fn save_history(items: &[serde_json::Value]) -> std::io::Result<()> {
 }
 
 impl DesktopState {
-    /// Initializes new desktop runtime state with defaults and generated TLS identity.
+    /// Initializes new desktop runtime state with defaults and persisted TLS identity.
     pub fn new() -> anyhow::Result<Self> {
-        let identity = generate_self_signed()?;
+        let id_path = identity_path();
+        let identity = load_or_generate_identity(&id_path)?;
         let config = load_config();
         let registry = PeerRegistry::new();
 
         Ok(Self {
             config: Arc::new(RwLock::new(config)),
-            identity,
+            identity: Arc::new(RwLock::new(identity)),
             registry,
             server_handle: RwLock::new(None),
             dufs_manager: Arc::new(lanflare_core::server::DufsManager::new()),
@@ -167,6 +185,7 @@ impl DesktopState {
             active_outgoing: Mutex::new(None),
             config_file: RwLock::new(config_path()),
             history_file: RwLock::new(history_path()),
+            identity_file: RwLock::new(id_path),
             port_conflict: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             retry_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
@@ -184,9 +203,23 @@ impl DesktopState {
             let path = cfg_dir.join("lanflare").join("config.json");
             *self.config_file.write().await = path.clone();
             if let Ok(content) = std::fs::read_to_string(&path)
-                && let Ok(cfg) = serde_json::from_str::<AppConfig>(&content)
+                && let Ok(mut cfg) = serde_json::from_str::<AppConfig>(&content)
             {
+                let mut changed = false;
+                if cfg.alias.trim().is_empty() || cfg.alias == "LanFlare Node" {
+                    cfg.alias = lanflare_core::config::generate_random_alias();
+                    changed = true;
+                }
+                if changed {
+                    let _ = save_config_file(&path, &cfg);
+                }
                 *self.config.write().await = cfg;
+            }
+
+            let id_path = cfg_dir.join("lanflare").join("identity.json");
+            *self.identity_file.write().await = id_path.clone();
+            if let Ok(ident) = load_or_generate_identity(&id_path) {
+                *self.identity.write().await = ident;
             }
         }
         if let Some(d_dir) = data_dir {

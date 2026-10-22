@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { appState } from '$lib/state.svelte';
 	import { themeManager } from '$lib/theme.svelte';
-	import { updateConfig, isTauri, isAndroid } from '$lib/api';
+	import { updateConfig, regenerateIdentity, generateRandomAlias, isTauri, isAndroid } from '$lib/api';
 	import { open } from '@tauri-apps/plugin-dialog';
 	import {
 		Settings,
@@ -18,7 +18,9 @@
 		History,
 		AlertCircle,
 		Shield,
-		Copy
+		Copy,
+		Dices,
+		RefreshCw
 	} from 'lucide-svelte';
 
 	let alias = $state(appState.status?.alias || '');
@@ -34,6 +36,40 @@
 	let errorMsg = $state<string | null>(null);
 	let hasStoragePermission = $state(true);
 	let copiedFp = $state(false);
+	let isGeneratingAlias = $state(false);
+	let isRegeneratingCert = $state(false);
+	let showCertConfirm = $state(false);
+
+	async function handleGenerateRandomAlias() {
+		isGeneratingAlias = true;
+		try {
+			const newAlias = await generateRandomAlias();
+			if (newAlias) {
+				alias = newAlias;
+			}
+		} catch (e) {
+			console.error('Failed to generate random alias:', e);
+		} finally {
+			isGeneratingAlias = false;
+		}
+	}
+
+	async function handleRegenerateCertificate() {
+		if (!showCertConfirm) {
+			showCertConfirm = true;
+			return;
+		}
+		showCertConfirm = false;
+		isRegeneratingCert = true;
+		try {
+			const updated = await regenerateIdentity();
+			appState.status = updated;
+		} catch (e) {
+			errorMsg = 'Failed to regenerate certificate: ' + String(e);
+		} finally {
+			isRegeneratingCert = false;
+		}
+	}
 
 	async function handleCopyFingerprint() {
 		if (!appState.status?.fingerprint) return;
@@ -220,11 +256,24 @@
 
 				<!-- Device Alias -->
 				<div class="space-y-1.5">
-					<label for="alias-input" class="text-xs font-medium text-slate-700 dark:text-slate-300">Device Alias (Name on Network)</label>
+					<div class="flex items-center justify-between">
+						<label for="alias-input" class="text-xs font-medium text-slate-700 dark:text-slate-300">Device Alias (Name on Network)</label>
+						<button
+							type="button"
+							onclick={handleGenerateRandomAlias}
+							disabled={isGeneratingAlias}
+							class="flex items-center gap-1 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 transition-colors cursor-pointer disabled:opacity-50"
+							title="Generate a friendly random two-word device name"
+						>
+							<Dices class="w-3.5 h-3.5 {isGeneratingAlias ? 'animate-spin' : ''}" />
+							<span>Random Alias</span>
+						</button>
+					</div>
 					<input
 						id="alias-input"
 						type="text"
 						bind:value={alias}
+						placeholder="e.g. Golden Mango"
 						class="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-slate-200 focus:outline-none focus:border-indigo-500"
 					/>
 				</div>
@@ -236,27 +285,62 @@
 							<Shield class="w-3.5 h-3.5 text-indigo-500" />
 							<span>Device Certificate Fingerprint</span>
 						</div>
-						{#if appState.status?.fingerprint}
+						<div class="flex items-center gap-2">
+							{#if appState.status?.fingerprint}
+								<button
+									type="button"
+									onclick={handleCopyFingerprint}
+									class="flex items-center gap-1 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 transition-colors cursor-pointer"
+								>
+									{#if copiedFp}
+										<Check class="w-3.5 h-3.5 text-emerald-500" />
+										<span class="text-emerald-500">Copied!</span>
+									{:else}
+										<Copy class="w-3.5 h-3.5" />
+										<span>Copy Full</span>
+									{/if}
+								</button>
+							{/if}
 							<button
 								type="button"
-								onclick={handleCopyFingerprint}
-								class="flex items-center gap-1 text-[11px] font-medium text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 transition-colors cursor-pointer"
+								onclick={handleRegenerateCertificate}
+								disabled={isRegeneratingCert}
+								class="flex items-center gap-1 text-[11px] font-medium text-amber-600 dark:text-amber-400 hover:text-amber-500 transition-colors cursor-pointer disabled:opacity-50"
+								title="Regenerate self-signed TLS certificate and fingerprint"
 							>
-								{#if copiedFp}
-									<Check class="w-3.5 h-3.5 text-emerald-500" />
-									<span class="text-emerald-500">Copied!</span>
-								{:else}
-									<Copy class="w-3.5 h-3.5" />
-									<span>Copy Full</span>
-								{/if}
+								<RefreshCw class="w-3.5 h-3.5 {isRegeneratingCert ? 'animate-spin' : ''}" />
+								<span>Regenerate</span>
 							</button>
-						{/if}
+						</div>
 					</div>
+
+					{#if showCertConfirm}
+						<div class="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800/60 flex items-center justify-between gap-2 text-xs text-amber-800 dark:text-amber-300 animate-in fade-in duration-150">
+							<span>Regenerating will update your TLS identity across the network. Proceed?</span>
+							<div class="flex items-center gap-1.5 flex-shrink-0">
+								<button
+									type="button"
+									onclick={handleRegenerateCertificate}
+									class="px-2 py-1 rounded bg-amber-600 hover:bg-amber-700 text-white font-medium cursor-pointer"
+								>
+									Yes, Regenerate
+								</button>
+								<button
+									type="button"
+									onclick={() => (showCertConfirm = false)}
+									class="px-2 py-1 rounded bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700 cursor-pointer"
+								>
+									Cancel
+								</button>
+							</div>
+						</div>
+					{/if}
+
 					<div class="p-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 font-mono text-[10px] text-slate-600 dark:text-slate-400 break-all select-all">
 						{appState.status?.fingerprint || 'Unavailable'}
 					</div>
 					<p class="text-[10px] text-slate-500 dark:text-slate-400">
-						Unique SHA-256 fingerprint identifying this device for mutual TLS (mTLS) encryption and pinning.
+						Unique SHA-256 fingerprint identifying this device for mutual TLS (mTLS) encryption and pinning. Persisted across restarts.
 					</p>
 				</div>
 

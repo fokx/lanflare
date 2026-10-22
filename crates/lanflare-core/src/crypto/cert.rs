@@ -8,7 +8,7 @@ use x509_parser::pem::Pem;
 use x509_parser::x509::SubjectPublicKeyInfo;
 
 /// Generated self-signed TLS identity.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TlsIdentity {
     /// PEM-encoded self-signed X.509 certificate.
     pub cert_pem: String,
@@ -16,6 +16,35 @@ pub struct TlsIdentity {
     pub key_pem: String,
     /// Uppercase hex SHA-256 fingerprint of the DER certificate bytes.
     pub fingerprint: String,
+}
+
+/// Loads a persisted TLS identity from a JSON file, or generates and saves a new one if not found or corrupted.
+pub fn load_or_generate_identity(path: &std::path::Path) -> anyhow::Result<TlsIdentity> {
+    if let Ok(content) = std::fs::read_to_string(path)
+        && let Ok(ident) = serde_json::from_str::<TlsIdentity>(&content)
+    {
+        // Verify identity validity
+        if !ident.cert_pem.trim().is_empty()
+            && !ident.key_pem.trim().is_empty()
+            && !ident.fingerprint.trim().is_empty()
+        {
+            return Ok(ident);
+        }
+    }
+
+    let identity = generate_self_signed()?;
+    let _ = save_identity(path, &identity);
+    Ok(identity)
+}
+
+/// Saves a TLS identity to the specified JSON path.
+pub fn save_identity(path: &std::path::Path, identity: &TlsIdentity) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let data = serde_json::to_string_pretty(identity)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, data)
 }
 
 /// Generates a new self-signed RSA-2048 device identity.
@@ -283,5 +312,30 @@ VRus1zGVD8IVpIdPMyz01WJyS7M0fWaHXKWo+Bo=\n\
 
         let err = verify_cert_from_pem(&identity1.cert_pem, Some(&pubkey2));
         assert!(err.is_err(), "Mismatched public key must fail verification");
+    }
+
+    #[test]
+    fn test_identity_persistence_and_load() {
+        let unique = format!("lanflare_test_ident_{}", rand::random::<u64>());
+        let temp_dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let path = temp_dir.join("identity.json");
+
+        // 1. Initial generation
+        let id1 = load_or_generate_identity(&path).unwrap();
+        assert_eq!(id1.fingerprint.len(), 64);
+        assert!(path.exists());
+
+        // 2. Load existing
+        let id2 = load_or_generate_identity(&path).unwrap();
+        assert_eq!(id1, id2, "Loaded identity must match previously saved identity");
+
+        // 3. Corrupt file -> should regenerate cleanly
+        std::fs::write(&path, "invalid json").unwrap();
+        let id3 = load_or_generate_identity(&path).unwrap();
+        assert_eq!(id3.fingerprint.len(), 64);
+        assert_ne!(id1.fingerprint, id3.fingerprint);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

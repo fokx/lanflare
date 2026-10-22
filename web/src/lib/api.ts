@@ -121,6 +121,14 @@ export async function updateConfig(payload: UpdateConfigPayload): Promise<NodeSt
 	return tauriInvoke<NodeStatusDto>('update_config', { payload });
 }
 
+export async function regenerateIdentity(): Promise<NodeStatusDto> {
+	return tauriInvoke<NodeStatusDto>('regenerate_identity');
+}
+
+export async function generateRandomAlias(): Promise<string> {
+	return tauriInvoke<string>('generate_random_alias');
+}
+
 // Discovery API
 export async function getDiscoveredPeers(): Promise<DiscoveredPeer[]> {
 	return tauriInvoke<DiscoveredPeer[]>('get_discovered_peers');
@@ -253,6 +261,24 @@ function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 			} as T;
 		case 'regenerate_share_link_pin':
 			return 'k7m9xp' as T;
+		case 'regenerate_identity':
+			return {
+				alias: 'LanFlare Mock Node',
+				port: 53317,
+				downloadDir: '/home/user/Downloads',
+				autoAccept: false,
+				pinEnabled: false,
+				fingerprint: 'NEW85F647990AFDDF6872B2F139FF30B00000000000000000000000000000000',
+				saveToHistory: true,
+				multicastAddress: '224.0.0.167',
+				shareLinkAutoAccept: false,
+				shareLinkRequirePin: true,
+				shareLinkPin: 'k7m9xp',
+				interfaces: [{ name: 'eth0', address: '192.168.1.100', isIpv6: false }],
+				portConflict: false
+			} as T;
+		case 'generate_random_alias':
+			return 'Golden Mango' as T;
 		case 'respond_browser_download':
 			return undefined as T;
 		case 'get_discovered_peers':
