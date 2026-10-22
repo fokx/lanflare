@@ -248,7 +248,8 @@ function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 				shareLinkAutoAccept: false,
 				shareLinkRequirePin: true,
 				shareLinkPin: 'k7m9xp',
-				interfaces: [{ name: 'eth0', address: '192.168.1.100', isIpv6: false }]
+				interfaces: [{ name: 'eth0', address: '192.168.1.100', isIpv6: false }],
+				portConflict: false
 			} as T;
 		case 'regenerate_share_link_pin':
 			return 'k7m9xp' as T;

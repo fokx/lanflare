@@ -17,6 +17,7 @@ export interface NodeStatusDto {
 	shareLinkRequirePin: boolean;
 	shareLinkPin: string;
 	interfaces: NetworkInterfaceDto[];
+	portConflict: boolean;
 }
 
 export interface UpdateConfigPayload {

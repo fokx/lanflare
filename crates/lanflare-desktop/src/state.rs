@@ -64,6 +64,8 @@ pub struct DesktopState {
     pub active_outgoing: Mutex<Option<ActiveOutgoingSession>>,
     pub config_file: RwLock<PathBuf>,
     pub history_file: RwLock<PathBuf>,
+    pub port_conflict: Arc<std::sync::atomic::AtomicBool>,
+    pub retry_running: Arc<std::sync::atomic::AtomicBool>,
 }
 
 use std::path::{Path, PathBuf};
@@ -165,6 +167,8 @@ impl DesktopState {
             active_outgoing: Mutex::new(None),
             config_file: RwLock::new(config_path()),
             history_file: RwLock::new(history_path()),
+            port_conflict: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            retry_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
 

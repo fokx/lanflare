@@ -19,14 +19,30 @@
 		Sun,
 		Moon,
 		Copy,
-		Check
+		Check,
+		AlertTriangle
 	} from 'lucide-svelte';
-	import { announcePresence, getDiscoveredPeers } from '$lib/api';
+	import { announcePresence, getDiscoveredPeers, startReceiverServer } from '$lib/api';
 	import { initShareTarget } from '$lib/shareTarget';
 	import { shortenFingerprint } from '$lib/format';
 
 	let isRefreshing = $state(false);
 	let copiedFp = $state(false);
+	let isRetryingServer = $state(false);
+
+	async function handleManualRetryServer() {
+		isRetryingServer = true;
+		try {
+			appState.serverPort = await startReceiverServer();
+			appState.portConflict = false;
+		} catch (e) {
+			console.warn('Port still occupied:', e);
+		} finally {
+			setTimeout(() => {
+				isRetryingServer = false;
+			}, 600);
+		}
+	}
 
 	async function handleCopyFingerprint() {
 		if (!appState.status?.fingerprint) return;
@@ -237,10 +253,17 @@
 					<span class="text-[11px] font-semibold text-slate-700 dark:text-slate-300 truncate">
 						{appState.status?.alias || 'This Device'}
 					</span>
-					<div class="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
-						<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-						<span>Port {appState.status?.port || 53317}</span>
-					</div>
+					{#if appState.portConflict}
+						<div class="flex items-center gap-1 text-[10px] text-amber-600 dark:text-amber-400 font-medium" title="Port {appState.status?.port || 53317} is occupied by another instance. Auto-retrying...">
+							<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping"></span>
+							<span>Port In Use</span>
+						</div>
+					{:else}
+						<div class="flex items-center gap-1 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+							<span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+							<span>Port {appState.serverPort || appState.status?.port || 53317}</span>
+						</div>
+					{/if}
 				</div>
 				<p class="text-[10px] text-slate-500 font-mono truncate">
 					{appState.status?.downloadDir || 'Downloads'}
@@ -305,6 +328,31 @@
 		class="flex-1 min-w-0 h-full overflow-hidden flex flex-col bg-slate-50 dark:bg-slate-950 transition-colors duration-150"
 		style="padding-left: var(--safe-left); padding-right: var(--safe-right);"
 	>
+		{#if appState.portConflict}
+			<div class="m-3 sm:m-4 mb-0 p-3 sm:p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800/60 flex items-start justify-between gap-3 text-amber-900 dark:text-amber-200 shadow-xs transition-all flex-none">
+				<div class="flex items-start gap-2.5">
+					<AlertTriangle class="w-4 h-4 sm:w-5 sm:h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5 animate-pulse" />
+					<div class="space-y-0.5">
+						<p class="text-xs font-semibold">
+							Port {appState.status?.port || 53317} is occupied by another LocalSend or LanFlare instance
+						</p>
+						<p class="text-[11px] text-amber-700 dark:text-amber-300">
+							LanFlare is actively monitoring this port and will automatically start receiving as soon as the other instance exits.
+						</p>
+					</div>
+				</div>
+				<button
+					type="button"
+					onclick={handleManualRetryServer}
+					disabled={isRetryingServer}
+					class="px-2.5 py-1 text-xs font-medium rounded-lg bg-amber-200 dark:bg-amber-900/60 hover:bg-amber-300 dark:hover:bg-amber-800 text-amber-900 dark:text-amber-100 transition-colors cursor-pointer flex-shrink-0 flex items-center gap-1"
+				>
+					<RefreshCw class="w-3 h-3 {isRetryingServer ? 'animate-spin' : ''}" />
+					<span>Retry</span>
+				</button>
+			</div>
+		{/if}
+
 		{#if appState.activeTab === 'radar'}
 			<DeviceGrid onSelectPeer={handleSelectPeer} />
 		{:else}

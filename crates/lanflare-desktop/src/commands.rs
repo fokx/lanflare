@@ -88,6 +88,7 @@ pub struct NodeStatusDto {
     pub share_link_require_pin: bool,
     pub share_link_pin: String,
     pub interfaces: Vec<NetworkInterfaceDto>,
+    pub port_conflict: bool,
 }
 
 /// DTO for reporting network interface details.
@@ -182,6 +183,8 @@ pub async fn get_node_status(state: State<'_, Arc<DesktopState>>) -> Result<Node
         }
     }
 
+    let port_conflict = state.port_conflict.load(std::sync::atomic::Ordering::Relaxed);
+
     Ok(NodeStatusDto {
         alias: cfg.alias,
         port: cfg.port,
@@ -195,6 +198,7 @@ pub async fn get_node_status(state: State<'_, Arc<DesktopState>>) -> Result<Node
         share_link_require_pin: cfg.share_link_require_pin,
         share_link_pin: cfg.share_link_pin,
         interfaces: ifaces,
+        port_conflict,
     })
 }
 
@@ -207,12 +211,14 @@ pub async fn update_config(
 ) -> Result<NodeStatusDto, String> {
     let mut cfg = state.config.write().await;
     let mut restart_discovery = false;
+    let mut restart_server = false;
 
     if let Some(alias) = payload.alias {
         cfg.alias = alias;
     }
     if let Some(port) = payload.port {
         if cfg.port != port {
+            restart_server = true;
             restart_discovery = true;
         }
         cfg.port = port;
@@ -257,6 +263,15 @@ pub async fn update_config(
     }
 
     drop(cfg);
+
+    if restart_server {
+        let mut srv = state.server_handle.write().await;
+        if let Some(h) = srv.take() {
+            h.stop();
+        }
+        drop(srv);
+        let _ = start_receiver_server(app.clone(), state.clone()).await;
+    }
 
     if restart_discovery {
         let _ = start_discovery(app, state.clone()).await;
@@ -608,20 +623,21 @@ pub async fn stop_discovery(state: State<'_, Arc<DesktopState>>) -> Result<(), S
     Ok(())
 }
 
-/// Starts the Hyper HTTP/HTTPS receiver server daemon.
-#[tauri::command]
-pub async fn start_receiver_server(
-    app: AppHandle,
-    state: State<'_, Arc<DesktopState>>,
-) -> Result<u16, String> {
+/// Internal helper attempting to bind and start the receiver server.
+/// Returns Ok(bound_port) or Err((is_port_conflict, error_message)).
+pub async fn try_start_receiver_server_internal(
+    app: &AppHandle,
+    state: &Arc<DesktopState>,
+) -> Result<u16, (bool, String)> {
     let mut srv = state.server_handle.write().await;
     if let Some(ref h) = *srv {
+        state.port_conflict.store(false, std::sync::atomic::Ordering::SeqCst);
         return Ok(h.bound_port());
     }
 
     let (event_tx, mut event_rx) = mpsc::channel::<ServerTransferEvent>(100);
 
-    let handle = lanflare_core::server::start_server_ext(
+    let start_res = lanflare_core::server::start_server_ext(
         state.config.clone(),
         Some(state.identity.clone()),
         Arc::clone(&state.registry),
@@ -629,14 +645,31 @@ pub async fn start_receiver_server(
         None,
         Some(Arc::clone(&state.dufs_manager)),
     )
-    .await
-    .map_err(|e| format!("Failed to start server: {e}"))?;
+    .await;
+
+    let handle = match start_res {
+        Ok(h) => h,
+        Err(e) => {
+            let err_str = e.to_string();
+            let is_conflict = if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                io_err.kind() == std::io::ErrorKind::AddrInUse
+            } else {
+                let lower = err_str.to_lowercase();
+                lower.contains("address already in use")
+                    || lower.contains("os error 98")
+                    || lower.contains("os error 10048")
+                    || lower.contains("os error 48")
+            };
+            return Err((is_conflict, err_str));
+        }
+    };
 
     let port = handle.bound_port();
     *srv = Some(handle);
+    state.port_conflict.store(false, std::sync::atomic::Ordering::SeqCst);
 
     // Event pump for incoming transfer sessions
-    let state_clone = Arc::clone(&state);
+    let state_clone = Arc::clone(state);
     let app_clone = app.clone();
 
     tokio::spawn(async move {
@@ -927,6 +960,70 @@ pub async fn start_receiver_server(
     });
 
     Ok(port)
+}
+
+/// Starts the Hyper HTTP/HTTPS receiver server daemon, or begins auto-retry if port is occupied.
+#[tauri::command]
+pub async fn start_receiver_server(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<u16, String> {
+    let state_arc = state.inner().clone();
+    match try_start_receiver_server_internal(&app, &state_arc).await {
+        Ok(port) => {
+            state.port_conflict.store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = app.emit("lanflare://port-conflict", false);
+            let _ = app.emit("lanflare://server-started", port);
+            Ok(port)
+        }
+        Err((is_conflict, err)) => {
+            if is_conflict {
+                state.port_conflict.store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = app.emit("lanflare://port-conflict", true);
+
+                if !state.retry_running.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let app_retry = app.clone();
+                    let state_retry = Arc::clone(&state_arc);
+                    tokio::spawn(async move {
+                        tracing::warn!("Port conflict detected. Starting background retry watcher...");
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                            {
+                                let srv = state_retry.server_handle.read().await;
+                                if srv.is_some() {
+                                    state_retry.retry_running.store(false, std::sync::atomic::Ordering::SeqCst);
+                                    break;
+                                }
+                            }
+                            match try_start_receiver_server_internal(&app_retry, &state_retry).await {
+                                Ok(port) => {
+                                    tracing::info!("Port {port} became available! Receiver server started successfully.");
+                                    state_retry.port_conflict.store(false, std::sync::atomic::Ordering::SeqCst);
+                                    state_retry.retry_running.store(false, std::sync::atomic::Ordering::SeqCst);
+                                    let _ = app_retry.emit("lanflare://port-conflict", false);
+                                    let _ = app_retry.emit("lanflare://server-started", port);
+                                    let _ = app_retry.emit("lanflare://peers-updated", ());
+                                    break;
+                                }
+                                Err((conflict, _)) if conflict => {
+                                    // Still occupied, continue polling
+                                }
+                                Err((_, other_err)) => {
+                                    tracing::error!("Unexpected error during port retry: {other_err}");
+                                    state_retry.retry_running.store(false, std::sync::atomic::Ordering::SeqCst);
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                }
+
+                Err(format!("Port is occupied by another LocalSend or LanFlare instance. Auto-retry is active: {err}"))
+            } else {
+                Err(format!("Failed to start server: {err}"))
+            }
+        }
+    }
 }
 
 /// Regenerates a new random share link PIN and persists configuration.

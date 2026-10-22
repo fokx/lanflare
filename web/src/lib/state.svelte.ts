@@ -15,6 +15,7 @@ import {
 	getDiscoveredPeers,
 	removeDiscoveredPeer,
 	startDiscovery,
+	announcePresence,
 	startReceiverServer,
 	tauriListen,
 	respondIncomingTransfer,
@@ -36,6 +37,7 @@ export class AppState {
 	// Node Status
 	status = $state<NodeStatusDto | null>(null);
 	serverPort = $state<number | null>(null);
+	portConflict = $state<boolean>(false);
 	isDiscovering = $state<boolean>(false);
 
 	// Discovered Peers
@@ -129,7 +131,17 @@ export class AppState {
 
 		try {
 			this.status = await getNodeStatus();
-			this.serverPort = await startReceiverServer();
+			this.portConflict = !!this.status?.portConflict;
+			try {
+				this.serverPort = await startReceiverServer();
+				this.portConflict = false;
+			} catch (serverErr: any) {
+				const errStr = String(serverErr).toLowerCase();
+				if (errStr.includes('occupied') || errStr.includes('already in use') || errStr.includes('conflict')) {
+					this.portConflict = true;
+				}
+				console.warn('Receiver server startup deferred:', serverErr);
+			}
 			await startDiscovery();
 			this.isDiscovering = true;
 			this.peers = await getDiscoveredPeers();
@@ -466,6 +478,25 @@ export class AppState {
 				this.peers = await getDiscoveredPeers();
 			} catch (e) {
 				console.error('Failed to reload peers:', e);
+			}
+		});
+
+		// 1b. Port conflict and server status updates
+		await tauriListen<boolean>('lanflare://port-conflict', (conflict) => {
+			this.portConflict = conflict;
+			if (!conflict && !this.serverPort && this.status) {
+				this.serverPort = this.status.port;
+			}
+		});
+
+		await tauriListen<number>('lanflare://server-started', async (port) => {
+			this.serverPort = port;
+			this.portConflict = false;
+			try {
+				await announcePresence();
+				this.peers = await getDiscoveredPeers();
+			} catch (e) {
+				console.error('Failed to refresh peers after server started:', e);
 			}
 		});
 
