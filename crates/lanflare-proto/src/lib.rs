@@ -14,6 +14,11 @@ pub use discovery::{
     RegisterResponseDtoV2, PROTOCOL_VERSION_V2,
 };
 pub use error::ProtocolError;
+pub use mesh::{
+    DEFAULT_HOP_PENALTY_MS, DEFAULT_STREAM_CHUNK_SIZE, E2eeEnvelope, MAX_MESH_TTL,
+    MeshGossipPacket, MeshLinkMetric, MeshNodeAnnouncement, MeshRouteAdvertisement,
+    MeshStreamHeader, RoutedEnvelope,
+};
 pub use transfer::{
     FileDto, FileMetadataDto, PrepareDownloadResponseDtoV2, PrepareUploadRequestDtoV2,
     PrepareUploadResponseDtoV2,

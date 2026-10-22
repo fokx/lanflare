@@ -349,24 +349,24 @@ pub async fn handle_info(remote_ip: IpAddr, state: &ServerState) -> Response<Ful
                             return;
                         }
                         let peer = registry.handle_info(remote_ip, port, proto, &info).await;
-                        if peer.is_some() {
-                            if let Some(ref tx) = event_tx {
-                                let _ = tx
-                                    .send(ServerTransferEvent::DeviceRegistered {
-                                        ip: remote_ip,
-                                        info: lanflare_proto::discovery::RegisterDtoV2 {
-                                            alias: info.alias,
-                                            version: info.version,
-                                            device_model: info.device_model,
-                                            device_type: info.device_type,
-                                            fingerprint: info.fingerprint,
-                                            port: info.port.unwrap_or(port),
-                                            protocol: info.protocol.unwrap_or(proto),
-                                            download: info.download,
-                                        },
-                                    })
-                                    .await;
-                            }
+                        if peer.is_some()
+                            && let Some(ref tx) = event_tx
+                        {
+                            let _ = tx
+                                .send(ServerTransferEvent::DeviceRegistered {
+                                    ip: remote_ip,
+                                    info: lanflare_proto::discovery::RegisterDtoV2 {
+                                        alias: info.alias,
+                                        version: info.version,
+                                        device_model: info.device_model,
+                                        device_type: info.device_type,
+                                        fingerprint: info.fingerprint,
+                                        port: info.port.unwrap_or(port),
+                                        protocol: info.protocol.unwrap_or(proto),
+                                        download: info.download,
+                                    },
+                                })
+                                .await;
                         }
                         break;
                     }

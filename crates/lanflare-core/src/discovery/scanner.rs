@@ -32,12 +32,12 @@ fn get_arp_neighbors(base_prefix: [u8; 3]) -> std::collections::HashSet<Ipv4Addr
             if parts.len() >= 4 {
                 // flags: 0x2 means ATF_COM (completed ARP resolution)
                 let flags = parts[2];
-                if flags == "0x2" || flags == "2" {
-                    if let Ok(ip) = parts[0].parse::<Ipv4Addr>() {
-                        let oct = ip.octets();
-                        if oct[0] == base_prefix[0] && oct[1] == base_prefix[1] && oct[2] == base_prefix[2] {
-                            arp_ips.insert(ip);
-                        }
+                if (flags == "0x2" || flags == "2")
+                    && let Ok(ip) = parts[0].parse::<Ipv4Addr>()
+                {
+                    let oct = ip.octets();
+                    if oct[0] == base_prefix[0] && oct[1] == base_prefix[1] && oct[2] == base_prefix[2] {
+                        arp_ips.insert(ip);
                     }
                 }
             }
