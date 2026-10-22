@@ -33,6 +33,8 @@ pub enum DiscoverySource {
     HttpRegister,
     /// Manual IP subnet scanner or user-configured static address.
     ManualScan,
+    /// Multi-hop overlay mesh routing / gossip.
+    Mesh,
 }
 
 impl std::fmt::Display for DiscoverySource {
@@ -42,6 +44,7 @@ impl std::fmt::Display for DiscoverySource {
             Self::Mdns => write!(f, "mdns"),
             Self::HttpRegister => write!(f, "http_register"),
             Self::ManualScan => write!(f, "manual_scan"),
+            Self::Mesh => write!(f, "mesh"),
         }
     }
 }
@@ -126,9 +129,62 @@ pub struct DiscoveredPeer {
 
     /// Arbitrary metadata attributes (e.g. mDNS TXT properties).
     pub metadata: HashMap<String, String>,
+
+    /// Hop distance in the overlay mesh (1 = direct neighbor, 2+ = multi-hop via relay).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hop_count: Option<u8>,
+
+    /// Full traversed path of node fingerprints leading to this peer, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_path: Option<Vec<String>>,
+}
+
+impl Default for DiscoveredPeer {
+    fn default() -> Self {
+        Self {
+            fingerprint: String::new(),
+            alias: String::new(),
+            version: "2.0".to_string(),
+            device_model: None,
+            device_type: None,
+            port: 53317,
+            protocol: ProtocolType::Https,
+            download: false,
+            endpoints: Vec::new(),
+            discovery_sources: HashSet::new(),
+            first_seen_ms: 0,
+            last_seen_ms: 0,
+            metadata: HashMap::new(),
+            hop_count: None,
+            route_path: None,
+        }
+    }
 }
 
 impl DiscoveredPeer {
+    /// Returns true if this peer was discovered via the overlay mesh.
+    pub fn is_mesh_peer(&self) -> bool {
+        self.discovery_sources.contains(&DiscoverySource::Mesh)
+            || self.hop_count.is_some()
+            || self.metadata.contains_key("mesh")
+    }
+
+    /// Returns the resolved hop count if known.
+    pub fn mesh_hop_count(&self) -> Option<u8> {
+        self.hop_count.or_else(|| {
+            self.metadata.get("hop_count").and_then(|h| h.parse().ok())
+        })
+    }
+
+    /// Returns the resolved route path if known.
+    pub fn mesh_route_path(&self) -> Option<Vec<String>> {
+        if let Some(ref rp) = self.route_path {
+            return Some(rp.clone());
+        }
+        self.metadata
+            .get("route_path")
+            .map(|p| p.split(',').map(|s| s.trim().to_string()).collect())
+    }
     /// Returns the primary IP address to connect to.
     /// Prefers the most recently active IPv4 address, followed by IPv6.
     pub fn primary_ip(&self) -> Option<IpAddr> {
@@ -433,6 +489,8 @@ impl PeerRegistry {
             first_seen_ms: now_ms,
             last_seen_ms: now_ms,
             metadata: HashMap::new(),
+            hop_count: None,
+            route_path: None,
         };
 
         self.merge_peer_internal(candidate, now_ms).await
@@ -475,6 +533,8 @@ impl PeerRegistry {
             first_seen_ms: now_ms,
             last_seen_ms: now_ms,
             metadata: mdns_peer.txt_records.clone(),
+            hop_count: None,
+            route_path: None,
         };
 
         self.merge_peer_internal(candidate, now_ms).await
@@ -517,6 +577,8 @@ impl PeerRegistry {
             first_seen_ms: now_ms,
             last_seen_ms: now_ms,
             metadata: HashMap::new(),
+            hop_count: None,
+            route_path: None,
         };
 
         self.merge_peer_internal(candidate, now_ms).await
@@ -562,6 +624,8 @@ impl PeerRegistry {
             first_seen_ms: now_ms,
             last_seen_ms: now_ms,
             metadata: HashMap::new(),
+            hop_count: None,
+            route_path: None,
         };
 
         self.merge_peer_internal(candidate, now_ms).await
@@ -606,9 +670,88 @@ impl PeerRegistry {
             first_seen_ms: now_ms,
             last_seen_ms: now_ms,
             metadata: HashMap::new(),
+            hop_count: None,
+            route_path: None,
         };
 
         self.merge_peer_internal(candidate, now_ms).await
+    }
+
+    /// Ingests or updates a peer discovered via the multi-hop mesh overlay.
+    pub async fn handle_mesh_node(
+        &self,
+        node: &crate::mesh::graph::MeshNode,
+        route: Option<&crate::mesh::graph::ResolvedRoute>,
+        now_ms: u64,
+    ) -> Option<DiscoveredPeer> {
+        let fingerprint = canonicalize_fingerprint(&node.fingerprint);
+        if fingerprint.is_empty() {
+            return None;
+        }
+
+        let mut sources = HashSet::new();
+        sources.insert(DiscoverySource::Mesh);
+
+        let mut metadata = HashMap::new();
+        metadata.insert("mesh".to_string(), "true".to_string());
+        metadata.insert("relay_enabled".to_string(), node.relay_enabled.to_string());
+
+        let hop_count = route.map(|r| r.hop_count);
+        let route_path = route.map(|r| r.full_route_path.clone());
+
+        if let Some(hc) = hop_count {
+            metadata.insert("hop_count".to_string(), hc.to_string());
+        }
+        if let Some(ref rp) = route_path {
+            metadata.insert("route_path".to_string(), rp.join(","));
+        }
+        if let Some(r) = route {
+            metadata.insert("next_hop".to_string(), r.next_hop_fp.clone());
+            metadata.insert("route_cost_ms".to_string(), r.total_cost_ms.to_string());
+        }
+
+        let candidate = DiscoveredPeer {
+            fingerprint,
+            alias: node.alias.clone(),
+            version: "2.0".to_string(),
+            device_model: Some("Mesh Node".to_string()),
+            device_type: Some(DeviceType::Desktop),
+            port: 53317,
+            protocol: ProtocolType::Https,
+            download: true,
+            endpoints: Vec::new(),
+            discovery_sources: sources,
+            first_seen_ms: now_ms,
+            last_seen_ms: if node.last_seen_ms > 0 { node.last_seen_ms } else { now_ms },
+            metadata,
+            hop_count,
+            route_path,
+        };
+
+        self.merge_peer_internal(candidate, now_ms).await
+    }
+
+    /// Synchronizes all reachable nodes from a `MeshTopologyGraph` into the peer registry.
+    pub async fn sync_from_mesh_graph(
+        &self,
+        graph: &crate::mesh::graph::MeshTopologyGraph,
+    ) -> Vec<DiscoveredPeer> {
+        let local_fp = graph.local_fingerprint();
+        let now_ms = current_time_ms();
+        let mut synced = Vec::new();
+
+        for node in graph.nodes() {
+            if node.fingerprint.eq_ignore_ascii_case(local_fp) {
+                continue;
+            }
+
+            let route = graph.resolve_route(&node.fingerprint);
+            if let Some(peer) = self.handle_mesh_node(node, route.as_ref(), now_ms).await {
+                synced.push(peer);
+            }
+        }
+
+        synced
     }
 
     /// Internal merge routine consolidating peer endpoints and attributes.
@@ -666,6 +809,16 @@ impl PeerRegistry {
             // Merge metadata map
             for (k, v) in incoming.metadata {
                 existing.metadata.insert(k, v);
+            }
+
+            // Merge mesh hop count and route path
+            if incoming.hop_count.is_some() && existing.hop_count != incoming.hop_count {
+                existing.hop_count = incoming.hop_count;
+                reason = PeerUpdateReason::MetadataChanged;
+            }
+            if incoming.route_path.is_some() && existing.route_path != incoming.route_path {
+                existing.route_path = incoming.route_path;
+                reason = PeerUpdateReason::MetadataChanged;
             }
 
             // Merge IP endpoints

@@ -245,6 +245,14 @@ pub type PacketSink = Arc<dyn Fn(RoutedEnvelope) + Send + Sync>;
 /// Type alias for callbacks invoked when cut-through stream chunks arrive for local delivery.
 pub type StreamChunkSink = Arc<dyn Fn(&str, Bytes) + Send + Sync>;
 
+/// Trait for intercepting outbound mesh packet forwarding, streaming, and gossip.
+pub trait MeshNetworkInterceptor: Send + Sync {
+    /// Intercepts a transmission from `src_fp` to `next_hop_fp`.
+    /// Returns `Ok(Duration)` to delay (for latency/jitter simulation),
+    /// or `Err(RouterError)` to drop/reject (for severed links, partitions, or drop rates).
+    fn intercept(&self, src_fp: &str, next_hop_fp: &str) -> Result<Duration, RouterError>;
+}
+
 /// Mesh router handling multi-hop gossip exchange, packet forwarding, and cut-through stream relays.
 pub struct MeshRouter {
     config: MeshRouterConfig,
@@ -257,6 +265,8 @@ pub struct MeshRouter {
     custom_resolver: RwLock<Option<DynEndpointResolver>>,
     packet_sink: RwLock<Option<PacketSink>>,
     stream_sink: RwLock<Option<StreamChunkSink>>,
+    registry: RwLock<Option<Arc<crate::discovery::registry::PeerRegistry>>>,
+    interceptor: RwLock<Option<Arc<dyn MeshNetworkInterceptor>>>,
 }
 
 impl MeshRouter {
@@ -294,6 +304,8 @@ impl MeshRouter {
             custom_resolver: RwLock::new(None),
             packet_sink: RwLock::new(None),
             stream_sink: RwLock::new(None),
+            registry: RwLock::new(None),
+            interceptor: RwLock::new(None),
         }
     }
 
@@ -359,6 +371,32 @@ impl MeshRouter {
         *ss = Some(Arc::new(sink));
     }
 
+    /// Attaches a `PeerRegistry` to automatically sync multi-hop peers learned via mesh gossip.
+    pub async fn set_registry(&self, registry: Arc<crate::discovery::registry::PeerRegistry>) {
+        let mut r = self.registry.write().await;
+        *r = Some(registry);
+    }
+
+    /// Attaches a network interceptor (such as `VirtualNetworkMatrix`).
+    pub async fn set_interceptor(&self, interceptor: Arc<dyn MeshNetworkInterceptor>) {
+        let mut int = self.interceptor.write().await;
+        *int = Some(interceptor);
+    }
+
+    /// Clears any network interceptor.
+    pub async fn clear_interceptor(&self) {
+        let mut int = self.interceptor.write().await;
+        *int = None;
+    }
+
+    /// Synchronizes the attached peer registry with current topology graph.
+    pub async fn sync_registry(&self) {
+        if let Some(registry) = self.registry.read().await.as_ref() {
+            let graph = self.graph.read().await;
+            registry.sync_from_mesh_graph(&graph).await;
+        }
+    }
+
     /// Resolves the base URL for the given peer fingerprint.
     pub async fn resolve_endpoint(&self, fingerprint: &str) -> Option<String> {
         let canonical_fp = fingerprint.to_ascii_uppercase();
@@ -418,16 +456,25 @@ impl MeshRouter {
             }
         }
 
+        // Sync learned nodes to attached registry if present
+        if let Some(registry) = self.registry.read().await.as_ref() {
+            let graph = self.graph.read().await;
+            registry.sync_from_mesh_graph(&graph).await;
+        }
+
         let graph = self.graph.read().await;
         let local_announcements: Vec<MeshNodeAnnouncement> = graph
             .nodes()
-            .filter(|n| n.fingerprint.eq_ignore_ascii_case(&self.local_fingerprint))
             .map(|n| MeshNodeAnnouncement {
                 fingerprint: n.fingerprint.clone(),
                 alias: n.alias.clone(),
                 cert_pem: n.cert_pem.clone().unwrap_or_default(),
                 capabilities: n.capabilities.clone(),
-                relay_enabled: self.is_relay_enabled(),
+                relay_enabled: if n.fingerprint.eq_ignore_ascii_case(&self.local_fingerprint) {
+                    self.is_relay_enabled()
+                } else {
+                    n.relay_enabled
+                },
                 seq_no: n.seq_no,
                 timestamp_ms: n.last_seen_ms,
                 signature: String::new(),
@@ -447,8 +494,14 @@ impl MeshRouter {
             })
             .collect();
 
-        let local_routes: Vec<MeshRouteAdvertisement> =
+        let mut local_routes: Vec<MeshRouteAdvertisement> =
             graph.route_advertisements().cloned().collect();
+
+        for adv in graph.generate_all_route_advertisements() {
+            if !local_routes.iter().any(|r| r.origin_fp == adv.origin_fp) {
+                local_routes.push(adv);
+            }
+        }
 
         Ok(MeshGossipPacket {
             sender_fp: self.local_fingerprint.clone(),
@@ -456,6 +509,235 @@ impl MeshRouter {
             link_metrics: local_links,
             route_advertisements: local_routes,
         })
+    }
+
+    /// Sends a gossip batch to a neighbor peer over HTTP and ingests the gossip reply.
+    pub async fn send_gossip(&self, peer_fp: &str) -> Result<MeshGossipPacket, RouterError> {
+        let canonical_fp = peer_fp.to_ascii_uppercase();
+
+        // Interceptor check (latency/drop/partition)
+        if let Some(interceptor) = self.interceptor.read().await.as_ref() {
+            let delay = interceptor.intercept(&self.local_fingerprint, &canonical_fp)?;
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+        }
+
+        let target_url = self
+            .resolve_endpoint(&canonical_fp)
+            .await
+            .ok_or_else(|| RouterError::UnresolvedEndpoint(canonical_fp.clone()))?;
+
+        // Prepare local gossip packet
+        let gossip_out = {
+            let graph = self.graph.read().await;
+            let announcements: Vec<MeshNodeAnnouncement> = graph
+                .nodes()
+                .map(|n| MeshNodeAnnouncement {
+                    fingerprint: n.fingerprint.clone(),
+                    alias: n.alias.clone(),
+                    cert_pem: n.cert_pem.clone().unwrap_or_default(),
+                    capabilities: n.capabilities.clone(),
+                    relay_enabled: n.relay_enabled,
+                    seq_no: n.seq_no,
+                    timestamp_ms: n.last_seen_ms,
+                    signature: String::new(),
+                })
+                .collect();
+
+            let link_metrics: Vec<MeshLinkMetric> = graph
+                .links()
+                .map(|l| MeshLinkMetric {
+                    src_fp: l.src_fp.clone(),
+                    dst_fp: l.dst_fp.clone(),
+                    rtt_ms: l.rtt_ms,
+                    subnet_tag: l.subnet_tag.clone(),
+                    bandwidth_kbps: l.bandwidth_kbps,
+                    last_seen_ms: l.last_seen_ms,
+                })
+                .collect();
+
+            let mut route_ads: Vec<MeshRouteAdvertisement> = graph
+                .route_advertisements()
+                .cloned()
+                .collect();
+
+            for adv in graph.generate_all_route_advertisements() {
+                if !route_ads.iter().any(|r| r.origin_fp == adv.origin_fp) {
+                    route_ads.push(adv);
+                }
+            }
+
+            MeshGossipPacket {
+                sender_fp: self.local_fingerprint.clone(),
+                announcements,
+                link_metrics,
+                route_advertisements: route_ads,
+            }
+        };
+
+        let post_url = format!("{}/api/lanflare/v1/mesh/gossip", target_url.trim_end_matches('/'));
+        let resp = self
+            .client
+            .post(&post_url)
+            .json(&gossip_out)
+            .send()
+            .await
+            .map_err(|e| RouterError::Network(format!("Failed to gossip with {}: {}", canonical_fp, e)))?;
+
+        if !resp.status().is_success() {
+            return Err(RouterError::Network(format!(
+                "Gossip with {} returned status {}",
+                canonical_fp,
+                resp.status()
+            )));
+        }
+
+        let reply: MeshGossipPacket = resp
+            .json()
+            .await
+            .map_err(|e| RouterError::Network(format!("Failed to parse gossip reply: {}", e)))?;
+
+        // Ingest the reply into our graph
+        {
+            let mut graph = self.graph.write().await;
+            let now_ms = current_time_ms();
+            for ann in &reply.announcements {
+                let _ = graph.process_node_announcement(ann);
+            }
+            for metric in &reply.link_metrics {
+                graph.process_link_metric(metric);
+            }
+            for route_ad in &reply.route_advertisements {
+                let _ = graph.process_route_advertisement(route_ad, now_ms);
+            }
+        }
+
+        // Sync registry if attached
+        if let Some(registry) = self.registry.read().await.as_ref() {
+            let graph = self.graph.read().await;
+            registry.sync_from_mesh_graph(&graph).await;
+        }
+
+        Ok(reply)
+    }
+
+    /// Sends a cut-through stream directly to destination `dst_fp` along resolved multi-hop mesh route.
+    pub async fn send_stream(
+        &self,
+        dst_fp: &str,
+        file_id: &str,
+        stream_id: &str,
+        chunks: Vec<Bytes>,
+    ) -> Result<StreamDeliveryStats, RouterError> {
+        let canonical_dst = dst_fp.to_ascii_uppercase();
+
+        // 1. If self is destination:
+        if canonical_dst == self.local_fingerprint {
+            let mut hasher = Sha256::new();
+            let mut total_bytes = 0u64;
+            for chunk in chunks {
+                total_bytes += chunk.len() as u64;
+                hasher.update(&chunk);
+                if let Some(sink) = self.stream_sink.read().await.as_ref() {
+                    sink(stream_id, chunk);
+                }
+            }
+            let sha256_hex = format!("{:064X}", hasher.finalize());
+            return Ok(StreamDeliveryStats {
+                status: "delivered".to_string(),
+                stream_id: stream_id.to_string(),
+                bytes_received: total_bytes,
+                sha256: sha256_hex,
+                next_hop: None,
+            });
+        }
+
+        // 2. Resolve route to destination
+        let next_hop_fp = {
+            let graph = self.graph.read().await;
+            let route = graph
+                .resolve_route(&canonical_dst)
+                .ok_or_else(|| RouterError::NoRoute(canonical_dst.clone()))?;
+            route.next_hop_fp
+        };
+
+        // 3. Resolve endpoint URL for next hop
+        let next_hop_url = self
+            .resolve_endpoint(&next_hop_fp)
+            .await
+            .ok_or_else(|| RouterError::UnresolvedEndpoint(next_hop_fp.clone()))?;
+
+        // 4. Interceptor check
+        if let Some(interceptor) = self.interceptor.read().await.as_ref() {
+            let delay = interceptor.intercept(&self.local_fingerprint, &next_hop_fp)?;
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+        }
+
+        let total_size: u64 = chunks.iter().map(|c| c.len() as u64).sum();
+        let header = MeshStreamHeader {
+            stream_id: stream_id.to_string(),
+            src_fp: self.local_fingerprint.clone(),
+            dst_fp: canonical_dst,
+            file_id: file_id.to_string(),
+            total_size,
+            route_path: vec![self.local_fingerprint.clone()],
+            chunk_index: 0,
+            is_last_chunk: false,
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(self.config.stream_buffer_chunks);
+        tokio::spawn(async move {
+            for chunk in chunks {
+                if tx.send(Ok(chunk)).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        let target_url = format!("{}/api/lanflare/v1/mesh/stream", next_hop_url.trim_end_matches('/'));
+
+        let forward_req = self
+            .client
+            .post(&target_url)
+            .header(
+                "x-lanflare-stream-header",
+                serde_json::to_string(&header).unwrap_or_default(),
+            )
+            .header("x-lanflare-stream-id", &header.stream_id)
+            .header("x-lanflare-src-fp", &header.src_fp)
+            .header("x-lanflare-dst-fp", &header.dst_fp)
+            .header("x-lanflare-file-id", &header.file_id)
+            .header("x-lanflare-total-size", header.total_size.to_string())
+            .header("x-lanflare-route-path", header.route_path.join(","))
+            .header("x-lanflare-chunk-index", header.chunk_index.to_string())
+            .header("x-lanflare-is-last-chunk", header.is_last_chunk.to_string())
+            .header(hyper::header::CONTENT_TYPE, "application/octet-stream")
+            .body(reqwest::Body::wrap_stream(stream));
+
+        let resp = forward_req
+            .send()
+            .await
+            .map_err(|e| RouterError::Network(format!("Failed to stream to next hop {}: {}", next_hop_fp, e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let err_text = resp.text().await.unwrap_or_default();
+            return Err(RouterError::Network(format!(
+                "Next hop {} returned error status {}: {}",
+                next_hop_fp, status, err_text
+            )));
+        }
+
+        let stats: StreamDeliveryStats = resp
+            .json()
+            .await
+            .map_err(|e| RouterError::StreamError(format!("Failed to parse delivery stats: {}", e)))?;
+
+        Ok(stats)
     }
 
     /// Forwards an envelope or delivers it locally.
@@ -486,8 +768,8 @@ impl MeshRouter {
             });
         }
 
-        // 4. Relay policy check
-        if !self.is_relay_enabled() {
+        // 4. Relay policy check: intermediate forwarding requires relaying enabled
+        if !self.is_relay_enabled() && !envelope.src_fp.eq_ignore_ascii_case(&self.local_fingerprint) {
             return Err(RouterError::RelayDisabled);
         }
 
@@ -516,6 +798,14 @@ impl MeshRouter {
         let mut forwarded = envelope.clone();
         forwarded.ttl = new_ttl;
         forwarded.route_path.push(self.local_fingerprint.clone());
+
+        // 8.5 Interceptor check (latency/drop/partition)
+        if let Some(interceptor) = self.interceptor.read().await.as_ref() {
+            let delay = interceptor.intercept(&self.local_fingerprint, &next_hop_fp)?;
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+        }
 
         // 9. Forward envelope to next hop over HTTP
         let target_url = format!("{}/api/lanflare/v1/mesh/forward", next_hop_url.trim_end_matches('/'));
@@ -711,6 +1001,22 @@ impl MeshRouter {
                 );
             }
         };
+
+        // 5.5 Interceptor check
+        if let Some(interceptor) = self.interceptor.read().await.as_ref() {
+            let delay = match interceptor.intercept(&self.local_fingerprint, &next_hop_fp) {
+                Ok(d) => d,
+                Err(err) => {
+                    return json_response(
+                        StatusCode::BAD_GATEWAY,
+                        &serde_json::json!({ "error": format!("Relay intercepted/dropped: {}", err) }),
+                    );
+                }
+            };
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+        }
 
         // 6. Cut-through streaming relay:
         // Pipe 128 KB chunks from inbound HTTP body to next-hop outbound HTTP stream

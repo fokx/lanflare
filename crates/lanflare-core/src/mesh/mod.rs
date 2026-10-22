@@ -13,6 +13,10 @@ pub use graph::{
     DEFAULT_NODE_EXPIRY_MS,
 };
 pub use router::{
-    ForwardResponse, MeshRouter, MeshRouterConfig, MeshTopologyView, PacketDedupBuffer,
-    RouterError, StreamDeliveryStats, DEFAULT_DEDUP_CAPACITY, DEFAULT_STREAM_BUFFER_CHUNKS,
+    ForwardResponse, MeshNetworkInterceptor, MeshRouter, MeshRouterConfig, MeshTopologyView,
+    PacketDedupBuffer, RouterError, StreamDeliveryStats, DEFAULT_DEDUP_CAPACITY,
+    DEFAULT_STREAM_BUFFER_CHUNKS,
+};
+pub use sim::{
+    MatrixNodeInfo, SimulatedLinkConfig, SimulatedMeshCluster, SimulatedNode, VirtualNetworkMatrix,
 };

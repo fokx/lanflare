@@ -275,6 +275,8 @@ mod tests {
             first_seen_ms: 1000,
             last_seen_ms: 1000,
             metadata: HashMap::new(),
+            hop_count: None,
+            route_path: None,
         };
 
         let table = render_peer_table(&[peer]);

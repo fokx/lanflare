@@ -528,6 +528,22 @@ impl MeshTopologyGraph {
         canonical_adv.origin_fp = canonical_origin.clone();
         canonical_adv.route_path = adv.route_path.iter().map(|p| p.to_ascii_uppercase()).collect();
 
+        // Synthesize directed links along the advertised path if not already present
+        let mut full_path = adv.route_path.clone();
+        if !full_path.iter().any(|h| h.eq_ignore_ascii_case(&canonical_origin)) {
+            full_path.push(canonical_origin.clone());
+        }
+
+        let hop_count = full_path.len().saturating_sub(1).max(1) as u32;
+        let avg_hop_rtt = (adv.cost / hop_count).saturating_sub(self.hop_penalty_ms).max(1);
+        for window in full_path.windows(2) {
+            let u = window[0].to_ascii_uppercase();
+            let v = window[1].to_ascii_uppercase();
+            if u != v && !self.links.contains_key(&(u.clone(), v.clone())) {
+                self.insert_link(MeshLink::new(u, v, avg_hop_rtt, _now_ms));
+            }
+        }
+
         self.route_advertisements.insert(canonical_origin, canonical_adv);
         Ok(())
     }
@@ -734,6 +750,20 @@ impl MeshTopologyGraph {
             route_path: route.full_route_path,
             ttl: remaining_ttl,
         })
+    }
+
+    /// Generates route advertisements for all reachable nodes in the graph.
+    pub fn generate_all_route_advertisements(&self) -> Vec<MeshRouteAdvertisement> {
+        let mut ads = Vec::new();
+        for node in self.nodes.values() {
+            if node.fingerprint == self.local_fp {
+                continue;
+            }
+            if let Some(adv) = self.create_route_advertisement(&node.fingerprint) {
+                ads.push(adv);
+            }
+        }
+        ads
     }
 
     /// Internal check if a node can serve as an intermediate multi-hop relay.

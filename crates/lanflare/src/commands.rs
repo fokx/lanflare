@@ -409,6 +409,8 @@ pub async fn discover_or_select_target(
                             first_seen_ms: 0,
                             last_seen_ms: 0,
                             metadata: std::collections::HashMap::new(),
+                            hop_count: None,
+                            route_path: None,
                         });
                     }
                 }
@@ -435,6 +437,8 @@ pub async fn discover_or_select_target(
                 first_seen_ms: 0,
                 last_seen_ms: 0,
                 metadata: std::collections::HashMap::new(),
+                hop_count: None,
+                route_path: None,
             });
         }
     }

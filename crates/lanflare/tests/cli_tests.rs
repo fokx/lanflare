@@ -123,6 +123,8 @@ fn test_match_target_peer() {
         first_seen_ms: 1000,
         last_seen_ms: 1000,
         metadata: HashMap::new(),
+        hop_count: None,
+        route_path: None,
     };
 
     let p2 = DiscoveredPeer {
@@ -145,6 +147,8 @@ fn test_match_target_peer() {
         first_seen_ms: 1000,
         last_seen_ms: 1000,
         metadata: HashMap::new(),
+        hop_count: None,
+        route_path: None,
     };
 
     let peers = vec![p1, p2];

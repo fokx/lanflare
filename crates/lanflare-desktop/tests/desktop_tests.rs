@@ -69,6 +69,8 @@ async fn test_discovered_peer_dto_conversion() {
         first_seen_ms: 1000,
         last_seen_ms: 2000,
         metadata: HashMap::new(),
+        hop_count: None,
+        route_path: None,
     };
 
     let dto = DiscoveredPeerDto::from(&peer);

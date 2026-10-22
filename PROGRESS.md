@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 7.3 Complete; Multi-Functional Mesh & DTN Chat Foundations in Progress.
-- **Overall Status**: Ready for **Sub-phase 7.4: In-Process Virtual Network Simulator & Multi-Subnet E2E Mesh Verification (`lanflare-core::mesh::sim`)**.
+- **Current Milestone**: Phase 7 Complete; Phase 8: Anti-Harassment Trust Engine, Persistent Chat Store & Resumable Transfers in Progress.
+- **Overall Status**: Ready for **Sub-phase 8.1: Chat, Receipt & Trust Protocol DTOs + Hashcash Proof-of-Work Engine (`lanflare-proto::chat` & `lanflare-core::chat::trust`)**.
 
 ---
 
@@ -167,6 +167,16 @@
     - `test_gossip_exchange_and_topology_export`: verifies two-way gossip ingestion and `/topology` export.
     - `test_multi_hop_envelope_forwarding`: verifies 3-node chain (`A -> B -> C`) packet forwarding and delivery.
   - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib mesh::router`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (134 tests passing).
+- [x] Implement In-Process Virtual Network Simulator & Multi-Subnet E2E Mesh Verification (`lanflare-core::mesh::sim`) (Sub-phase 7.4):
+  - Implemented `VirtualNetworkMatrix`, `SimulatedLinkConfig`, `SimulatedNode`, and `SimulatedMeshCluster` in [`crates/lanflare-core/src/mesh/sim.rs`](file:///f/lanflare/crates/lanflare-core/src/mesh/sim.rs) capable of spawning $N$ isolated LanFlare nodes on localhost bound to ephemeral ports.
+  - Implemented virtual subnet reachability matrix enforcing isolated Layer 2/3 domains (`Subnet A`, `Subnet B`, `Subnet C`), link latency/jitter injection, packet drop probability, and dynamic bidirectional link severing/restoration.
+  - Integrated `VirtualNetworkMatrix` as a `MeshNetworkInterceptor` into `MeshRouter`, intercepting and enforcing reachability policies on outbound routed envelopes, cut-through streaming chunks, and gossip batches.
+  - Integrated `PeerRegistry` with `MeshTopologyGraph` (`handle_mesh_node`, `sync_from_mesh_graph`) with `DiscoverySource::Mesh`, updating multi-hop peers with resolved `hop_count`, `route_path`, and `next_hop` metadata.
+  - Implemented automated integration test suite in [`crates/lanflare-core/tests/mesh_sim_e2e.rs`](file:///f/lanflare/crates/lanflare-core/tests/mesh_sim_e2e.rs):
+    - `test_two_hop_cross_subnet_discovery_and_transfer`: verified cross-subnet 2-hop discovery (`A -> B -> C`), `PeerRegistry` hop count and route tracking, and E2EE envelope and cut-through file streaming through intermediate relay.
+    - `test_three_hop_chain_e2ee_file_transfer`: verified 4-node chain (`A -> B -> C -> D`) 3-hop route resolution and cut-through file transfer (512 KB) with bit-for-bit SHA-256 integrity match.
+    - `test_dual_relay_failover_under_simulated_link_cut`: verified dual-relay diamond topology preferring low-latency Relay B1, dynamic link severing of A-B1 link, automatic Dijkstra failover to backup Relay B2, and successful envelope and streaming completion.
+  - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --test mesh_sim_e2e`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (137 tests passing).
 
 ---
 
@@ -405,6 +415,15 @@
     - **Bounded Memory Cut-Through Stream Relay**: Streaming transfers (`POST /api/lanflare/v1/mesh/stream`) do not buffer complete files in RAM or disk. Inbound 128 KB chunks are piped directly to next-hop outbound HTTP stream via a bounded Tokio `mpsc` channel (default: 16 chunks = 2 MB max in-flight memory). Channel backpressure naturally throttles upstream TCP connections if downstream hops slow down.
     - **Local Delivery & Checksum Verification**: Streams reaching their destination compute streaming uppercase 64-char hex SHA-256 digests and dispatch chunks to registered `StreamChunkSink` callbacks, returning `StreamDeliveryStats` with 100% bit-for-bit integrity.
 
+- **ADR-031: Virtual Network Matrix Interception & Multi-Hop Registry Synchronization**
+  - *Context*: Multi-hop mesh discovery, Dijkstra route resolution, and cut-through streaming require automated integration verification on developer machines without physical multi-router testbeds. Furthermore, peers discovered via multi-hop mesh relays must seamlessly surface in the unified `PeerRegistry` alongside 1-hop Multicast and mDNS peers.
+  - *Decision*: Implement `VirtualNetworkMatrix` implementing `MeshNetworkInterceptor` and attach it to `MeshRouter`. Extend `PeerRegistry` with `DiscoverySource::Mesh` and `sync_from_mesh_graph`.
+  - *Invariants*:
+    - **Subnet Partition & Reachability Invariant**: Direct communication between simulated nodes requires that neither node is offline, the directed link is not severed, and both nodes share at least one virtual subnet.
+    - **Source Origin Exemption**: The relay policy check (`relay_enabled == false`) applies strictly to non-local forwarded envelopes where `src_fp != local_fp`. A node can always originate its own outgoing packets regardless of relay configuration.
+    - **Mesh Peer Registry Representation**: Multi-hop mesh peers are ingested into `PeerRegistry` with `DiscoverySource::Mesh`, populating `hop_count`, `route_path`, and `next_hop` metadata without overwriting direct IP endpoints if discovered on 1-hop channels.
+    - **Full Gossip Propagation**: Nodes gossiping via `MeshRouter` exchange all known node announcements and generated path-vector route advertisements, enabling multi-hop nodes $N$ hops away to discover remote aliases and X.509 certificates.
+
 ---
 
 ## Known Debt & Blockers
@@ -413,15 +432,19 @@
 ---
 
 ## Next Session Target
-- **Target**: **Sub-phase 7.4: In-Process Virtual Network Simulator & Multi-Subnet E2E Mesh Verification (`lanflare-core::mesh::sim`)**
+- **Target**: **Sub-phase 8.1: Chat, Receipt & Trust Protocol DTOs + Hashcash Proof-of-Work Engine (`lanflare-proto::chat` & `lanflare-core::chat::trust`)**
 - **Action Items**:
-  1. Implement `VirtualNetworkMatrix` and `SimulatedMeshCluster` in `lanflare-core::mesh::sim` capable of spawning $N$ isolated LanFlare nodes on localhost with programmable virtual subnet partitions (`Subnet A`, `Subnet B`, `Subnet C`), artificial link latency/jitter, packet drop injection, and dynamic link severing.
-  2. Integrate `PeerRegistry` with `MeshTopologyGraph` so multi-hop peers discovered via relays appear with hop count and route metadata.
-  3. Implement automated integration test suite in `crates/lanflare-core/tests/mesh_sim_e2e.rs`:
-     - `test_two_hop_cross_subnet_discovery_and_transfer`: Node A and Node C on separate subnets discover each other and transfer data through Relay B.
-     - `test_three_hop_chain_e2ee_file_transfer`: Node A -> Relay B -> Relay C -> Node D 3-hop cut-through file transfer.
-     - `test_dual_relay_failover_under_simulated_link_cut`: dynamic link severing triggers automatic failover reroute and transfer completion.
-  4. Verification command: `cargo test -p lanflare-core --test mesh_sim_e2e`.
+  1. Define protocol DTOs in `lanflare-proto::chat`: `ChatMessageDto`, `ChatContentDto` (Text, Image, File, Voice, Video), `DeliveryReceiptDto`, `ReadReceiptDto`, `TrustRequestDto`, `HashcashStamp`, and `ResumeTransferDto`.
+  2. Implement the 5-Layer Anti-Harassment & Trust Gate in `lanflare-core::chat::trust`:
+     - 3-tier contact state machine (`Stranger`, `PendingApproval`, `TrustedContact`, `Blocked`).
+     - Hashcash Proof-of-Work generator and $O(1)$ verifier (`SHA256(sender_fp || target_fp || time_bucket || nonce)` with configurable leading zero bits).
+     - Single 280-char plain-text handshake request limit for `Stranger`s, per-IP/per-fingerprint token-bucket rate limiter, and "Contacts Only" mode.
+  3. Implement unit tests in `crates/lanflare-proto/src/chat.rs` and `crates/lanflare-core/src/chat/trust.rs`:
+     - `chat::tests::test_chat_dto_serde_roundtrip`
+     - `chat::trust::tests::test_hashcash_pow_generation_and_verification`
+     - `chat::trust::tests::test_stranger_single_message_gate_and_media_block`
+     - `chat::trust::tests::test_sybil_identity_rotation_ip_rate_limiter`
+  4. Verification command: `cargo test -p lanflare-proto --lib chat && cargo test -p lanflare-core --lib chat::trust`.
 
 
 

@@ -43,6 +43,10 @@ pub struct DiscoveredPeerDto {
     pub download: bool,
     pub sources: usize,
     pub last_seen: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hop_count: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_path: Option<Vec<String>>,
 }
 
 impl From<&DiscoveredPeer> for DiscoveredPeerDto {
@@ -68,6 +72,8 @@ impl From<&DiscoveredPeer> for DiscoveredPeerDto {
             download: p.download,
             sources: p.discovery_sources.len(),
             last_seen: p.last_seen_ms,
+            hop_count: p.mesh_hop_count(),
+            route_path: p.mesh_route_path(),
         }
     }
 }
