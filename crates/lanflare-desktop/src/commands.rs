@@ -1821,7 +1821,18 @@ pub async fn open_path_in_system(#[allow(unused)] app: AppHandle, path: String) 
         Err("Failed to open file with default application".to_string())
     }
 
-    #[cfg(not(desktop))]
+    #[cfg(target_os = "android")]
+    {
+        if let Some(window) = app.get_webview_window("main") {
+            let escaped = serde_json::to_string(&path).unwrap_or_else(|_| format!("\"{}\"", path));
+            let script = format!("if (window.AndroidStorage && window.AndroidStorage.openFile) {{ window.AndroidStorage.openFile({}); }}", escaped);
+            let _ = window.eval(&script);
+            return Ok(());
+        }
+        Err("No webview window found".to_string())
+    }
+
+    #[cfg(not(any(desktop, target_os = "android")))]
     {
         Err("Direct file opening not supported on this platform".to_string())
     }
@@ -1886,7 +1897,18 @@ pub async fn reveal_in_folder(#[allow(unused)] app: AppHandle, path: String) -> 
         Err("Failed to reveal item in file manager".to_string())
     }
 
-    #[cfg(not(desktop))]
+    #[cfg(target_os = "android")]
+    {
+        if let Some(window) = app.get_webview_window("main") {
+            let escaped = serde_json::to_string(&path).unwrap_or_else(|_| format!("\"{}\"", path));
+            let script = format!("if (window.AndroidStorage && window.AndroidStorage.openFolder) {{ window.AndroidStorage.openFolder({}); }}", escaped);
+            let _ = window.eval(&script);
+            return Ok(());
+        }
+        Err("No webview window found".to_string())
+    }
+
+    #[cfg(not(any(desktop, target_os = "android")))]
     {
         Err("Revealing item not supported on this platform".to_string())
     }

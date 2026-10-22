@@ -1,5 +1,7 @@
 package com.lanflare.desktop
 
+import android.app.DownloadManager
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.media.MediaScannerConnection
@@ -8,12 +10,17 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.Settings
 import android.webkit.JavascriptInterface
+import android.webkit.MimeTypeMap
 import android.webkit.WebView
+import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import java.io.File
 import kotlin.math.roundToInt
 
 
@@ -160,6 +167,215 @@ class MainActivity : TauriActivity() {
         MediaScannerConnection.scanFile(applicationContext, arrayOf(path), null, null)
       } catch (e: Exception) {
         e.printStackTrace()
+      }
+    }
+
+    @JavascriptInterface
+    fun openFile(path: String) {
+      val rawPath = path.trim()
+      if (rawPath.isEmpty()) return
+      val cleanPath = if (rawPath.startsWith("file://")) {
+        Uri.parse(rawPath).path ?: rawPath.removePrefix("file://")
+      } else {
+        rawPath
+      }
+
+      val file = File(cleanPath)
+      if (!file.exists()) {
+        runOnUiThread {
+          Toast.makeText(applicationContext, "File does not exist: ${file.name}", Toast.LENGTH_SHORT).show()
+        }
+        return
+      }
+
+      if (file.isDirectory) {
+        openFolder(cleanPath)
+        return
+      }
+
+      var mimeType: String? = null
+      val ext = MimeTypeMap.getFileExtensionFromUrl(Uri.fromFile(file).toString())?.lowercase()
+      if (!ext.isNullOrEmpty()) {
+        mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)
+      }
+      if (mimeType == null) {
+        mimeType = java.net.URLConnection.guessContentTypeFromName(file.name)
+      }
+      if (mimeType == null) {
+        mimeType = when (file.extension.lowercase()) {
+          "apk" -> "application/vnd.android.package-archive"
+          "pdf" -> "application/pdf"
+          "epub" -> "application/epub+zip"
+          "zip" -> "application/zip"
+          "tar", "gz", "tgz" -> "application/gzip"
+          "json" -> "application/json"
+          "txt", "log", "md", "csv" -> "text/plain"
+          "html", "htm" -> "text/html"
+          "mp3", "wav", "flac", "ogg", "m4a", "aac" -> "audio/*"
+          "mp4", "mkv", "avi", "mov", "webm", "3gp" -> "video/*"
+          "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg" -> "image/*"
+          else -> "*/*"
+        }
+      }
+
+      val contentUri: Uri = try {
+        FileProvider.getUriForFile(
+          applicationContext,
+          "${packageName}.fileprovider",
+          file
+        )
+      } catch (e: Exception) {
+        e.printStackTrace()
+        Uri.fromFile(file)
+      }
+
+      val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(contentUri, mimeType)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+
+      runOnUiThread {
+        try {
+          startActivity(intent)
+        } catch (e: ActivityNotFoundException) {
+          if (mimeType != "*/*") {
+            try {
+              val fallbackIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(contentUri, "*/*")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+              }
+              startActivity(Intent.createChooser(fallbackIntent, "Open with").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+              })
+            } catch (e2: Exception) {
+              e2.printStackTrace()
+              Toast.makeText(applicationContext, "No app available to open ${file.name}", Toast.LENGTH_SHORT).show()
+            }
+          } else {
+            Toast.makeText(applicationContext, "No app available to open ${file.name}", Toast.LENGTH_SHORT).show()
+          }
+        } catch (e: Exception) {
+          e.printStackTrace()
+          Toast.makeText(applicationContext, "Failed to open file: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+      }
+    }
+
+    @JavascriptInterface
+    fun openFolder(path: String) {
+      val rawPath = path.trim()
+      val cleanPath = if (rawPath.startsWith("file://")) {
+        Uri.parse(rawPath).path ?: rawPath.removePrefix("file://")
+      } else {
+        rawPath
+      }
+
+      val file = File(cleanPath)
+      val targetDir = if (file.exists() && file.isDirectory) {
+        file
+      } else if (file.parentFile != null && file.parentFile!!.exists()) {
+        file.parentFile!!
+      } else if (file.exists()) {
+        file.parentFile ?: file
+      } else {
+        @Suppress("DEPRECATION")
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+      }
+
+      runOnUiThread {
+        var launched = false
+
+        // Strategy 1: DocumentsUI external storage provider URI
+        try {
+          @Suppress("DEPRECATION")
+          val extRoot = Environment.getExternalStorageDirectory().absolutePath
+          val dirPath = targetDir.absolutePath
+
+          val docId = if (dirPath.startsWith(extRoot)) {
+            val relPath = dirPath.removePrefix(extRoot).trimStart('/')
+            if (relPath.isEmpty()) "primary:" else "primary:$relPath"
+          } else if (dirPath.startsWith("/storage/")) {
+            val after = dirPath.removePrefix("/storage/")
+            val parts = after.split("/", limit = 2)
+            if (parts.size == 2) "${parts[0]}:${parts[1]}" else "${parts[0]}:"
+          } else {
+            "primary:Download"
+          }
+
+          val docUri = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", docId)
+          val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(docUri, DocumentsContract.Document.MIME_TYPE_DIR)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+          }
+          startActivity(intent)
+          launched = true
+        } catch (e: Exception) {
+          // Fall through
+        }
+
+        // Strategy 2: If inside Download or Strategy 1 failed, launch DownloadManager.ACTION_VIEW_DOWNLOADS
+        if (!launched && (targetDir.absolutePath.contains("/Download", ignoreCase = true) || targetDir.name.equals("Download", ignoreCase = true))) {
+          try {
+            val intent = Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            }
+            startActivity(intent)
+            launched = true
+          } catch (e: Exception) {
+            // Fall through
+          }
+        }
+
+        // Strategy 3: Try FileProvider URI with "resource/folder"
+        if (!launched) {
+          try {
+            val contentUri = FileProvider.getUriForFile(
+              applicationContext,
+              "${packageName}.fileprovider",
+              targetDir
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+              setDataAndType(contentUri, "resource/folder")
+              addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(Intent.createChooser(intent, "Open folder").apply {
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+            launched = true
+          } catch (e: Exception) {
+            // Fall through
+          }
+        }
+
+        // Strategy 4: Fallback to DownloadManager.ACTION_VIEW_DOWNLOADS anyway
+        if (!launched) {
+          try {
+            val intent = Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            }
+            startActivity(intent)
+            launched = true
+          } catch (e: Exception) {
+            // Fall through
+          }
+        }
+
+        // Strategy 5: Storage Access Framework directory picker
+        if (!launched) {
+          try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+          } catch (e: Exception) {
+            Toast.makeText(applicationContext, "Cannot open file manager", Toast.LENGTH_SHORT).show()
+          }
+        }
       }
     }
   }

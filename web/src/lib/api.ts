@@ -18,6 +18,17 @@ import type {
 // Open a file using system default application
 export async function openFile(filePath: string): Promise<void> {
 	if (!filePath) return;
+	if (isAndroid()) {
+		const androidStorage = typeof window !== 'undefined' ? (window as any).AndroidStorage : null;
+		if (androidStorage?.openFile) {
+			try {
+				androidStorage.openFile(filePath);
+				return;
+			} catch (e) {
+				console.error('Failed to open file via AndroidStorage:', e);
+			}
+		}
+	}
 	if (isTauri()) {
 		try {
 			await tauriInvoke('open_path_in_system', { path: filePath });
@@ -38,6 +49,17 @@ export async function openFile(filePath: string): Promise<void> {
 // Open / reveal the folder containing a file or the folder itself in file manager, selecting the file
 export async function openFolder(folderOrFilePath: string): Promise<void> {
 	if (!folderOrFilePath) return;
+	if (isAndroid()) {
+		const androidStorage = typeof window !== 'undefined' ? (window as any).AndroidStorage : null;
+		if (androidStorage?.openFolder) {
+			try {
+				androidStorage.openFolder(folderOrFilePath);
+				return;
+			} catch (e) {
+				console.error('Failed to open folder via AndroidStorage:', e);
+			}
+		}
+	}
 	if (isTauri()) {
 		try {
 			await tauriInvoke('reveal_in_folder', { path: folderOrFilePath });
