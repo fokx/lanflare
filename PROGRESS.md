@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: All Roadmap Phases 1.1 through 6.2 Complete!
-- **Overall Status**: Phase 6.2 complete. Ready for Phase 7 (Packaging, CI/CD & Cross-Platform Distribution).
+- **Current Milestone**: Phases 1.1–6.2 Complete; Multi-Functional Mesh & DTN Chat Scaffolding Complete.
+- **Overall Status**: Ready for **Sub-phase 7.1: Mesh Protocol DTOs, Signed Node Descriptors & E2EE Envelopes (`lanflare-proto::mesh` & `lanflare-core::crypto::e2ee`)**.
 
 ---
 
@@ -131,6 +131,11 @@
     - Disk-space bombing defense: early abort and automatic `.lanflare-part` cleanup when uploaded bytes exceed promised file size.
     - Missing and fabricated query parameter rejection (400 Bad Request / 403 Forbidden).
   - Verified test pass rate: 100% (81 unit/integration tests and benchmarks passing across workspace).
+- [x] Architect & Scaffold Multi-Functional LAN Platform (Phases 7–11):
+  - Appended Sections 6–10 to [`ARCHITECTURE.md`](file:///f/lanflare/ARCHITECTURE.md) specifying Multi-Hop Overlay Mesh Networking, Path-Vector Gossip, E2EE Relay Envelopes, Two-Tier Virtual Network Simulator, Delay-Tolerant P2P & Group Chat, Resumable `.lanflare-part` Streaming, 5-Layer Anti-Harassment Trust Gate with Hashcash PoW, and LAN Toolbox modules.
+  - Appended Phases 7–11 (Sub-phases 7.1 through 11.4) to [`ROADMAP.md`](file:///f/lanflare/ROADMAP.md) with atomic session boundaries, acceptance criteria, required tests, and verification commands.
+  - Recorded ADRs (`ADR-022` through `ADR-027`) in [`PROGRESS.md`](file:///f/lanflare/PROGRESS.md).
+  - Created placeholder module skeletons across `lanflare-proto` (`mesh`, `chat`, `toolbox`) and `lanflare-core` (`crypto::e2ee`, `storage::resume`, `mesh::*`, `chat::*`, `toolbox::*`) passing `cargo check --workspace`.
 
 ---
 
@@ -301,6 +306,43 @@
     - Zero regression on desktop when resizing windows down to mobile widths (safe insets evaluate to `0px`).
     - Zero compiler or clippy warnings across Rust, Kotlin, and TypeScript.
 
+- **ADR-022: Path-Vector Mesh Gossip, Composite Cost Routing & Cut-Through Stream Relay**
+  - *Context*: Multi-homed devices bridging separate subnets (e.g., Wi-Fi + Ethernet, corporate VLANs, VPNs) can connect peers that cannot see each other via L2 multicast or `/24` subnet scans.
+  - *Decision*: Implement `/api/lanflare/v1/mesh/*` using cryptographically signed `MeshNodeAnnouncement` descriptors, BGP-style path-vector loop avoidance (`route_path: Vec<Fingerprint>`), TTL bounds (`MAX_MESH_TTL = 5`), and Dijkstra route selection minimizing $\sum (\text{HOP\_PENALTY\_MS} + \text{rtt\_ms})$.
+  - *Invariants*:
+    - Route advertisements containing the local node's own fingerprint in `route_path` or carrying stale `seq_no` are discarded immediately.
+    - Multi-hop file transfers (`/api/lanflare/v1/mesh/stream`) use cut-through chunked streaming with Tokio backpressure, never buffering full files in relay RAM or disk.
+    - Nodes with `relay_enabled == false` reject non-local forwarding requests with HTTP 403 Forbidden.
+
+- **ADR-023: End-to-End Encryption (E2EE) Envelope Over Untrusted Mesh Relays**
+  - *Context*: Intermediate mesh relays forward control messages, chat messages, and file streams across subnets and must not be able to read or tamper with payloads.
+  - *Decision*: Wrap all mesh-routed payloads in an `E2eeEnvelope` (`lanflare-core::crypto::e2ee`) using public-key authenticated key derivation bound to source and destination X.509 certificates (`TlsIdentity`) and `CHACHA20_POLY1305` AEAD encryption.
+  - *Invariants*:
+    - Relays only inspect outer routing metadata (`packet_id`, `src_fp`, `dst_fp`, `ttl`, `route_path`).
+    - Payloads failing AEAD authentication or signed by a key not matching `src_fp` are rejected before storage or UI dispatch.
+
+- **ADR-024: Two-Tier Virtual Network Simulator (`VirtualNetworkMatrix` & Interactive Sandbox)**
+  - *Context*: Developers and users rarely have multi-router physical network testbeds to verify multi-hop mesh discovery, relay forwarding, and link failover.
+  - *Decision*: Build an in-process `VirtualNetworkMatrix` (`lanflare-core::mesh::sim`) that runs $N$ isolated LanFlare nodes on localhost with programmable virtual subnet partitions, latency/drop injection, and link severing, exposed both to `cargo test` integration suites and to an interactive "Virtual Mesh Sandbox" in the GUI/CLI.
+
+- **ADR-025: Identity-First Delay-Tolerant Outbox & Resumable `.lanflare-part` Transfers**
+  - *Context*: LAN peers frequently go offline or change IP addresses mid-conversation or mid-transfer.
+  - *Decision*: Persist contacts, conversations, and an `OutboxDispatcher` queue keyed strictly by canonical 64-char SHA-256 `fingerprint`. Extend `StreamingFileWriter` with `.lanflare-resume.json` byte-offset checkpoints (`lanflare-core::storage::resume`) so interrupted transfers from trusted peers resume from `received_bytes` upon reconnection.
+  - *Invariants*:
+    - Outbox items dispatch automatically in causal FIFO order when the target `fingerprint` appears via 1-hop `PeerRegistry` or multi-hop `MeshTopologyGraph`.
+    - Optional custodial `RelayMailbox` on mutual relays stores bounded E2EE envelopes when sender and recipient are never online simultaneously.
+
+- **ADR-026: Defense-in-Depth Anti-Harassment Gate, Hashcash PoW & Rate Limiting**
+  - *Context*: Open LANs contain untrusted strangers who might attempt unsolicited file bombing, message flooding, or Sybil identity rotation (`regenerate_identity`).
+  - *Decision*: Enforce a 3-tier contact trust state machine (`Stranger` -> `PendingApproval` -> `TrustedContact` / `Blocked`) guarded by Hashcash Proof-of-Work and per-IP/per-fingerprint token-bucket rate limiting.
+  - *Invariants*:
+    - `Stranger`s can send at most one $\le 280$-character plain-text introduction request accompanied by a valid Hashcash PoW stamp; all media/file uploads and subsequent messages from unapproved strangers are rejected with HTTP 403 Locked.
+    - Zero disk bytes (`.lanflare-part`) are allocated for `Stranger` or `Blocked` peers.
+
+- **ADR-027: Causal Merkle-DAG + Hybrid Logical Clock (HLC) Serverless Group Sync**
+  - *Context*: Local group chats have no central server and members join/leave or go offline independently.
+  - *Decision*: Model group chat history as a content-addressed Causal Merkle-DAG ordered by Hybrid Logical Clocks (`HybridLogicalClock`) and synchronized via anti-entropy frontier exchange (`/api/lanflare/v1/chat/group-sync`).
+
 ---
 
 ## Known Debt & Blockers
@@ -309,11 +351,11 @@
 ---
 
 ## Next Session Target
-- **Target**: **Phase 7: Packaging, CI/CD Distribution & Release Artifacts**
+- **Target**: **Sub-phase 7.1: Mesh Protocol DTOs, Signed Node Descriptors & E2EE Envelopes (`lanflare-proto::mesh` & `lanflare-core::crypto::e2ee`)**
 - **Action Items**:
-  1. Configure release build profiles, strip symbols, and cross-compilation configurations for Linux (`.deb`, AppImage), Windows (`.msi`, NSIS `.exe`), and macOS.
-  2. Implement GitHub Actions CI/CD workflow testing workspace and packaging release artifacts.
-  3. Verify clean release compilation via `cargo build --release --all-targets` and `pnpm build`.
+  1. Implement `MeshNodeAnnouncement`, `MeshLinkMetric`, `MeshGossipPacket`, `MeshRouteAdvertisement`, `RoutedEnvelope`, and `MeshStreamHeader` in `crates/lanflare-proto/src/mesh.rs`.
+  2. Implement `MeshNodeAnnouncement` cryptographic signing/verification and `E2eeEnvelope` (`seal_envelope`, `open_envelope`) in `crates/lanflare-core/src/crypto/e2ee.rs`.
+  3. Write unit tests verifying round-trip serialization, signature tamper rejection, and E2EE sealing/opening via `cargo test -p lanflare-proto --lib mesh && cargo test -p lanflare-core --lib crypto::e2ee`.
 
 
 

@@ -1,6 +1,7 @@
 //! Disk I/O, streaming verification, and path traversal protection.
 
 pub mod path;
+pub mod resume;
 pub mod writer;
 
 pub use path::{

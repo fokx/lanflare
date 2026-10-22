@@ -1,8 +1,11 @@
 //! Protocol definitions and data transfer objects for LanFlare,
 //! fully compatible with LocalSend v2.2 specification.
 
+pub mod chat;
 pub mod discovery;
 pub mod error;
+pub mod mesh;
+pub mod toolbox;
 pub mod transfer;
 
 // Convenience re-exports

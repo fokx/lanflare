@@ -1,0 +1,7 @@
+//! Multi-functional LAN collaboration toolbox: universal clipboard ring, federated search, and CRDT scratchpad.
+//!
+//! Scaffold module for Phase 10.
+
+pub mod clipboard;
+pub mod collab;
+pub mod search;
