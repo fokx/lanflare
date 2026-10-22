@@ -96,6 +96,7 @@ pub struct ServerState {
     pub event_tx: Option<mpsc::Sender<ServerTransferEvent>>,
     pub dufs_manager: Arc<DufsManager>,
     pub tls_identity: Option<crate::crypto::cert::TlsIdentity>,
+    pub mesh_router: Option<Arc<crate::mesh::router::MeshRouter>>,
 }
 
 /// Helper decoding percent-encoded strings (e.g. `%40` -> `@`, `%3A` -> `:`).

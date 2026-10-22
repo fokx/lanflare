@@ -12,3 +12,7 @@ pub use graph::{
     MeshGraphError, MeshLink, MeshNode, MeshTopologyGraph, ResolvedRoute, DEFAULT_LINK_EXPIRY_MS,
     DEFAULT_NODE_EXPIRY_MS,
 };
+pub use router::{
+    ForwardResponse, MeshRouter, MeshRouterConfig, MeshTopologyView, PacketDedupBuffer,
+    RouterError, StreamDeliveryStats, DEFAULT_DEDUP_CAPACITY, DEFAULT_STREAM_BUFFER_CHUNKS,
+};

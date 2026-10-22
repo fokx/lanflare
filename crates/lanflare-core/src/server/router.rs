@@ -35,13 +35,14 @@ pub async fn route_request(
     let path = req.uri().path();
 
     // Check if Dufs folder sharing is active or if explicit /dufs path is requested
+    let is_mesh_api = path.starts_with("/api/lanflare/v1/mesh/");
     if let Some(dufs_cfg) = state.dufs_manager.get_config().await {
         let is_dufs_explicit = path == "/dufs" || path.starts_with("/dufs/");
         let is_localsend_api = path.starts_with("/api/localsend/");
         let is_download_endpoint = path == "/download" || path == "/api/localsend/v2/download";
 
         // Route to Dufs if explicit /dufs prefix, or if root/static file access while dufs is active
-        if is_dufs_explicit || (!is_localsend_api && !is_download_endpoint) {
+        if is_dufs_explicit || (!is_localsend_api && !is_download_endpoint && !is_mesh_api) {
             let mut cfg = dufs_cfg;
             if is_dufs_explicit {
                 cfg.path_prefix = "/dufs".to_string();
@@ -49,6 +50,14 @@ pub async fn route_request(
                 cfg.path_prefix = String::new();
             }
             return handle_dufs_request(req, client.remote_ip, &cfg).await;
+        }
+    }
+
+    if is_mesh_api {
+        if let Some(mesh_router) = &state.mesh_router {
+            return Ok(mesh_router.handle_hyper_request(req, Some(client)).await);
+        } else {
+            return Ok(to_box_body(empty_response(StatusCode::NOT_FOUND)));
         }
     }
 

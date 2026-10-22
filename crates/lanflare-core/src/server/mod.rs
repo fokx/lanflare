@@ -111,6 +111,28 @@ pub async fn start_server_ext(
     download_manager: Option<Arc<DownloadManager>>,
     dufs_manager: Option<Arc<DufsManager>>,
 ) -> anyhow::Result<ServerHandle> {
+    start_server_full(
+        config,
+        tls_identity,
+        registry,
+        event_tx,
+        download_manager,
+        dufs_manager,
+        None,
+    )
+    .await
+}
+
+/// Full server launcher permitting injected download, dufs, and mesh routers.
+pub async fn start_server_full(
+    config: impl Into<ServerConfigHolder>,
+    tls_identity: Option<TlsIdentity>,
+    registry: Arc<PeerRegistry>,
+    event_tx: Option<mpsc::Sender<ServerTransferEvent>>,
+    download_manager: Option<Arc<DownloadManager>>,
+    dufs_manager: Option<Arc<DufsManager>>,
+    mesh_router: Option<Arc<crate::mesh::router::MeshRouter>>,
+) -> anyhow::Result<ServerHandle> {
     let cancel_token = CancellationToken::new();
     let config_holder = config.into();
     let port = config_holder.0.read().await.port;
@@ -152,6 +174,7 @@ pub async fn start_server_ext(
         event_tx,
         dufs_manager: dufs_manager.clone(),
         tls_identity: tls_identity.clone(),
+        mesh_router,
     };
 
     let cancel = cancel_token.clone();

@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 7.2 Complete; Multi-Functional Mesh & DTN Chat Foundations in Progress.
-- **Overall Status**: Ready for **Sub-phase 7.3: Multi-Hop Gossip, Packet Forwarding & Cut-Through Stream Relay (`lanflare-core::mesh::router`)**.
+- **Current Milestone**: Phase 7.3 Complete; Multi-Functional Mesh & DTN Chat Foundations in Progress.
+- **Overall Status**: Ready for **Sub-phase 7.4: In-Process Virtual Network Simulator & Multi-Subnet E2E Mesh Verification (`lanflare-core::mesh::sim`)**.
 
 ---
 
@@ -152,6 +152,21 @@
   - Implemented stale link eviction (`evict_stale_links`, `tick`) with automatic failover rerouting upon primary relay link failure.
   - Comprehensive unit test suite (6 tests in [`mesh::graph::tests`](file:///f/lanflare/crates/lanflare-core/src/mesh/graph.rs)) testing path-vector loop rejection, zero graph mutation, Dijkstra lowest-cost selection, automatic failover rerouting upon link expiration, relay opt-out node bypass, TTL hop limits, and sequence number freshness.
   - Verified 100% test pass rate across the workspace via `cargo test -p lanflare-core --lib mesh::graph` and `cargo test --all`.
+- [x] Implement Multi-Hop Gossip, Packet Forwarding & Cut-Through Stream Relay in `lanflare-core::mesh::router` (Sub-phase 7.3):
+  - Implemented `MeshRouter`, `PacketDedupBuffer`, `MeshRouterConfig`, `MeshTopologyView`, `ForwardResponse`, `StreamDeliveryStats`, and `RouterError` in [`crates/lanflare-core/src/mesh/router.rs`](file:///f/lanflare/crates/lanflare-core/src/mesh/router.rs).
+  - Mounted Hyper server mesh endpoints:
+    - `POST /api/lanflare/v1/mesh/gossip`: bidirectional gossip batch exchange ingesting node announcements, link metrics, and route advertisements, returning local gossip response.
+    - `GET  /api/lanflare/v1/mesh/topology`: exports active topology graph (`MeshTopologyView`).
+    - `POST /api/lanflare/v1/mesh/forward`: verifies packet deduplication, decrements TTL, checks relay opt-out policy, resolves next-hop route via `MeshTopologyGraph`, appends local node to `route_path`, and forwards `RoutedEnvelope` to next hop or delivers locally via `PacketSink`.
+    - `POST /api/lanflare/v1/mesh/stream`: performs cut-through chunked file stream relaying piping 128 KB chunks from inbound HTTP body directly to next-hop outbound HTTP stream with strictly bounded memory (< 2 MB via 16-chunk bounded Tokio mpsc channel) and backpressure, or delivers locally to `StreamChunkSink` computing uppercase 64-char hex SHA-256 integrity hash.
+  - Integrated `MeshRouter` into `ServerState`, `route_request` in [`crates/lanflare-core/src/server/router.rs`](file:///f/lanflare/crates/lanflare-core/src/server/router.rs), and `start_server_full` in [`crates/lanflare-core/src/server/mod.rs`](file:///f/lanflare/crates/lanflare-core/src/server/mod.rs).
+  - Comprehensive unit test suite (5 tests in [`mesh::router::tests`](file:///f/lanflare/crates/lanflare-core/src/mesh/router.rs)):
+    - `test_packet_dedup_and_ttl_exhaustion`: verifies duplicate packet rejection (HTTP 422), TTL=0 rejection (HTTP 422), TTL=1 decrement exhaustion before forwarding, and bounded ring buffer capacity eviction.
+    - `test_relay_policy_opt_out_rejection`: verifies non-local envelope and stream rejection (HTTP 403 Forbidden) when `relay_enabled == false`, while permitting local destination delivery, and verifies dynamic relay toggle.
+    - `test_cut_through_stream_forwarding`: verifies 2 MB multi-chunk cut-through streaming across intermediate relay node with bounded memory and bit-for-bit SHA-256 match.
+    - `test_gossip_exchange_and_topology_export`: verifies two-way gossip ingestion and `/topology` export.
+    - `test_multi_hop_envelope_forwarding`: verifies 3-node chain (`A -> B -> C`) packet forwarding and delivery.
+  - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib mesh::router`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (134 tests passing).
 
 ---
 
@@ -380,6 +395,16 @@
     - **Relay Policy Enforcement**: Any intermediate node with `relay_enabled == false` is skipped during Dijkstra expansion and cannot serve as a multi-hop transit relay. Destinations are exempt from the relay requirement.
     - **Link Expiration & Automatic Reroute**: Inactive links exceeding `link_expiry_ms` are pruned via `evict_stale_links` / `tick`, triggering automatic failover to alternative routes within 1 tick.
 
+- **ADR-030: Multi-Hop Gossip, Packet Forwarding & Cut-Through Stream Relay Architecture**
+  - *Context*: Multi-hop overlay mesh networks require robust packet and stream forwarding over intermediate relay nodes without central coordinators, while preventing routing loops, packet duplication storms, memory exhaustion, and transit abuse on battery/metered nodes.
+  - *Decision*: Implement `MeshRouter` mounting Hyper endpoints (`/api/lanflare/v1/mesh/*`) backed by `PacketDedupBuffer`, `MeshTopologyGraph`, and bounded cut-through streaming channels.
+  - *Invariants*:
+    - **Packet Deduplication Ring Buffer**: Track up to `dedup_capacity` (default: 10,000) packet IDs via a combined FIFO `VecDeque` and `HashSet`. Duplicate `packet_id`s are rejected immediately with HTTP 422 Unprocessable Entity with zero downstream network traffic.
+    - **TTL Decrementing & Exhaustion**: Incoming envelopes with `ttl == 0` are rejected immediately. For non-local forwarding, TTL is decremented by 1 (`ttl.saturating_sub(1)`). If the decremented TTL reaches 0, forwarding aborts with HTTP 422 Unprocessable Entity. Traversed nodes are appended to `route_path`.
+    - **Relay Policy Enforcement**: Nodes configured with `relay_enabled == false` reject all non-local forwarding requests (`forward` and `stream`) with HTTP 403 Forbidden. Local destination delivery is always permitted regardless of relay setting.
+    - **Bounded Memory Cut-Through Stream Relay**: Streaming transfers (`POST /api/lanflare/v1/mesh/stream`) do not buffer complete files in RAM or disk. Inbound 128 KB chunks are piped directly to next-hop outbound HTTP stream via a bounded Tokio `mpsc` channel (default: 16 chunks = 2 MB max in-flight memory). Channel backpressure naturally throttles upstream TCP connections if downstream hops slow down.
+    - **Local Delivery & Checksum Verification**: Streams reaching their destination compute streaming uppercase 64-char hex SHA-256 digests and dispatch chunks to registered `StreamChunkSink` callbacks, returning `StreamDeliveryStats` with 100% bit-for-bit integrity.
+
 ---
 
 ## Known Debt & Blockers
@@ -388,17 +413,15 @@
 ---
 
 ## Next Session Target
-- **Target**: **Sub-phase 7.3: Multi-Hop Gossip, Packet Forwarding & Cut-Through Stream Relay (`lanflare-core::mesh::router`)**
+- **Target**: **Sub-phase 7.4: In-Process Virtual Network Simulator & Multi-Subnet E2E Mesh Verification (`lanflare-core::mesh::sim`)**
 - **Action Items**:
-  1. Implement `MeshRouter` mounting Hyper endpoints:
-     - `POST /api/lanflare/v1/mesh/gossip` (exchange signed node announcements, link metrics, and route advertisements).
-     - `GET  /api/lanflare/v1/mesh/topology` (export active topology graph).
-     - `POST /api/lanflare/v1/mesh/forward` (multi-hop routed envelope relay).
-     - `POST /api/lanflare/v1/mesh/stream` (cut-through chunked file streaming relay).
-  2. Implement packet deduplication ring buffer (`seen_packet_ids`) and TTL decrementing on forwarded envelopes.
-  3. Implement cut-through streaming file relay in `/api/lanflare/v1/mesh/stream` piping 128 KB chunks from inbound HTTP body directly to next-hop outbound HTTP stream with bounded memory (< 2 MB per stream) and configurable `relay_enabled` policy.
-  4. Write unit tests: `test_packet_dedup_and_ttl_exhaustion`, `test_relay_policy_opt_out_rejection`, and `test_cut_through_stream_forwarding`.
-  5. Verification command: `cargo test -p lanflare-core --lib mesh::router`.
+  1. Implement `VirtualNetworkMatrix` and `SimulatedMeshCluster` in `lanflare-core::mesh::sim` capable of spawning $N$ isolated LanFlare nodes on localhost with programmable virtual subnet partitions (`Subnet A`, `Subnet B`, `Subnet C`), artificial link latency/jitter, packet drop injection, and dynamic link severing.
+  2. Integrate `PeerRegistry` with `MeshTopologyGraph` so multi-hop peers discovered via relays appear with hop count and route metadata.
+  3. Implement automated integration test suite in `crates/lanflare-core/tests/mesh_sim_e2e.rs`:
+     - `test_two_hop_cross_subnet_discovery_and_transfer`: Node A and Node C on separate subnets discover each other and transfer data through Relay B.
+     - `test_three_hop_chain_e2ee_file_transfer`: Node A -> Relay B -> Relay C -> Node D 3-hop cut-through file transfer.
+     - `test_dual_relay_failover_under_simulated_link_cut`: dynamic link severing triggers automatic failover reroute and transfer completion.
+  4. Verification command: `cargo test -p lanflare-core --test mesh_sim_e2e`.
 
 
 
