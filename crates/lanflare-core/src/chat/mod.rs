@@ -10,7 +10,14 @@ pub mod sync;
 pub mod trust;
 
 pub use engine::{ChatEngine, ChatEngineConfig, ChatEngineError, ChatEngineEvent};
-pub use lanflare_proto::chat::MessageDeliveryState;
+pub use group::{
+    author_group_message, compute_dag_msg_id, GroupDagState, GroupEpochKey, GroupError,
+    HybridLogicalClock, DEFAULT_MAX_CLOCK_SKEW_MS,
+};
+pub use lanflare_proto::chat::{
+    GroupDagNodeDto, GroupKeyDistributionDto, GroupMember, GroupMembershipRoster, GroupRole,
+    HlcTimestamp, MessageDeliveryState,
+};
 pub use outbox::{
     OutboxConfig, OutboxDispatchError, OutboxDispatcher, OutboxError, OutboxItem, OutboxPayload,
     OutboxTransport,

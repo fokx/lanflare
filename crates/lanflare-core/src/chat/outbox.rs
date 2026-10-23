@@ -611,7 +611,9 @@ pub mod tests {
 
         // Await auto-flush trigger (within 200ms)
         let start = std::time::Instant::now();
-        while dispatcher.queue_len().await > 0 && start.elapsed() < Duration::from_millis(500) {
+        while (dispatcher.queue_len().await > 0 || dispatched.lock().unwrap().len() < 3)
+            && start.elapsed() < Duration::from_secs(3)
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 

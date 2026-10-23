@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 8 Complete (Sub-phases 8.1, 8.2, 8.3); Ready for Phase 9: Decentralized Mesh Group Chat & Custodial Relay Mailbox.
-- **Overall Status**: Ready for **Sub-phase 9.1: Hybrid Logical Clock (HLC) & Causal Merkle-DAG Group State (`lanflare-core::chat::group`)**.
+- **Current Milestone**: Phase 9 in progress; Sub-phase 9.1 Complete.
+- **Overall Status**: Ready for **Sub-phase 9.2: Group Anti-Entropy Frontier Sync & Pairwise Group Key Distribution (`lanflare-core::chat::sync`)**.
 
 ---
 
@@ -217,6 +217,23 @@
     - `test_dtn_offline_chat_and_resumable_media_e2e`: verified offline DTN message queuing, auto-flush upon peer discovery, stranger handshake approval, 4 MB resumable media transfer interrupted at 50% and resumed to completion, and delivery/read receipt round-trip.
     - `test_multi_hop_mesh_chat_with_receipts_e2e`: verified 3-node chain (`A -> B -> C`) stranger trust handshake, approval, text message delivery, and cryptographic delivery receipt over 2-hop mesh relay with zero plain-text exposure on intermediate relay B.
   - Verified 100% test pass rate across workspace via `cargo clippy --all-targets -- -D warnings` and `cargo test --all` (147 tests passing).
+- [x] Implement Hybrid Logical Clock (HLC) & Causal Merkle-DAG Group State in `lanflare-core::chat::group` (Sub-phase 9.1):
+  - Added group protocol DTOs in `lanflare-proto::chat`: `HlcTimestamp`, `GroupRole` (`Admin`, `Member`), `GroupMember`, `GroupMembershipRoster`, `GroupKeyDistributionDto`, and `GroupDagNodeDto` with deterministic total ordering and canonical signing bytes.
+  - Implemented `HybridLogicalClock` (`wall_time_ms`, `counter`, `node_fp`) in `lanflare-core::chat::group`:
+    - Monotonic local time advancement with counter incrementing when physical clock stalls or rewinds.
+    - Causality tracking advancing local physical time and counter upon receiving remote events.
+    - Strict clock skew bound enforcement (`DEFAULT_MAX_CLOCK_SKEW_MS = 60_000`) rejecting rogue future timestamps with `GroupError::ClockSkewExceeded`.
+  - Implemented `GroupEpochKey` with 32-byte symmetric key generation, ChaCha20-Poly1305 encryption/decryption with AAD binding group ID, epoch, and author, and pairwise RSA-OAEP E2EE sealing/unsealing (`seal_envelope` / `open_envelope`) addressed to each member's public key.
+  - Implemented `GroupDagState` and content-addressed group message nodes (`compute_dag_msg_id` = `SHA256(header || sorted_parent_ids || nonce || ciphertext)`):
+    - Group creation and signed `GroupMembershipRoster` distribution.
+    - Node ingestion with 7-step validation: idempotent deduplication, group ID check, roster membership verification, content-addressed `msg_id` recomputation, author X.509 signature verification, HLC causality update, and DAG adjacency tracking.
+    - Frontier heads selection (up to 4 parents per message).
+    - Deterministic topological sort order (`topological_sort()`) using Kahn's algorithm prioritized by min-heap `HlcTimestamp`, guaranteeing 100% identical message sequences across nodes regardless of network ingestion order while strictly preserving causality.
+  - Comprehensive unit test suite (3 tests in `chat::group::tests`):
+    - `test_hlc_monotonicity_and_clock_skew_bound`: verified counter increments on identical millisecond, wall time reset on clock advance, counter monotonicity on clock rewind, causality update, and clock skew rejection.
+    - `test_causal_dag_topological_merge_determinism`: verified 3 partitioned members authoring concurrent branches merge deterministically into an identical conflict-free sequence across all nodes.
+    - `test_group_key_sealing_and_non_member_rejection`: verified pairwise epoch key decapsulation, message decryption, non-member rejection (`NotAMember`), envelope theft rejection (`RecipientMismatch`), and forged signature rejection (`InvalidSignature`).
+  - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib chat::group`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (151 tests passing).
 
 ---
 
@@ -496,6 +513,17 @@
     - **Trust Gate Pre-Flight**: Chat media endpoints (`POST /api/lanflare/v1/chat/media`) and text message endpoints reject stranger/blocked uploads before allocating files or buffering chunks.
     - **End-to-End Cryptographic Receipts**: Inbound chat messages immediately elicit a signed `DeliveryReceiptDto` sent to the sender's HTTP endpoint or routed via `MeshRouter`. When read by the user, a `ReadReceiptDto` is dispatched. If the sender is offline, receipts are buffered in the outbox.
 
+- **ADR-035: Hybrid Logical Clock (HLC), Content-Addressed Causal Merkle-DAG & Pairwise Group Epoch Key Distribution**
+  - *Context*: Decentralized group chat over ad-hoc local mesh requires serverless coordination where members can author messages while offline or partitioned, and reconnect to produce a single, conflict-free, causal message timeline without central coordinators. Furthermore, group messages must remain confidential to authorized group members while preserving forward/backward privacy on epoch rollovers.
+  - *Decision*: Implement `HybridLogicalClock` and `GroupDagState` in `lanflare-core::chat::group`, backed by `lanflare-proto::chat` protocol DTOs.
+  - *Invariants*:
+    - **HLC Monotonicity & Bounded Clock Skew**: Every group message is timestamped with an `HlcTimestamp` (`wall_time_ms`, `counter`, `node_fp`). Local ticks guarantee strict monotonic increase ($HLC(e) < HLC(e')$). Remote updates advance local time and increment counters upon causality events, but enforce a strict clock skew bound (`DEFAULT_MAX_CLOCK_SKEW_MS = 60_000`), rejecting timestamps exceeding $T_{\text{local}} + \text{skew}$ with `GroupError::ClockSkewExceeded`.
+    - **Deterministic Total Ordering**: Ties in physical time are broken by logical `counter`, and simultaneous events across nodes are tie-broken deterministically by canonical uppercase `node_fp`.
+    - **Content-Addressed Merkle-DAG Nodes**: Message IDs are computed as `msg_id = SHA256(header || sorted_parent_ids || nonce || ciphertext)`. Any modification to parents, timestamp, author, or encrypted payload invalidates `msg_id` and is rejected with `GroupError::InvalidNodeId`.
+    - **Pairwise-Encrypted Group Epoch Keys**: Each group epoch is governed by a 32-byte symmetric secret `GroupEpochKey`. The admin distributes this key to each member via an RSA-OAEP E2EE envelope (`seal_envelope` / `open_envelope`) addressed to their X.509 certificate. Non-members cannot decrypt the envelope (`RecipientMismatch`), nor can they forge epoch keys.
+    - **Causal DAG Frontier & Heads**: Messages reference up to 4 frontier heads (`parent_ids`). Inserting a child node automatically removes its parents from the frontier heads set and registers the child as a new head.
+    - **Kahn's Deterministic Topological Sort**: `GroupDagState::topological_sort()` applies Kahn's algorithm using a min-heap prioritized by `HlcTimestamp`. This guarantees that parents always precede children, and concurrent branches across partitioned members resolve into the exact same conflict-free message sequence across all nodes regardless of network arrival order.
+
 ---
 
 ## Known Debt & Blockers
@@ -504,18 +532,17 @@
 ---
 
 ## Next Session Target
-- **Target**: **Sub-phase 9.1: Hybrid Logical Clock (HLC) & Causal Merkle-DAG Group State (`lanflare-core::chat::group`)**
+- **Target**: **Sub-phase 9.2: Group Anti-Entropy Frontier Sync & Pairwise Group Key Distribution (`lanflare-core::chat::sync`)**
 - **Action Items**:
-  1. Implement `HybridLogicalClock` (`wall_time_ms`, `counter`, `node_fp`) in `lanflare-core::chat::group` with clock skew bounding, monotonicity guarantees, and causality tracking.
-  2. Implement `GroupDagState` with group creation, member roster management, pairwise-encrypted `GroupEpochKey` distribution, and content-addressed group message nodes (`msg_id = SHA256(header || parent_ids || payload)`).
-  3. Implement topological sort merge for causal Merkle-DAG branches generated across offline/partitioned members.
-  4. Implement unit tests:
-     - `chat::group::tests::test_hlc_monotonicity_and_clock_skew_bound`
-     - `chat::group::tests::test_causal_dag_topological_merge_determinism`
-     - `chat::group::tests::test_group_key_sealing_and_non_member_rejection`
+  1. Implement anti-entropy DAG frontier synchronization protocol in `lanflare-core::chat::sync` with `GroupSyncRequestDto` and `GroupSyncResponseDto`.
+  2. Mount Hyper group chat sync endpoint: `POST /api/lanflare/v1/chat/group-sync`.
+  3. Wire `GroupDagState` frontier heads exchange, computing missing DAG node subsets and streaming causal catchup batches.
+  4. Implement unit and integration tests:
+     - `test_four_peer_group_partition_and_anti_entropy_catchup`
+     - `test_group_sync_over_multi_hop_mesh_relay`
   5. Verification command:
      ```bash
-     cargo test -p lanflare-core --lib chat::group
+     cargo test -p lanflare-core --test group_sync_e2e
      ```
 
 

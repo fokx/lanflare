@@ -438,6 +438,226 @@ pub struct ResumeTransferDto {
     pub chunk_size: usize,
 }
 
+/// Hybrid Logical Clock (HLC) timestamp capturing physical time, logical counter, and node ID.
+///
+/// Implements deterministic total ordering:
+/// `wall_time_ms` -> `counter` -> `node_fp` (lexicographically uppercase).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HlcTimestamp {
+    /// Physical wall-clock time in milliseconds since UNIX epoch.
+    pub wall_time_ms: u64,
+
+    /// Logical counter incremented for causality or simultaneous events within the same millisecond.
+    pub counter: u32,
+
+    /// Canonical uppercase SHA-256 fingerprint of the authoring node (tie-breaker).
+    pub node_fp: String,
+}
+
+impl HlcTimestamp {
+    /// Constructs a new `HlcTimestamp`.
+    pub fn new(wall_time_ms: u64, counter: u32, node_fp: impl Into<String>) -> Self {
+        Self {
+            wall_time_ms,
+            counter,
+            node_fp: node_fp.into().to_ascii_uppercase(),
+        }
+    }
+
+    /// Canonical string format: `{wall_time_ms}:{counter}:{node_fp}`.
+    pub fn to_canonical_string(&self) -> String {
+        format!("{}:{}:{}", self.wall_time_ms, self.counter, self.node_fp.to_ascii_uppercase())
+    }
+}
+
+impl Ord for HlcTimestamp {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.wall_time_ms
+            .cmp(&other.wall_time_ms)
+            .then_with(|| self.counter.cmp(&other.counter))
+            .then_with(|| self.node_fp.to_ascii_uppercase().cmp(&other.node_fp.to_ascii_uppercase()))
+    }
+}
+
+impl PartialOrd for HlcTimestamp {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Membership role within a group chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GroupRole {
+    /// Group administrator with permissions to add/remove members and roll epoch keys.
+    Admin,
+    /// Standard group participant with permissions to author messages and sync DAG history.
+    Member,
+}
+
+/// Member record in a group chat roster.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMember {
+    /// Canonical uppercase SHA-256 fingerprint of the member.
+    pub fingerprint: String,
+
+    /// Human-readable alias of the member.
+    pub alias: String,
+
+    /// PEM-encoded X.509 certificate containing public key for pairwise key distribution.
+    pub cert_pem: String,
+
+    /// Role assigned to the member.
+    pub role: GroupRole,
+
+    /// Timestamp in milliseconds when the member joined.
+    pub joined_at_ms: u64,
+}
+
+/// Signed membership roster defining the authorized participants and current epoch of a group chat.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupMembershipRoster {
+    /// Unique identifier for the group (UUID v4).
+    pub group_id: String,
+
+    /// Human-readable group title / name.
+    pub group_name: String,
+
+    /// Current membership epoch (increments on roster modification).
+    pub epoch: u64,
+
+    /// Canonical uppercase SHA-256 fingerprint of the group creator.
+    pub creator_fp: String,
+
+    /// UNIX timestamp in milliseconds when the group was formed.
+    pub created_at_ms: u64,
+
+    /// List of authorized group members.
+    pub members: Vec<GroupMember>,
+
+    /// Digital signature over canonical roster bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+impl GroupMembershipRoster {
+    /// Constructs canonical signing bytes binding group ID, title, epoch, creator, and member roles.
+    pub fn canonical_signing_bytes(&self) -> Vec<u8> {
+        let mut member_fps: Vec<String> = self
+            .members
+            .iter()
+            .map(|m| format!("{}:{:?}", m.fingerprint.to_ascii_uppercase(), m.role))
+            .collect();
+        member_fps.sort();
+        format!(
+            "{}:{}:{}:{}:{}:{}",
+            self.group_id,
+            self.group_name,
+            self.epoch,
+            self.creator_fp.to_ascii_uppercase(),
+            self.created_at_ms,
+            member_fps.join(",")
+        )
+        .into_bytes()
+    }
+
+    /// Checks if a given fingerprint is an authorized member of the group.
+    pub fn is_member(&self, fp: &str) -> bool {
+        self.members
+            .iter()
+            .any(|m| m.fingerprint.eq_ignore_ascii_case(fp))
+    }
+
+    /// Checks if a given fingerprint is an admin of the group.
+    pub fn is_admin(&self, fp: &str) -> bool {
+        self.members
+            .iter()
+            .any(|m| m.fingerprint.eq_ignore_ascii_case(fp) && m.role == GroupRole::Admin)
+    }
+
+    /// Retrieves a member by fingerprint if present.
+    pub fn get_member(&self, fp: &str) -> Option<&GroupMember> {
+        self.members
+            .iter()
+            .find(|m| m.fingerprint.eq_ignore_ascii_case(fp))
+    }
+}
+
+/// Pairwise-encrypted distribution envelope carrying a `GroupEpochKey` to a specific group member.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupKeyDistributionDto {
+    /// Group identifier.
+    pub group_id: String,
+
+    /// Epoch number associated with this key.
+    pub epoch: u64,
+
+    /// Intended recipient member's canonical uppercase fingerprint.
+    pub recipient_fp: String,
+
+    /// Sealed E2EE envelope encapsulating the symmetric 32-byte epoch key.
+    pub envelope: crate::mesh::E2eeEnvelope,
+}
+
+/// Content-addressed group chat message node in the serverless Causal Merkle-DAG.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupDagNodeDto {
+    /// Canonical content-addressed message identifier:
+    /// `SHA256(group_id || epoch || author_fp || hlc || sorted(parent_ids) || nonce || ciphertext)`.
+    pub msg_id: String,
+
+    /// Group identifier (UUID v4).
+    pub group_id: String,
+
+    /// Key epoch used to encrypt this message.
+    pub epoch: u64,
+
+    /// Canonical uppercase SHA-256 fingerprint of the author.
+    pub author_fp: String,
+
+    /// Hybrid Logical Clock timestamp capturing causality and tie-breaking ordering.
+    pub hlc: HlcTimestamp,
+
+    /// Content-addressed parent message IDs in the DAG (frontier heads, up to 4).
+    pub parent_ids: Vec<String>,
+
+    /// 12-byte random nonce encoded as base64 string.
+    pub nonce: String,
+
+    /// ChaCha20-Poly1305 ciphertext of the serialized payload encoded as base64 string.
+    pub ciphertext: String,
+
+    /// Digital signature over canonical signing bytes by the author.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+impl GroupDagNodeDto {
+    /// Canonical signing bytes binding `msg_id`, `group_id`, `epoch`, `author_fp`, `hlc`, `parent_ids`, and `ciphertext`.
+    pub fn canonical_signing_bytes(&self) -> Vec<u8> {
+        let mut sorted_parents = self.parent_ids.clone();
+        sorted_parents.sort();
+        format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            self.msg_id,
+            self.group_id,
+            self.epoch,
+            self.author_fp.to_ascii_uppercase(),
+            self.hlc.wall_time_ms,
+            self.hlc.counter,
+            self.hlc.node_fp.to_ascii_uppercase(),
+            sorted_parents.join(","),
+            self.ciphertext
+        )
+        .into_bytes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -637,5 +857,63 @@ mod tests {
         assert_eq!(state, MessageDeliveryState::Read);
         assert!(!state.apply_monotonic_transition(MessageDeliveryState::Delivered)); // Read cannot regress to Delivered
         assert!(!state.apply_monotonic_transition(MessageDeliveryState::Failed)); // Read cannot be marked Failed
+
+        // 11. HlcTimestamp and Group DTO Serde Round-Trip
+        let t1 = HlcTimestamp::new(1700000000000, 0, "AAAA");
+        let t2 = HlcTimestamp::new(1700000000000, 1, "AAAA");
+        let t3 = HlcTimestamp::new(1700000000000, 0, "BBBB");
+        let t4 = HlcTimestamp::new(1700000001000, 0, "AAAA");
+        assert!(t1 < t2);
+        assert!(t1 < t3);
+        assert!(t1 < t4);
+
+        let roster = GroupMembershipRoster {
+            group_id: "grp-100".to_string(),
+            group_name: "LanFlare Devs".to_string(),
+            epoch: 1,
+            creator_fp: "AAAA111122223333444455556666777788889999AAAABBBBCCCCDDDDEEEEFFFF0001".to_string(),
+            created_at_ms: 1700000000000,
+            members: vec![
+                GroupMember {
+                    fingerprint: "AAAA111122223333444455556666777788889999AAAABBBBCCCCDDDDEEEEFFFF0001".to_string(),
+                    alias: "Alice".to_string(),
+                    cert_pem: "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----".to_string(),
+                    role: GroupRole::Admin,
+                    joined_at_ms: 1700000000000,
+                },
+                GroupMember {
+                    fingerprint: "BBBB111122223333444455556666777788889999AAAABBBBCCCCDDDDEEEEFFFF0002".to_string(),
+                    alias: "Bob".to_string(),
+                    cert_pem: "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----".to_string(),
+                    role: GroupRole::Member,
+                    joined_at_ms: 1700000000000,
+                },
+            ],
+            signature: Some("roster_signature".to_string()),
+        };
+        let roster_json = serde_json::to_string(&roster).expect("serialize roster");
+        let deserialized_roster: GroupMembershipRoster =
+            serde_json::from_str(&roster_json).expect("deserialize roster");
+        assert_eq!(roster, deserialized_roster);
+        assert!(deserialized_roster.is_member("AAAA111122223333444455556666777788889999AAAABBBBCCCCDDDDEEEEFFFF0001"));
+        assert!(deserialized_roster.is_admin("AAAA111122223333444455556666777788889999AAAABBBBCCCCDDDDEEEEFFFF0001"));
+        assert!(!deserialized_roster.is_admin("BBBB111122223333444455556666777788889999AAAABBBBCCCCDDDDEEEEFFFF0002"));
+        assert!(!deserialized_roster.is_member("UNKNOWN"));
+
+        let dag_node = GroupDagNodeDto {
+            msg_id: "HASH0001".to_string(),
+            group_id: "grp-100".to_string(),
+            epoch: 1,
+            author_fp: "AAAA111122223333444455556666777788889999AAAABBBBCCCCDDDDEEEEFFFF0001".to_string(),
+            hlc: t1,
+            parent_ids: vec!["ROOT0000".to_string()],
+            nonce: "AAAAAAAAAAAAAAAA".to_string(),
+            ciphertext: "BBBBBBBBBBBBBBBB".to_string(),
+            signature: Some("sig_node".to_string()),
+        };
+        let node_json = serde_json::to_string(&dag_node).expect("serialize dag node");
+        let deserialized_node: GroupDagNodeDto =
+            serde_json::from_str(&node_json).expect("deserialize dag node");
+        assert_eq!(dag_node, deserialized_node);
     }
 }
