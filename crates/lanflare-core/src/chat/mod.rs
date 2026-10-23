@@ -9,6 +9,12 @@ pub mod store;
 pub mod sync;
 pub mod trust;
 
+pub use lanflare_proto::chat::MessageDeliveryState;
+pub use outbox::{
+    OutboxConfig, OutboxDispatchError, OutboxDispatcher, OutboxError, OutboxItem, OutboxPayload,
+    OutboxTransport,
+};
+pub use store::{ChatStore, ChatStoreError, Contact, Conversation, StoredMessage};
 pub use trust::{
     compute_time_bucket, count_leading_zeros, generate_hashcash_pow, verify_hashcash_pow,
     ContactTrustState, TokenBucket, TrustError, TrustGate, TrustGateConfig,

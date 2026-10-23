@@ -238,6 +238,72 @@ impl ReadReceiptDto {
     }
 }
 
+/// Message delivery state tracking progression and cryptographic receipt transitions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MessageDeliveryState {
+    /// Queued locally in the DTN outbox awaiting peer or relay connectivity.
+    Queued,
+    /// In flight over 1-hop direct LAN or multi-hop overlay mesh.
+    Sending,
+    /// Forwarded and buffered on an intermediate mesh relay or custodial mailbox.
+    Relayed,
+    /// Acknowledged as successfully received on recipient device via DeliveryReceiptDto.
+    Delivered,
+    /// Acknowledged as opened/read by recipient user via ReadReceiptDto.
+    Read,
+    /// Delivery failed permanently or timed out after maximum retry attempts.
+    Failed,
+}
+
+impl MessageDeliveryState {
+    /// Numerical rank for monotonic delivery progression:
+    /// `Queued (0) -> Sending (1) -> Relayed (2) -> Delivered (3) -> Read (4)`.
+    pub fn progression_rank(&self) -> i32 {
+        match self {
+            Self::Failed => -1,
+            Self::Queued => 0,
+            Self::Sending => 1,
+            Self::Relayed => 2,
+            Self::Delivered => 3,
+            Self::Read => 4,
+        }
+    }
+
+    /// Returns true if this state can transition to `next`.
+    ///
+    /// Monotonicity rules:
+    /// - An identical state transition is a no-op (returns `false`).
+    /// - `Read` and `Delivered` cannot be regressed by earlier states (`Queued`, `Sending`, `Relayed`).
+    /// - `Read` cannot be regressed to `Delivered`.
+    /// - `Failed` cannot overwrite `Delivered` or `Read`.
+    /// - Explicit retry can transition `Failed` to `Queued` or `Sending`.
+    pub fn can_advance_to(&self, next: Self) -> bool {
+        if *self == next {
+            return false;
+        }
+        if *self == Self::Failed {
+            return true;
+        }
+        if next == Self::Failed {
+            return *self != Self::Delivered && *self != Self::Read;
+        }
+        next.progression_rank() > self.progression_rank()
+    }
+
+    /// Monotonically applies a state progression or receipt transition.
+    ///
+    /// Returns `true` if the state was updated, or `false` if the transition was ignored.
+    pub fn apply_monotonic_transition(&mut self, next: Self) -> bool {
+        if self.can_advance_to(next) {
+            *self = next;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// Hashcash Proof-of-Work stamp verifying that computational work was completed by the sender.
 ///
 /// Used to deter Sybil identity rotation and unsolicited message bombing on open LANs.
@@ -557,5 +623,19 @@ mod tests {
         let deserialized_resume: ResumeTransferDto =
             serde_json::from_str(&resume_json).expect("deserialize resume dto");
         assert_eq!(resume_dto, deserialized_resume);
+
+        // 10. Message Delivery State
+        let mut state = MessageDeliveryState::Queued;
+        assert_eq!(serde_json::to_string(&state).unwrap(), "\"queued\"");
+        assert!(state.apply_monotonic_transition(MessageDeliveryState::Sending));
+        assert_eq!(state, MessageDeliveryState::Sending);
+        assert!(!state.apply_monotonic_transition(MessageDeliveryState::Queued)); // Cannot regress
+        assert!(state.apply_monotonic_transition(MessageDeliveryState::Delivered));
+        assert_eq!(state, MessageDeliveryState::Delivered);
+        assert!(!state.apply_monotonic_transition(MessageDeliveryState::Sending)); // Cannot regress
+        assert!(state.apply_monotonic_transition(MessageDeliveryState::Read));
+        assert_eq!(state, MessageDeliveryState::Read);
+        assert!(!state.apply_monotonic_transition(MessageDeliveryState::Delivered)); // Read cannot regress to Delivered
+        assert!(!state.apply_monotonic_transition(MessageDeliveryState::Failed)); // Read cannot be marked Failed
     }
 }

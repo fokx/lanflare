@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Sub-phase 8.1 Complete; Ready for Sub-phase 8.2: Persistent Contact Book, Conversation Store & Delay-Tolerant Outbox.
-- **Overall Status**: Ready for **Sub-phase 8.2: Persistent Contact Book, Conversation Store & Delay-Tolerant Outbox (`lanflare-core::chat::store` & `lanflare-core::chat::outbox`)**.
+- **Current Milestone**: Sub-phase 8.2 Complete; Ready for Sub-phase 8.3: Resumable Byte-Offset Media/File Streaming & 1:1 Chat Endpoints.
+- **Overall Status**: Ready for **Sub-phase 8.3: Resumable Byte-Offset Media/File Streaming & 1:1 Chat Endpoints (`lanflare-core::chat::engine` & `lanflare-core::storage::resume`)**.
 
 ---
 
@@ -187,6 +187,13 @@
     - Global "Contacts Only" mode rejecting all stranger handshake requests, and explicit IP/fingerprint blocklists dropped in $O(1)$ time with zero disk I/O.
   - Comprehensive unit test suite covering DTO serde round-tripping, Hashcash PoW generation and verification, stranger gate & media block, Sybil rotation IP rate limiting, and contacts-only mode.
   - Verified 100% test pass rate across workspace via `cargo test -p lanflare-proto --lib chat && cargo test -p lanflare-core --lib chat::trust`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (141 tests passing).
+- [x] Implement Persistent Contact Book, Conversation Store & Delay-Tolerant Outbox (Sub-phase 8.2):
+  - Added `MessageDeliveryState` to `lanflare-proto::chat` (`Queued`, `Sending`, `Relayed`, `Delivered`, `Read`, `Failed`) with monotonic progression rules.
+  - Implemented `ChatStore` in `lanflare-core::chat::store` (`Contact`, `Conversation`, `StoredMessage`, `ChatStoreError`) with atomic disk persistence (`contacts.json`, `conversations.json`, `messages/{safe_id}.json`), fast in-memory index, and full reload recovery.
+  - Implemented reactive `OutboxDispatcher` in `lanflare-core::chat::outbox` (`OutboxItem`, `OutboxPayload`, `OutboxConfig`, `OutboxTransport`) with FIFO causal queuing, automatic event-driven flush on `PeerRegistry` events (`PeerAdded`, `PeerUpdated`) and mesh route triggers, and persistent `<data_dir>/chat/outbox.json`.
+  - Monotonic cryptographic receipt processing (`DeliveryReceiptDto` -> `Delivered`, `ReadReceiptDto` -> `Read`) preventing stale updates or delayed delivery receipts from regressing read states.
+  - Comprehensive unit test suite (3 tests: `test_persistent_store_crud_and_reload_recovery`, `test_offline_queue_auto_flush_on_peer_discovery`, `test_delivery_and_read_receipt_monotonic_transitions`).
+  - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib chat::store && cargo test -p lanflare-core --lib chat::outbox`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (144 tests passing).
 
 ---
 
@@ -445,6 +452,16 @@
     - **Token-Bucket Rate Limiter Defense**: Per-IP and per-fingerprint token buckets constrain burst rates (e.g. 5 requests capacity, refill 0.1/s). Even if an attacker rapidly rotates ephemeral certificate fingerprints from the same IP, the IP rate limiter rejects subsequent attempts in $O(1)$ time with `TrustError::RateLimited`.
     - **Contacts-Only Mode & O(1) Dropping**: Enabling "Contacts Only" mode immediately drops all stranger handshakes with `TrustError::ContactsOnlyMode`. Blocked fingerprints and blocked IPs are rejected at the boundary in $O(1)$ time.
 
+- **ADR-033: Persistent Contact Book, Conversation Store & Delay-Tolerant Outbox Architecture**
+  - *Context*: LAN peers frequently go offline, sleep, or roam across network subnets, and delivery receipts may arrive late or out of order.
+  - *Decision*: Combine atomic crash-safe local persistence (`contacts.json`, `conversations.json`, `messages/{safe_id}.json`, `outbox.json`) with an in-memory `RwLock` cache and a reactive `OutboxDispatcher` wired to `PeerRegistry` and mesh route triggers.
+  - *Invariants*:
+    - **Atomic Persistence**: Files are written to temporary `.{uuid}.tmp` files and atomically renamed, guaranteeing zero JSON corruption on crash or abrupt power loss.
+    - **Monotonic Delivery State Transitions**: `MessageDeliveryState` follows strict monotonic progression (`Queued (0) -> Sending (1) -> Relayed (2) -> Delivered (3) -> Read (4)`). Once a message is `Delivered` or `Read`, earlier states or late delivery receipts cannot regress its state, and `Read` cannot be regressed to `Delivered` or marked `Failed`.
+    - **Causal FIFO Dispatch**: Delay-tolerant outbox items destined for a peer are dispatched strictly in causal FIFO order (sorted by `queued_at_ms`).
+    - **Reactive Peer Reconnection Flush**: The reactive listener automatically detects when an offline peer's fingerprint appears online in `PeerRegistry` (1-hop) or `MeshTopologyGraph` (multi-hop) and triggers outbox flushing within 200ms.
+    - **Offline Receipt Queuing**: Delivery and read receipts generated for offline counter-parties are stored in the outbox queue and flushed when the counter-party reconnects.
+
 ---
 
 ## Known Debt & Blockers
@@ -453,22 +470,18 @@
 ---
 
 ## Next Session Target
-- **Target**: **Sub-phase 8.2: Persistent Contact Book, Conversation Store & Delay-Tolerant Outbox (`lanflare-core::chat::store` & `lanflare-core::chat::outbox`)**
+- **Target**: **Sub-phase 8.3: Resumable Byte-Offset Media/File Streaming & 1:1 Chat Endpoints (`lanflare-core::chat::engine` & `lanflare-core::storage::resume`)**
 - **Action Items**:
-  1. Implement persistent `ChatStore` in `lanflare-core::chat::store`:
-     - Contacts table persisting `fingerprint`, `alias`, `trust_state`, `avatar_thumbnail`, and `last_seen_ms` to disk under `<data_dir>/chat/contacts.json`.
-     - Conversations and message thread store persisting message histories and delivery states (`Queued`, `Sending`, `Relayed`, `Delivered`, `Read`, `Failed`) keyed by canonical `fingerprint`.
-  2. Implement reactive `OutboxDispatcher` in `lanflare-core::chat::outbox`:
-     - Delay-tolerant queue storing pending outgoing messages and receipts when recipients are offline.
-     - Event subscriber listening to `PeerRegistry` events (`PeerAdded`, `PeerUpdated`) and `MeshTopologyGraph` route events to automatically trigger FIFO causal outbox flushes when an offline peer's fingerprint appears online (1-hop LAN or multi-hop mesh).
-     - Cryptographic receipt processing transitioning message states monotonically (`Queued -> Delivered -> Read`).
-  3. Implement unit and integration tests:
-     - `chat::store::tests::test_persistent_store_crud_and_reload_recovery`
-     - `chat::outbox::tests::test_offline_queue_auto_flush_on_peer_discovery`
-     - `chat::outbox::tests::test_delivery_and_read_receipt_monotonic_transitions`
-  4. Verification command:
+  1. Implement resumable `.lanflare-part` checkpointing in `lanflare-core::storage::resume` (`ResumeManager`, `PartialTransferState` persisting `bytes_written` and chunk hashes in `.{filename}.{session_id}.lanflare-resume.json`).
+  2. Mount 1:1 chat & media endpoints in Hyper router (`POST /api/lanflare/v1/chat/request`, `POST /api/lanflare/v1/chat/message`, `POST /api/lanflare/v1/chat/receipt`, `POST /api/lanflare/v1/transfer/resume`) and wire `ChatEngine` in `lanflare-core::chat::engine`.
+  3. Wire `ChatEngine` with `TrustGate`, `ChatStore`, `OutboxDispatcher`, and `ResumeManager`.
+  4. Implement unit and integration tests:
+     - `storage::resume::tests::test_interrupted_stream_checkpoint_and_byte_offset_resume`
+     - `test_dtn_offline_chat_and_resumable_media_e2e`
+     - `test_multi_hop_mesh_chat_with_receipts_e2e`
+  5. Verification command:
      ```bash
-     cargo test -p lanflare-core --lib chat::store && cargo test -p lanflare-core --lib chat::outbox
+     cargo test -p lanflare-core --lib storage::resume && cargo test -p lanflare-core --lib chat::engine
      ```
 
 
