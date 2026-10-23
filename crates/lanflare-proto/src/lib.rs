@@ -28,7 +28,8 @@ pub use mesh::{
 };
 pub use toolbox::{
     ClipboardEventDto, ClipboardPayloadDto, ClipboardResponseDto, DeviceRingRosterDto,
-    EncryptedClipboardDto, RingDeviceDto, RingKeyDistributionDto,
+    EncryptedClipboardDto, FileSearchQueryDto, FileSearchResultDto, MeshFileCatalogDto,
+    RingDeviceDto, RingKeyDistributionDto, SearchHitDto,
 };
 pub use transfer::{
     FileDto, FileMetadataDto, PrepareDownloadResponseDtoV2, PrepareUploadRequestDtoV2,

@@ -100,6 +100,7 @@ pub struct ServerState {
     pub chat_engine: Option<Arc<crate::chat::engine::ChatEngine>>,
     pub resume_manager: Option<Arc<crate::storage::resume::ResumeManager>>,
     pub device_ring: Option<Arc<crate::toolbox::clipboard::DeviceRing>>,
+    pub federated_search: Option<Arc<crate::toolbox::search::FederatedSearchEngine>>,
 }
 
 /// Helper decoding percent-encoded strings (e.g. `%40` -> `@`, `%3A` -> `:`).

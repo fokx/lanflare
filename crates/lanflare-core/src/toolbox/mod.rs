@@ -7,3 +7,4 @@ pub mod collab;
 pub mod search;
 
 pub use clipboard::{ClipboardError, DeviceRing, HandleClipboardResult, RingSecret};
+pub use search::{CatalogItem, FederatedSearchEngine, MeshFileCatalog, SearchError};

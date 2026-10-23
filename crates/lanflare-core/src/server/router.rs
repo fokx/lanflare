@@ -73,11 +73,21 @@ pub async fn route_request(
     }
 
     if is_toolbox_api {
-        if let Some(device_ring) = &state.device_ring {
-            return Ok(device_ring.handle_hyper_request(req, Some(client)).await);
-        } else {
-            return Ok(to_box_body(empty_response(StatusCode::NOT_FOUND)));
+        if path == "/api/lanflare/v1/toolbox/clipboard" {
+            if let Some(device_ring) = &state.device_ring {
+                return Ok(device_ring.handle_hyper_request(req, Some(client)).await);
+            } else {
+                return Ok(to_box_body(empty_response(StatusCode::NOT_FOUND)));
+            }
         }
+        if path == "/api/lanflare/v1/toolbox/search" {
+            if let Some(search_engine) = &state.federated_search {
+                return Ok(search_engine.handle_hyper_request(req, Some(client)).await);
+            } else {
+                return Ok(to_box_body(empty_response(StatusCode::NOT_FOUND)));
+            }
+        }
+        return Ok(to_box_body(empty_response(StatusCode::NOT_FOUND)));
     }
 
     let response = match (method, path) {

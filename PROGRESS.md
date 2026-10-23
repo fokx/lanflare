@@ -2,7 +2,7 @@
 
 ## Current Phase & Milestone
 - **Current Milestone**: Phase 9 Complete; Working on **Phase 10: Multi-Functional LAN Toolbox (Clipboard Ring, Federated Search, Scratchpad & Diagnostics)**.
-- **Overall Status**: Sub-phase 10.1 Complete; Ready for **Sub-phase 10.2: Federated Mesh File Catalog & Distributed Dufs Search (`lanflare-core::toolbox::search`)**.
+- **Overall Status**: Sub-phase 10.2 Complete; Ready for **Sub-phase 10.3: Collaborative CRDT Scratchpad & Multi-Hop Mesh Speedtest/Traceroute (`lanflare-core::toolbox::collab` & `lanflare-core::mesh::diagnostics`)**.
 
 ---
 
@@ -283,6 +283,17 @@
     - `test_unauthorized_peer_clipboard_rejection`: verified unauthorized peer rejection (HTTP 403), wrong secret / forgery rejection (HTTP 401), and mismatched ring ID rejection (HTTP 403) with zero state mutation.
     - `test_hyper_clipboard_endpoint_e2e_sync_and_rejection`: verified end-to-end HTTP synchronization over `start_server_toolbox`, subsequent echo suppression, and HTTP 403 rejection of rogue peers.
   - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib toolbox::clipboard`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (161 tests passing).
+- [x] Implement Federated Mesh File Catalog & Distributed Dufs Search (`lanflare-core::toolbox::search`) (Sub-phase 10.2):
+  - Defined search protocol DTOs in `lanflare-proto::toolbox`: `FileSearchQueryDto`, `FileSearchResultDto`, `SearchHitDto`, and `MeshFileCatalogDto` with score ranking, parameter builders, and canonical signing bytes.
+  - Implemented `MeshFileCatalog` in `lanflare-core::toolbox::search` with dual-layer inverted index (alphanumeric word tokens and continuous 3-character slices) over shared folders and dynamic sync with `DufsManager`.
+  - Enforced strict visibility bounds: complete skipping of hidden files and directories (`.*`, `.git`, `.part`, `.lanflare-part`) and omission of PIN-protected files when queries lack the matching PIN.
+  - Implemented `FederatedSearchEngine` dispatching parallel queries across 1-hop LAN peers (`PeerRegistry`) and multi-hop mesh nodes, aggregating results, resolving relative paths to absolute downloadable endpoints (`http(s)://{ip}:{port}/dufs/...`), and ranking matches by relevance score.
+  - Mounted Hyper endpoint `POST /api/lanflare/v1/toolbox/search` in `ServerState`, `route_request`, `start_server_toolbox`, and `ServerHandle`.
+  - Comprehensive unit and integration test suite (3 tests in `crates/lanflare-core/src/toolbox/search.rs`):
+    - `test_local_index_and_trigram_search_with_pin_protection`: validated inverted index token/trigram scoring, hidden file suppression, and PIN authorization visibility bounds.
+    - `test_local_index_and_federated_mesh_query_aggregation`: validated multi-node network discovery, parallel federated search query aggregation, absolute download URL resolution, and unified ranking.
+    - `test_hyper_search_endpoint_and_bad_request_defense`: validated Hyper endpoint routing, malformed JSON defense (400 Bad Request), and route isolation (404 Not Found).
+  - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib toolbox::search`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (164 tests passing).
 
 ---
 
@@ -606,6 +617,15 @@
       3. *Monotonic Sequence Number Tracking*: Each origin device's monotonic `seq_no` is tracked in `last_seen_seq`. If `seq_no <= last_seen_seq[origin]`, the event is dropped (`SuppressedEchoSeq`).
       4. *Local Re-Broadcast Suppression*: When a remote clipboard update is received and applied, its hash is recorded in `current_content_hash`. Any subsequent local clipboard watch trigger with identical content hash returns `Ok(None)` and is not re-broadcasted.
 
+- **ADR-039: Federated Mesh File Catalog, Trigram Inverted Indexing & PIN-Protected Visibility Bounds**
+  - *Context*: Users sharing folders via Dufs across LAN and mesh need fast, fuzzy searching without scanning disks repeatedly on every query. At the same time, private PIN-protected folders must not leak filenames or existence to unauthorized searchers, and hidden OS/temporary files (`.git`, `.part`) must never be indexed.
+  - *Decision*: Implement `MeshFileCatalog` and `FederatedSearchEngine` in `lanflare-core::toolbox::search` mounted at `POST /api/lanflare/v1/toolbox/search`.
+  - *Invariants*:
+    - **Dual Inverted Indexing**: Files are indexed in-memory using both alphanumeric word tokens (`token_index`) and continuous 3-character slices (`trigram_index`), enabling instant prefix, substring, and token scoring without disk re-scans.
+    - **Strict Visibility Bounds & Zero-Leakage PIN Protection**: Files in PIN-protected folders (`auth_pin: Some(pin)`) are excluded from search results unless the incoming `FileSearchQueryDto` provides the exact matching `auth_pin`. Unauthenticated or wrong-PIN callers receive zero hints about private file names or folder contents.
+    - **Hidden Directory & Transfer File Exclusion**: Traversal automatically prunes any file or folder beginning with `.` (e.g. `.git`, `.DS_Store`, `.lanflare-part`) and any `.part` file, preventing leakage of sensitive system files or partial downloads.
+    - **Distributed URL Resolution & Score Ranking**: Remote search hits with relative URLs (e.g. `/dufs/...`) are automatically rewritten by `FederatedSearchEngine` to full reachable URLs (`http(s)://{peer_ip}:{port}/dufs/...{?pin}`) based on the responding peer's endpoint. Hits are ranked descending by relevance score (exact > prefix > substring > token > trigram overlap).
+
 ---
 
 ## Known Debt & Blockers
@@ -614,21 +634,21 @@
 ---
 
 ## Next Session Target
-- **Target**: **Sub-phase 10.2: Federated Mesh File Catalog & Distributed Dufs Search (`lanflare-core::toolbox::search`)**
+- **Target**: **Sub-phase 10.3: Collaborative CRDT Scratchpad & Multi-Hop Mesh Speedtest/Traceroute (`lanflare-core::toolbox::collab` & `lanflare-core::mesh::diagnostics`)**
 - **Action Items**:
-  1. Define search protocol DTOs in `lanflare-proto::toolbox`:
-     - `FileSearchQueryDto`, `FileSearchResultDto`, `SearchHitDto`, and `MeshFileCatalogDto`.
-  2. Implement `MeshFileCatalog` indexing in `lanflare-core::toolbox::search`:
-     - Inverted index / trigram scanning over shared folders registered in `DufsManager`.
-     - Visibility bounds respecting PIN-protected folder permissions and hidden directories.
-  3. Implement federated query dispatcher mounting `POST /api/lanflare/v1/toolbox/search`:
-     - Dispatches and aggregates search queries across 1-hop LAN peers and multi-hop overlay mesh peers.
-     - Result ranking, deduplication, and resolution of direct download/stream URLs.
+  1. Define collab & diagnostic protocol DTOs in `lanflare-proto::toolbox` and `lanflare-proto::mesh`:
+     - `ScratchpadEditDto`, `ScratchpadSyncDto`, `MeshTracerouteRequest`, `MeshTracerouteResponse`, `SpeedtestChunkDto`.
+  2. Implement `ScratchpadDoc` in `lanflare-core::toolbox::collab`:
+     - Conflict-free replicated shared scratchpad using LWW / sequence CRDT over gossip/group sync.
+  3. Implement multi-hop traceroute and throughput benchmark in `lanflare-core::mesh::diagnostics`:
+     - Endpoints `POST /api/lanflare/v1/mesh/trace` and `POST /api/lanflare/v1/mesh/benchmark`.
+     - Per-hop latency probing and memory-to-memory chunk streaming rate calculation.
   4. Implement unit and integration tests:
-     - `toolbox::search::tests::test_local_index_and_federated_mesh_query_aggregation`
+     - `toolbox::collab::tests::test_crdt_scratchpad_concurrent_convergence`
+     - `mesh::diagnostics::tests::test_multi_hop_traceroute_and_bandwidth_benchmark`
   5. Verification command:
      ```bash
-     cargo test -p lanflare-core --lib toolbox::search
+     cargo test -p lanflare-core --lib toolbox::collab && cargo test -p lanflare-core --lib mesh::diagnostics
      ```
 
 

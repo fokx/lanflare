@@ -378,6 +378,222 @@ pub struct ClipboardResponseDto {
     pub content_hash: String,
 }
 
+/// Query request sent to search indexed files across LAN and mesh peers (`POST /api/lanflare/v1/toolbox/search`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSearchQueryDto {
+    /// Search keyword, pattern, or substring.
+    pub query: String,
+
+    /// Maximum number of hits to return (defaults to 50 if None).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<usize>,
+
+    /// Canonical uppercase SHA-256 fingerprint of the querying peer.
+    pub requester_fp: String,
+
+    /// Optional authentication PIN if searching protected folders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_pin: Option<String>,
+
+    /// UNIX timestamp in milliseconds when query was initiated.
+    pub timestamp_ms: u64,
+
+    /// Optional digital signature over canonical query bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+impl FileSearchQueryDto {
+    /// Creates a new search query for the given keyword and requester fingerprint.
+    pub fn new(query: impl Into<String>, requester_fp: impl Into<String>) -> Self {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        Self {
+            query: query.into(),
+            max_results: None,
+            requester_fp: requester_fp.into().to_ascii_uppercase(),
+            auth_pin: None,
+            timestamp_ms: now_ms,
+            signature: None,
+        }
+    }
+
+    /// Sets the maximum results limit.
+    pub fn with_max_results(mut self, max: usize) -> Self {
+        self.max_results = Some(max);
+        self
+    }
+
+    /// Sets the authentication PIN.
+    pub fn with_pin(mut self, pin: impl Into<String>) -> Self {
+        self.auth_pin = Some(pin.into());
+        self
+    }
+
+    /// Constructs canonical bytes for digital signature generation/verification.
+    pub fn canonical_signing_bytes(&self) -> Vec<u8> {
+        format!(
+            "{}:{}:{}:{}",
+            self.query,
+            self.requester_fp.to_ascii_uppercase(),
+            self.timestamp_ms,
+            self.auth_pin.as_deref().unwrap_or("")
+        )
+        .into_bytes()
+    }
+}
+
+/// A single file match returned in search results.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHitDto {
+    /// File name (e.g. `document.pdf`).
+    pub file_name: String,
+
+    /// Path relative to the shared folder root (e.g. `/docs/document.pdf`).
+    pub relative_path: String,
+
+    /// File size in bytes.
+    pub size_bytes: u64,
+
+    /// Modification timestamp in milliseconds.
+    pub modified_at_ms: u64,
+
+    /// MIME type string (e.g. `application/pdf`).
+    pub mime_type: String,
+
+    /// Optional SHA-256 hash if indexed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+
+    /// Whether this file requires an authentication PIN to download or access.
+    pub requires_pin: bool,
+
+    /// Direct stream or download URL (relative e.g. `/dufs/...` or absolute `http://...`).
+    pub download_url: String,
+
+    /// Relevance score (0.0 to 1.0) for ranking matches.
+    pub score: f32,
+}
+
+impl SearchHitDto {
+    /// Creates a new `SearchHitDto`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        file_name: impl Into<String>,
+        relative_path: impl Into<String>,
+        size_bytes: u64,
+        modified_at_ms: u64,
+        mime_type: impl Into<String>,
+        requires_pin: bool,
+        download_url: impl Into<String>,
+        score: f32,
+    ) -> Self {
+        Self {
+            file_name: file_name.into(),
+            relative_path: relative_path.into(),
+            size_bytes,
+            modified_at_ms,
+            mime_type: mime_type.into(),
+            sha256: None,
+            requires_pin,
+            download_url: download_url.into(),
+            score,
+        }
+    }
+}
+
+/// Response returned by a peer responding to a `FileSearchQueryDto`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSearchResultDto {
+    /// Canonical uppercase SHA-256 fingerprint of the responding node.
+    pub responder_fp: String,
+
+    /// Human-readable device alias of the responding node.
+    pub responder_alias: String,
+
+    /// List of matched search hits.
+    pub hits: Vec<SearchHitDto>,
+
+    /// Total number of indexed files on this peer.
+    pub total_indexed: usize,
+
+    /// Execution duration in milliseconds for this search.
+    pub search_duration_ms: u64,
+}
+
+impl FileSearchResultDto {
+    /// Creates a new empty `FileSearchResultDto`.
+    pub fn new(responder_fp: impl Into<String>, responder_alias: impl Into<String>) -> Self {
+        Self {
+            responder_fp: responder_fp.into().to_ascii_uppercase(),
+            responder_alias: responder_alias.into(),
+            hits: Vec::new(),
+            total_indexed: 0,
+            search_duration_ms: 0,
+        }
+    }
+
+    /// Sorts hits in descending order by relevance score.
+    pub fn sort_by_score_descending(&mut self) {
+        self.hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.file_name.cmp(&b.file_name))
+        });
+    }
+}
+
+/// Summary or snapshot of a node's shared files catalog across the mesh.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshFileCatalogDto {
+    /// Canonical uppercase SHA-256 fingerprint of the catalog owner.
+    pub owner_fp: String,
+
+    /// Device alias of the owner.
+    pub owner_alias: String,
+
+    /// Catalog epoch / version number.
+    pub catalog_epoch: u64,
+
+    /// Names of shared folder roots.
+    pub shared_roots: Vec<String>,
+
+    /// List of indexed catalog items.
+    pub items: Vec<SearchHitDto>,
+
+    /// UNIX timestamp in milliseconds when catalog was updated.
+    pub updated_at_ms: u64,
+}
+
+impl MeshFileCatalogDto {
+    /// Creates a new `MeshFileCatalogDto`.
+    pub fn new(
+        owner_fp: impl Into<String>,
+        owner_alias: impl Into<String>,
+        catalog_epoch: u64,
+    ) -> Self {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        Self {
+            owner_fp: owner_fp.into().to_ascii_uppercase(),
+            owner_alias: owner_alias.into(),
+            catalog_epoch,
+            shared_roots: Vec::new(),
+            items: Vec::new(),
+            updated_at_ms: now_ms,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +663,93 @@ mod tests {
         assert!(roster.remove_device("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"));
         assert_eq!(roster.epoch, 3);
         assert!(!roster.is_member("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+    }
+
+    #[test]
+    fn test_file_search_dtos_and_ranking_serde() {
+        let query = FileSearchQueryDto::new("report", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+            .with_max_results(20)
+            .with_pin("1234");
+        assert_eq!(query.max_results, Some(20));
+        assert_eq!(query.auth_pin.as_deref(), Some("1234"));
+        assert!(!query.canonical_signing_bytes().is_empty());
+
+        let json = serde_json::to_string(&query).unwrap();
+        let decoded: FileSearchQueryDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(query, decoded);
+
+        let hit1 = SearchHitDto::new(
+            "report_q1.pdf",
+            "/finance/report_q1.pdf",
+            1048576,
+            1700000000000,
+            "application/pdf",
+            false,
+            "/dufs/finance/report_q1.pdf",
+            0.85,
+        );
+        let hit2 = SearchHitDto::new(
+            "report.txt",
+            "/notes/report.txt",
+            2048,
+            1700000001000,
+            "text/plain",
+            false,
+            "/dufs/notes/report.txt",
+            1.0,
+        );
+        let hit3 = SearchHitDto::new(
+            "old_report.doc",
+            "/archive/old_report.doc",
+            4096,
+            1600000000000,
+            "application/msword",
+            true,
+            "/dufs/archive/old_report.doc",
+            0.5,
+        );
+
+        let mut res = FileSearchResultDto::new(
+            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "FileServerNode",
+        );
+        res.hits.push(hit1.clone());
+        res.hits.push(hit2.clone());
+        res.hits.push(hit3.clone());
+        res.total_indexed = 150;
+        res.search_duration_ms = 4;
+
+        res.sort_by_score_descending();
+        assert_eq!(res.hits[0].file_name, "report.txt");
+        assert_eq!(res.hits[1].file_name, "report_q1.pdf");
+        assert_eq!(res.hits[2].file_name, "old_report.doc");
+
+        let res_json = serde_json::to_string(&res).unwrap();
+        let decoded_res: FileSearchResultDto = serde_json::from_str(&res_json).unwrap();
+        assert_eq!(res, decoded_res);
+    }
+
+    #[test]
+    fn test_mesh_file_catalog_dto_serde() {
+        let mut catalog = MeshFileCatalogDto::new(
+            "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            "DesktopHost",
+            1,
+        );
+        catalog.shared_roots.push("PublicDocs".into());
+        catalog.items.push(SearchHitDto::new(
+            "readme.md",
+            "/readme.md",
+            512,
+            1700000000000,
+            "text/markdown",
+            false,
+            "/dufs/readme.md",
+            1.0,
+        ));
+
+        let json = serde_json::to_string(&catalog).unwrap();
+        let decoded: MeshFileCatalogDto = serde_json::from_str(&json).unwrap();
+        assert_eq!(catalog, decoded);
     }
 }

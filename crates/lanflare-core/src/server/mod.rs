@@ -49,6 +49,8 @@ pub struct ServerHandle {
     resume_manager: Option<Arc<crate::storage::resume::ResumeManager>>,
     /// Device ring for personal self-trust and universal clipboard sync.
     device_ring: Option<Arc<crate::toolbox::clipboard::DeviceRing>>,
+    /// Federated search engine for local catalog and mesh search.
+    federated_search: Option<Arc<crate::toolbox::search::FederatedSearchEngine>>,
 }
 
 impl ServerHandle {
@@ -80,6 +82,11 @@ impl ServerHandle {
     /// Returns a reference to the Device ring if active.
     pub fn device_ring(&self) -> Option<&Arc<crate::toolbox::clipboard::DeviceRing>> {
         self.device_ring.as_ref()
+    }
+
+    /// Returns a reference to the Federated search engine if active.
+    pub fn federated_search(&self) -> Option<&Arc<crate::toolbox::search::FederatedSearchEngine>> {
+        self.federated_search.as_ref()
     }
 
     /// Signals the server to stop accepting connections and terminate.
@@ -189,11 +196,12 @@ pub async fn start_server_all(
         mesh_router,
         chat_engine,
         None,
+        None,
     )
     .await
 }
 
-/// Comprehensive server launcher with chat engine, mesh router, and toolbox device ring support.
+/// Comprehensive server launcher with chat engine, mesh router, and toolbox support.
 #[allow(clippy::too_many_arguments)]
 pub async fn start_server_toolbox(
     config: impl Into<ServerConfigHolder>,
@@ -205,6 +213,7 @@ pub async fn start_server_toolbox(
     mesh_router: Option<Arc<crate::mesh::router::MeshRouter>>,
     chat_engine: Option<Arc<crate::chat::engine::ChatEngine>>,
     device_ring: Option<Arc<crate::toolbox::clipboard::DeviceRing>>,
+    federated_search: Option<Arc<crate::toolbox::search::FederatedSearchEngine>>,
 ) -> anyhow::Result<ServerHandle> {
     let cancel_token = CancellationToken::new();
     let config_holder = config.into();
@@ -252,6 +261,7 @@ pub async fn start_server_toolbox(
         chat_engine: chat_engine.clone(),
         resume_manager: resume_manager.clone(),
         device_ring: device_ring.clone(),
+        federated_search: federated_search.clone(),
     };
 
     let cancel = cancel_token.clone();
@@ -303,6 +313,7 @@ pub async fn start_server_toolbox(
         chat_engine,
         resume_manager,
         device_ring,
+        federated_search,
     })
 }
 
