@@ -202,3 +202,96 @@ export interface TransferQueueItem {
 	error?: string;
 	startTime: number;
 }
+
+// ============================================================================
+// Multi-Hop Mesh Overlay & Simulation Types
+// ============================================================================
+
+export interface MeshNode {
+	fingerprint: string;
+	alias: string;
+	certPem?: string;
+	capabilities?: string[];
+	relayEnabled: boolean;
+	seqNo: number;
+	lastSeenMs: number;
+}
+
+export interface MeshLink {
+	srcFp: string;
+	dstFp: string;
+	rttMs: number;
+	subnetTag?: string;
+	bandwidthKbps?: number;
+	lastSeenMs: number;
+}
+
+export interface MeshRouteAdvertisement {
+	originFp: string;
+	seqNo: number;
+	routePath: string[];
+	ttl: number;
+	metricRttMs: number;
+	capabilities?: string[];
+	signature?: string;
+}
+
+export interface MeshTopologyView {
+	localFingerprint: string;
+	relayEnabled: boolean;
+	nodes: MeshNode[];
+	links: MeshLink[];
+	routeAdvertisements: MeshRouteAdvertisement[];
+}
+
+export interface StartSimulationPayload {
+	nodeCount?: number;
+	subnets?: string[];
+	latencyMs?: number;
+}
+
+export interface ToggleMeshLinkPayload {
+	fromFp: string;
+	toFp: string;
+	severed?: boolean;
+}
+
+export interface RunTraceroutePayload {
+	target: string;
+	ttl?: number;
+}
+
+export interface TracerouteHop {
+	nodeFp: string;
+	alias: string;
+	rttMs: number;
+	ingressTimestampMs: number;
+}
+
+export interface MeshTracerouteResponse {
+	traceId: string;
+	originFp: string;
+	targetFp: string;
+	success: boolean;
+	totalHops: number;
+	totalRttMs: number;
+	hops: TracerouteHop[];
+	error?: string;
+}
+
+export interface RunBenchmarkPayload {
+	target: string;
+	chunks?: number;
+	chunkSize?: number;
+}
+
+export interface SpeedtestResultDto {
+	testId: string;
+	originFp: string;
+	targetFp: string;
+	durationMs: number;
+	totalBytes: number;
+	throughputMbps: number;
+	chunksReceived: number;
+}
+

@@ -12,7 +12,14 @@ import type {
 	DirListingDto,
 	QuickDirDto,
 	StartDufsShareDto,
-	DufsShareStatusDto
+	DufsShareStatusDto,
+	MeshTopologyView,
+	StartSimulationPayload,
+	ToggleMeshLinkPayload,
+	RunTraceroutePayload,
+	MeshTracerouteResponse,
+	RunBenchmarkPayload,
+	SpeedtestResultDto
 } from './types';
 
 // Open a file using system default application
@@ -240,9 +247,124 @@ export async function getDufsShareStatus(): Promise<DufsShareStatusDto | null> {
 	return tauriInvoke<DufsShareStatusDto | null>('get_dufs_share_status');
 }
 
+// Multi-Hop Mesh Overlay & Simulation API
+export async function getMeshTopology(): Promise<MeshTopologyView> {
+	return tauriInvoke<MeshTopologyView>('get_mesh_topology');
+}
+
+export async function startMeshSimulation(payload?: StartSimulationPayload): Promise<MeshTopologyView> {
+	return tauriInvoke<MeshTopologyView>('start_mesh_simulation', { payload });
+}
+
+export async function toggleMeshLink(payload: ToggleMeshLinkPayload): Promise<boolean> {
+	return tauriInvoke<boolean>('toggle_mesh_link', { payload });
+}
+
+export async function runMeshTraceroute(payload: RunTraceroutePayload): Promise<MeshTracerouteResponse> {
+	return tauriInvoke<MeshTracerouteResponse>('run_mesh_traceroute', { payload });
+}
+
+export async function runMeshBenchmark(payload: RunBenchmarkPayload): Promise<SpeedtestResultDto> {
+	return tauriInvoke<SpeedtestResultDto>('run_mesh_benchmark', { payload });
+}
+
 // Fallback mocks for Vite standalone dev/test in browser
 function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 	switch (cmd) {
+		case 'get_mesh_topology':
+		case 'start_mesh_simulation':
+			return {
+				localFingerprint: 'LOCAL_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+				relayEnabled: true,
+				nodes: [
+					{
+						fingerprint: 'LOCAL_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+						alias: 'This Device (Local)',
+						relayEnabled: true,
+						seqNo: 1,
+						lastSeenMs: Date.now()
+					},
+					{
+						fingerprint: 'RELAY_1_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+						alias: 'Relay-1 (Living Room)',
+						relayEnabled: true,
+						seqNo: 2,
+						lastSeenMs: Date.now()
+					},
+					{
+						fingerprint: 'BOB_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+						alias: 'Bob (Subnet B)',
+						relayEnabled: false,
+						seqNo: 1,
+						lastSeenMs: Date.now()
+					}
+				],
+				links: [
+					{
+						srcFp: 'LOCAL_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+						dstFp: 'RELAY_1_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+						rttMs: 12,
+						subnetTag: 'SubnetA',
+						bandwidthKbps: 100000,
+						lastSeenMs: Date.now()
+					},
+					{
+						srcFp: 'RELAY_1_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+						dstFp: 'BOB_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+						rttMs: 18,
+						subnetTag: 'SubnetB',
+						bandwidthKbps: 80000,
+						lastSeenMs: Date.now()
+					}
+				],
+				routeAdvertisements: [
+					{
+						originFp: 'BOB_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+						seqNo: 1,
+						routePath: [
+							'BOB_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+							'RELAY_1_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789'
+						],
+						ttl: 4,
+						metricRttMs: 30
+					}
+				]
+			} as T;
+		case 'toggle_mesh_link':
+			return true as T;
+		case 'run_mesh_traceroute':
+			return {
+				traceId: 'mock-trace-1234',
+				originFp: 'LOCAL_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+				targetFp: 'BOB_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+				success: true,
+				totalHops: 2,
+				totalRttMs: 30,
+				hops: [
+					{
+						nodeFp: 'RELAY_1_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+						alias: 'Relay-1',
+						rttMs: 12,
+						ingressTimestampMs: Date.now() - 20
+					},
+					{
+						nodeFp: 'BOB_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+						alias: 'Bob',
+						rttMs: 18,
+						ingressTimestampMs: Date.now()
+					}
+				]
+			} as T;
+		case 'run_mesh_benchmark':
+			return {
+				testId: 'mock-bench-1234',
+				originFp: 'LOCAL_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+				targetFp: 'BOB_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+				durationMs: 42,
+				totalBytes: 1310720,
+				throughputMbps: 249.6,
+				chunksReceived: 20
+			} as T;
 		case 'get_node_status':
 			return {
 				alias: 'LanFlare Mock Node',

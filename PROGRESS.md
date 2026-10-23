@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Sub-phase 11.2 Complete; Working on **Phase 11: Desktop GUI & CLI Integration for Mesh, Chat & LAN Toolbox**.
-- **Overall Status**: Sub-phase 11.2 Complete; Ready for **Sub-phase 11.3: Svelte 5 Interactive Mesh Topology Inspector & Virtual Sandbox View (`web/`)**.
+- **Current Milestone**: Sub-phase 11.3 Complete; Working on **Phase 11: Desktop GUI & CLI Integration for Mesh, Chat & LAN Toolbox**.
+- **Overall Status**: Sub-phase 11.3 Complete; Ready for **Sub-phase 11.4: Svelte 5 Rich P2P/Group Chat View, Voice Recorder & LAN Toolbox UI (`web/`)**.
 
 ---
 
@@ -349,6 +349,26 @@
     - Integrated `lanflare://mesh-updated` on simulation lifecycle and link toggles.
   - Comprehensive Tauri desktop integration tests in [`crates/lanflare-desktop/tests/desktop_tests.rs`](file:///f/lanflare/crates/lanflare-desktop/tests/desktop_tests.rs) (`test_desktop_mesh_and_chat_state_commands`) verifying state initialization, mesh topology and simulation link toggling, chat messaging and trust elevation, conversation history querying, group creation, clipboard synchronization, federated file searching, and CRDT scratchpad operations.
   - Verified 100% test pass rate across workspace via `cargo test -p lanflare-desktop`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all`.
+- [x] Implement Svelte 5 Interactive Mesh Topology Inspector & Virtual Sandbox View (`web/`) (Sub-phase 11.3):
+  - Defined TypeScript overlay mesh and diagnostic models in [`web/src/lib/types.ts`](file:///f/lanflare/web/src/lib/types.ts): `MeshNode`, `MeshLink`, `MeshRouteAdvertisement`, `MeshTopologyView`, `StartSimulationPayload`, `ToggleMeshLinkPayload`, `RunTraceroutePayload`, `TracerouteHop`, `MeshTracerouteResponse`, `RunBenchmarkPayload`, and `SpeedtestResultDto`.
+  - Implemented typed Tauri IPC wrappers in [`web/src/lib/api.ts`](file:///f/lanflare/web/src/lib/api.ts): `getMeshTopology`, `startMeshSimulation`, `toggleMeshLink`, `runMeshTraceroute`, and `runMeshBenchmark`, along with comprehensive browser dev/test mock responses.
+  - Extended `AppState` in [`web/src/lib/state.svelte.ts`](file:///f/lanflare/web/src/lib/state.svelte.ts) with modern Svelte 5 runes (`$state`):
+    - Subscribed to `lanflare://mesh-updated` for real-time background topology updates.
+    - Implemented methods: `loadMeshTopology`, `startMeshSimulation`, `toggleMeshLink`, `runMeshTraceroute`, and `runMeshBenchmark`.
+  - Implemented interactive visual inspector in [`web/src/lib/components/MeshTopologyView.svelte`](file:///f/lanflare/web/src/lib/components/MeshTopologyView.svelte):
+    - Dynamic SVG canvas supporting radial auto-layout and drag-to-reposition with pointer capture.
+    - Distinct visual node representations: local node (pulsing halo, indigo gradient), cross-subnet relays (amber/orange gradient with `RELAY` badge), and end host peers (sky gradient).
+    - Link rendering with interactive latency midpoint badges (`rttMs`) and dashed red severed link visualization.
+    - Client-side Dijkstra shortest-path calculator projecting hop sequences, intermediate relay policies, and cumulative latencies.
+    - Multi-hop traceroute execution and step-by-step hop progression cards with per-hop RTT.
+    - In-memory streaming speedtest benchmark display with Mbps and MB/s throughput gauges, elapsed duration, and chunk metrics without disk I/O.
+    - Virtual Mesh Sandbox control bar allowing users to dynamically spawn simulated clusters (2–5 nodes across single, dual, or triple subnets) and toggle link severing/restoration live in the GUI with automatic reactive re-routing.
+  - Integrated `Mesh Topology` navigation tab into desktop sidebar and mobile bottom tab bar in [`web/src/routes/+page.svelte`](file:///f/lanflare/web/src/routes/+page.svelte).
+  - Verified 100% clean check and build:
+    - `cd web && pnpm check` (0 errors, 0 warnings)
+    - `cd web && pnpm build` (clean static export)
+    - `cargo clippy --all-targets -- -D warnings` (0 warnings)
+    - `cargo test --all` (170+ tests passing)
 
 ---
 
@@ -731,17 +751,40 @@
 
 ---
 
+- **ADR-043: Svelte 5 Reactive Mesh Topology Graph, Client-Side Dijkstra Route Projection & Live Simulation Matrix Controls**
+  - *Context*: The desktop GUI requires an intuitive, high-performance visualization of multi-hop overlay mesh networks, showing local device context, intermediate relays, multi-subnet connectivity, live link latencies, and route health without heavy external charting library dependencies.
+  - *Decision*: Implement `MeshTopologyView.svelte` using pure SVG rendering, custom radial positioning with pointer-driven drag-to-position, client-side Dijkstra shortest-path projection mirroring `lanflare-core::mesh::graph`, and interactive sandbox link severing/restoration controls.
+  - *Invariants*:
+    - **Zero External Heavy Dependencies**: Render topology using native responsive SVG elements with hardware-accelerated CSS filters and gradients rather than D3 or WebGL bundles, keeping package size minimal and instant-loading.
+    - **Client-Side Dijkstra Invariant Parity**: The client-side route calculator enforces identical invariants to the Rust `MeshTopologyGraph`: link cost $= \text{DEFAULT\_HOP\_PENALTY\_MS} (15) + \text{rtt\_ms}$, skipping intermediate nodes with `relayEnabled === false`, and bypassing severed links dynamically.
+    - **Bi-Directional Severed Link Representation**: Link severing in the GUI triggers `toggle_mesh_link`, updating both internal matrix state and local reactive views with red dashed styling and `CUT` status tags, immediately prompting topology re-calculation.
+    - **Non-Destructive In-Memory Speedtest**: Diagnostics stream purely in-memory buffers across the overlay mesh with zero disk I/O, reporting instantaneous throughput in Mbps, total transferred bytes, elapsed time, and chunk counts.
+
+---
+
+## Known Debt & Blockers
+- *None at present.*
+
+---
+
 ## Next Session Target
-- **Target**: **Sub-phase 11.3: Svelte 5 Interactive Mesh Topology Inspector & Virtual Sandbox View (`web/`)**
+- **Target**: **Sub-phase 11.4: Svelte 5 Rich P2P/Group Chat View, Voice Recorder & LAN Toolbox UI (`web/`)**
 - **Action Items**:
-  1. Build `MeshTopologyView.svelte` using modern Svelte 5 runes (`$state`, `$derived`, `$effect`) in `web/src/lib/components/` rendering an interactive SVG/Canvas network graph of local node, 1-hop peers, multi-subnet bridge relays, and multi-hop peers.
-  2. Implement route inspector panel displaying Dijkstra calculated paths, hop counts, and cumulative link latency.
-  3. Implement multi-hop ping/traceroute and speedtest diagnostic triggers with interactive visual hop progress and Mbps bandwidth gauges.
-  4. Build interactive **"Virtual Mesh Sandbox"** control bar allowing users to spawn virtual subnets/nodes and toggle simulated link states (sever/restore) live in the GUI with automatic reactive topology refresh (`lanflare://mesh-updated`).
-  5. Integrate the Mesh view tab into the desktop GUI navigation (`web/src/routes/+page.svelte`).
-  6. Verification commands:
+  1. Build `ChatView.svelte` supporting:
+     - 1:1 and Group conversations list with unread badges.
+     - Stranger Request approval/block banner with 1-click elevation.
+     - Offline outbox causal queue badges and monotonic delivery/read checkmarks.
+     - Inline image/video preview and audio player.
+     - Microphone voice-note recorder (`navigator.mediaDevices.getUserMedia` / Web Audio API) with instant preview and send.
+     - Resumable attachment progress bars with byte-offset indicators.
+  2. Build `ToolboxView.svelte` supporting:
+     - Universal Clipboard Ring status, paired device list, and live clipboard history/broadcast.
+     - Federated File Search querying local catalog and remote peer endpoints with instant preview/download.
+     - Live Collaborative CRDT Scratchpad editor with synchronized character streaming and peer cursors.
+  3. Integrate Chat and Toolbox navigation tabs into desktop sidebar and mobile bottom navigation in `web/src/routes/+page.svelte`.
+  4. Run full workspace verification:
      ```bash
-     cd web && pnpm check && pnpm build
+     cd web && pnpm build && cd .. && cargo clippy --all-targets -- -D warnings && cargo test --all
      ```
 
 

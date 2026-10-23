@@ -8,7 +8,14 @@ import type {
 	FileReceivedPayload,
 	SendMode,
 	PreparedSendItem,
-	BrowserDownloadRequest
+	BrowserDownloadRequest,
+	MeshTopologyView,
+	StartSimulationPayload,
+	ToggleMeshLinkPayload,
+	RunTraceroutePayload,
+	MeshTracerouteResponse,
+	RunBenchmarkPayload,
+	SpeedtestResultDto
 } from './types';
 import {
 	getNodeStatus,
@@ -29,7 +36,12 @@ import {
 	saveClipboardImage,
 	isTauri,
 	sendFiles,
-	respondBrowserDownload
+	respondBrowserDownload,
+	getMeshTopology,
+	startMeshSimulation,
+	toggleMeshLink,
+	runMeshTraceroute,
+	runMeshBenchmark
 } from './api';
 import { readText as tauriReadText, readImage as tauriReadImage } from '@tauri-apps/plugin-clipboard-manager';
 
@@ -62,8 +74,19 @@ export class AppState {
 	// Pending Browser Download Requests (when share_link_auto_accept is true)
 	pendingBrowserDownloads = $state<BrowserDownloadRequest[]>([]);
 
-	// Active Tab ('radar' | 'transfers')
-	activeTab = $state<'radar' | 'transfers'>('radar');
+	// Active Tab ('radar' | 'transfers' | 'mesh')
+	activeTab = $state<'radar' | 'transfers' | 'mesh'>('radar');
+
+	// Multi-hop Mesh Overlay & Simulation State
+	meshTopology = $state<MeshTopologyView | null>(null);
+	meshLoading = $state<boolean>(false);
+	selectedMeshNodeFp = $state<string | null>(null);
+	tracerouteResult = $state<MeshTracerouteResponse | null>(null);
+	speedtestResult = $state<SpeedtestResultDto | null>(null);
+	isTracing = $state<boolean>(false);
+	isBenchmarking = $state<boolean>(false);
+	diagnosticError = $state<string | null>(null);
+	severedLinks = $state<string[]>([]);
 
 	// Active and Recent Transfers
 	transfers = $state<TransferQueueItem[]>([]);
@@ -728,6 +751,15 @@ export class AppState {
 				this.persistHistory();
 			}
 		});
+
+		// 8. Mesh topology updates
+		await tauriListen<MeshTopologyView>('lanflare://mesh-updated', (payload) => {
+			this.meshTopology = payload;
+			if (!this.selectedMeshNodeFp && payload.nodes.length > 0) {
+				const nonLocal = payload.nodes.find((n) => n.fingerprint !== payload.localFingerprint);
+				this.selectedMeshNodeFp = nonLocal ? nonLocal.fingerprint : payload.nodes[0].fingerprint;
+			}
+		});
 	}
 
 	// Actions
@@ -850,6 +882,98 @@ export class AppState {
 			item.status = 'failed';
 			item.error = String(e);
 			this.persistHistory();
+		}
+	}
+
+	// Mesh Overlay & Simulation Methods
+	async loadMeshTopology() {
+		this.meshLoading = true;
+		try {
+			this.meshTopology = await getMeshTopology();
+			if (this.meshTopology && !this.selectedMeshNodeFp && this.meshTopology.nodes.length > 0) {
+				const nonLocal = this.meshTopology.nodes.find(
+					(n) => n.fingerprint !== this.meshTopology?.localFingerprint
+				);
+				this.selectedMeshNodeFp = nonLocal
+					? nonLocal.fingerprint
+					: this.meshTopology.nodes[0].fingerprint;
+			}
+		} catch (e) {
+			console.error('Failed to load mesh topology:', e);
+		} finally {
+			this.meshLoading = false;
+		}
+	}
+
+	async startMeshSimulation(payload?: StartSimulationPayload) {
+		this.meshLoading = true;
+		try {
+			this.meshTopology = await startMeshSimulation(payload);
+			this.severedLinks = [];
+			this.tracerouteResult = null;
+			this.speedtestResult = null;
+			this.diagnosticError = null;
+			if (this.meshTopology && this.meshTopology.nodes.length > 0) {
+				const nonLocal = this.meshTopology.nodes.find(
+					(n) => n.fingerprint !== this.meshTopology?.localFingerprint
+				);
+				this.selectedMeshNodeFp = nonLocal
+					? nonLocal.fingerprint
+					: this.meshTopology.nodes[0].fingerprint;
+			}
+		} catch (e) {
+			console.error('Failed to start mesh simulation:', e);
+		} finally {
+			this.meshLoading = false;
+		}
+	}
+
+	async toggleMeshLink(fromFp: string, toFp: string, severed?: boolean) {
+		const key1 = `${fromFp}:${toFp}`;
+		const key2 = `${toFp}:${fromFp}`;
+		const isCurrentlySevered =
+			this.severedLinks.includes(key1) || this.severedLinks.includes(key2);
+		const targetSevered = severed !== undefined ? severed : !isCurrentlySevered;
+
+		try {
+			const nowSevered = await toggleMeshLink({ fromFp, toFp, severed: targetSevered });
+			if (nowSevered) {
+				if (!this.severedLinks.includes(key1)) this.severedLinks.push(key1);
+				if (!this.severedLinks.includes(key2)) this.severedLinks.push(key2);
+			} else {
+				this.severedLinks = this.severedLinks.filter((k) => k !== key1 && k !== key2);
+			}
+			await this.loadMeshTopology();
+		} catch (e) {
+			console.error('Failed to toggle mesh link:', e);
+		}
+	}
+
+	async runMeshTraceroute(target: string) {
+		this.isTracing = true;
+		this.diagnosticError = null;
+		this.tracerouteResult = null;
+		try {
+			this.tracerouteResult = await runMeshTraceroute({ target });
+		} catch (e) {
+			this.diagnosticError = `Traceroute error: ${e}`;
+			console.error('Traceroute failed:', e);
+		} finally {
+			this.isTracing = false;
+		}
+	}
+
+	async runMeshBenchmark(target: string) {
+		this.isBenchmarking = true;
+		this.diagnosticError = null;
+		this.speedtestResult = null;
+		try {
+			this.speedtestResult = await runMeshBenchmark({ target });
+		} catch (e) {
+			this.diagnosticError = `Speedtest error: ${e}`;
+			console.error('Speedtest failed:', e);
+		} finally {
+			this.isBenchmarking = false;
 		}
 	}
 }
