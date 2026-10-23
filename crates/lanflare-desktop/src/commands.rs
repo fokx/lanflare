@@ -680,14 +680,20 @@ pub async fn try_start_receiver_server_internal(
 
     let (event_tx, mut event_rx) = mpsc::channel::<ServerTransferEvent>(100);
     let tls_id = state.identity.read().await.clone();
+    let chat_engine = state.get_or_init_chat_engine().await.ok();
 
-    let start_res = lanflare_core::server::start_server_ext(
+    let start_res = lanflare_core::server::start_server_toolbox(
         state.config.clone(),
         Some(tls_id),
         Arc::clone(&state.registry),
         Some(event_tx),
         None,
         Some(Arc::clone(&state.dufs_manager)),
+        Some(Arc::clone(&state.mesh_router)),
+        chat_engine,
+        Some(Arc::clone(&state.device_ring)),
+        Some(Arc::clone(&state.federated_search)),
+        Some(Arc::clone(&state.collab_manager)),
     )
     .await;
 
@@ -2557,4 +2563,846 @@ pub async fn get_dufs_share_status(
         total_size,
     }))
 }
+
+// ============================================================================
+// Multi-Hop Mesh & Virtual Simulator Commands
+// ============================================================================
+
+/// Parameters for initiating an in-process multi-subnet virtual mesh cluster.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartSimulationPayload {
+    pub node_count: Option<usize>,
+    pub subnets: Option<Vec<String>>,
+    pub latency_ms: Option<u32>,
+}
+
+/// Internal handler to retrieve current overlay mesh topology.
+pub async fn get_mesh_topology_internal(
+    state: &Arc<DesktopState>,
+) -> Result<lanflare_core::mesh::router::MeshTopologyView, String> {
+    Ok(state.mesh_router.topology_view().await)
+}
+
+/// Tauri IPC command retrieving the active overlay mesh topology view.
+#[tauri::command]
+pub async fn get_mesh_topology(
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<lanflare_core::mesh::router::MeshTopologyView, String> {
+    get_mesh_topology_internal(&state).await
+}
+
+/// Internal handler to spawn and configure an in-process simulated mesh cluster.
+pub async fn start_mesh_simulation_internal(
+    state: &Arc<DesktopState>,
+    payload: Option<StartSimulationPayload>,
+) -> Result<lanflare_core::mesh::router::MeshTopologyView, String> {
+    let p = payload.unwrap_or_default();
+    let node_count = p.node_count.unwrap_or(3).max(2);
+    let subnets = if let Some(subs) = p.subnets && !subs.is_empty() {
+        subs
+    } else {
+        vec!["SubnetA".to_string(), "SubnetB".to_string()]
+    };
+    let latency_ms = p.latency_ms.unwrap_or(15);
+
+    // Wire virtual network matrix interceptor into local mesh router
+    state.mesh_router.set_interceptor(state.virtual_matrix.clone()).await;
+
+    let mut cluster = lanflare_core::mesh::sim::SimulatedMeshCluster::new(state.virtual_matrix.clone());
+
+    let mut spawned_fps = Vec::new();
+    for i in 0..node_count {
+        let alias = match i {
+            0 => "Alice".to_string(),
+            1 if node_count == 2 => "Bob".to_string(),
+            1 => "Relay-1".to_string(),
+            2 if node_count == 3 => "Bob".to_string(),
+            2 => "Relay-2".to_string(),
+            _ => format!("Node-{}", i + 1),
+        };
+
+        let node_subnets = if subnets.len() >= 2 {
+            if i == 0 {
+                vec![subnets[0].clone()]
+            } else if i == node_count - 1 {
+                vec![subnets[subnets.len() - 1].clone()]
+            } else {
+                subnets.clone()
+            }
+        } else {
+            subnets.clone()
+        };
+
+        let relay_enabled = i > 0 && i < node_count - 1;
+        let fp = cluster
+            .spawn_node_with_chat(&alias, node_subnets, relay_enabled)
+            .await
+            .map_err(|e| format!("Failed to spawn simulated node {alias}: {e}"))?;
+        spawned_fps.push(fp);
+    }
+
+    let link_cfg = lanflare_core::mesh::sim::SimulatedLinkConfig::new()
+        .with_latency(latency_ms);
+
+    for i in 0..spawned_fps.len().saturating_sub(1) {
+        state.virtual_matrix.set_bidirectional_link_config(
+            &spawned_fps[i],
+            &spawned_fps[i + 1],
+            link_cfg.clone(),
+        );
+    }
+
+    let _ = cluster.exchange_gossip_rounds(2).await;
+
+    let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    for node in cluster.nodes() {
+        state.mesh_router.register_peer_endpoint(node.fingerprint(), &node.base_url()).await;
+        let graph = state.mesh_router.graph();
+        let mut g = graph.write().await;
+        let mut m_node = lanflare_core::mesh::graph::MeshNode::new(
+            node.fingerprint().to_string(),
+            node.alias(),
+            node.subnets().len() > 1,
+        );
+        m_node.cert_pem = Some(node.tls_identity().cert_pem.clone());
+        g.insert_node(m_node);
+    }
+
+    if let Some(first_fp) = spawned_fps.first() {
+        let mut g = state.mesh_router.graph().write().await;
+        g.add_bidirectional_link(state.mesh_router.local_fingerprint(), first_fp, latency_ms, now_ms);
+    }
+
+    *state.simulated_cluster.lock().await = Some(cluster);
+
+    Ok(state.mesh_router.topology_view().await)
+}
+
+/// Tauri IPC command to start an in-process simulated virtual mesh cluster.
+#[tauri::command]
+pub async fn start_mesh_simulation(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopState>>,
+    payload: Option<StartSimulationPayload>,
+) -> Result<lanflare_core::mesh::router::MeshTopologyView, String> {
+    let view = start_mesh_simulation_internal(&state, payload).await?;
+    let _ = app.emit("lanflare://mesh-updated", &view);
+    Ok(view)
+}
+
+/// Payload for dynamically severing or restoring a simulated mesh link.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToggleMeshLinkPayload {
+    pub from_fp: String,
+    pub to_fp: String,
+    pub severed: Option<bool>,
+}
+
+/// Internal handler for toggling a simulated network link.
+pub async fn toggle_mesh_link_internal(
+    state: &Arc<DesktopState>,
+    payload: ToggleMeshLinkPayload,
+) -> Result<bool, String> {
+    let currently_severed = state
+        .virtual_matrix
+        .is_link_severed(&payload.from_fp, &payload.to_fp);
+    let new_severed = payload.severed.unwrap_or(!currently_severed);
+
+    if new_severed {
+        state
+            .virtual_matrix
+            .sever_link(&payload.from_fp, &payload.to_fp);
+    } else {
+        state
+            .virtual_matrix
+            .restore_link(&payload.from_fp, &payload.to_fp);
+    }
+
+    {
+        let cluster_guard = state.simulated_cluster.lock().await;
+        if let Some(ref cluster) = *cluster_guard {
+            let _ = cluster.exchange_gossip_rounds(1).await;
+        }
+    }
+
+    Ok(new_severed)
+}
+
+/// Tauri IPC command to sever or restore a simulated mesh link.
+#[tauri::command]
+pub async fn toggle_mesh_link(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopState>>,
+    payload: ToggleMeshLinkPayload,
+) -> Result<bool, String> {
+    let new_severed = toggle_mesh_link_internal(&state, payload).await?;
+    let view = state.mesh_router.topology_view().await;
+    let _ = app.emit("lanflare://mesh-updated", &view);
+    Ok(new_severed)
+}
+
+/// Payload for initiating a multi-hop traceroute probe.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunTraceroutePayload {
+    pub target: String,
+    pub ttl: Option<u8>,
+}
+
+/// Internal handler to execute a multi-hop traceroute probe.
+pub async fn run_mesh_traceroute_internal(
+    state: &Arc<DesktopState>,
+    payload: RunTraceroutePayload,
+) -> Result<lanflare_proto::mesh::MeshTracerouteResponse, String> {
+    let target_query = payload.target.trim();
+    let canonical_target = if target_query.len() == 64 {
+        target_query.to_ascii_uppercase()
+    } else {
+        let peers = state.registry.get_all().await;
+        let matched = peers.iter().find(|p| {
+            p.alias.eq_ignore_ascii_case(target_query)
+                || p.fingerprint.starts_with(&target_query.to_ascii_uppercase())
+        });
+        if let Some(p) = matched {
+            p.fingerprint.clone()
+        } else {
+            target_query.to_ascii_uppercase()
+        }
+    };
+
+    state
+        .mesh_diagnostics
+        .traceroute(&state.mesh_router, &canonical_target)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Tauri IPC command to execute a multi-hop traceroute probe.
+#[tauri::command]
+pub async fn run_mesh_traceroute(
+    state: State<'_, Arc<DesktopState>>,
+    payload: RunTraceroutePayload,
+) -> Result<lanflare_proto::mesh::MeshTracerouteResponse, String> {
+    run_mesh_traceroute_internal(&state, payload).await
+}
+
+/// Payload for running an in-memory streaming speedtest benchmark.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunBenchmarkPayload {
+    pub target: String,
+    pub chunks: Option<u32>,
+    pub chunk_size: Option<usize>,
+}
+
+/// Internal handler to execute an in-memory streaming speedtest benchmark.
+pub async fn run_mesh_benchmark_internal(
+    state: &Arc<DesktopState>,
+    payload: RunBenchmarkPayload,
+) -> Result<lanflare_proto::mesh::SpeedtestResultDto, String> {
+    let target_query = payload.target.trim();
+    let canonical_target = if target_query.len() == 64 {
+        target_query.to_ascii_uppercase()
+    } else {
+        let peers = state.registry.get_all().await;
+        let matched = peers.iter().find(|p| {
+            p.alias.eq_ignore_ascii_case(target_query)
+                || p.fingerprint.starts_with(&target_query.to_ascii_uppercase())
+        });
+        if let Some(p) = matched {
+            p.fingerprint.clone()
+        } else {
+            target_query.to_ascii_uppercase()
+        }
+    };
+
+    let chunks = payload.chunks.unwrap_or(20);
+    let chunk_size = payload.chunk_size.unwrap_or(65536);
+
+    state
+        .mesh_diagnostics
+        .run_speedtest(&state.mesh_router, &canonical_target, chunks, chunk_size)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Tauri IPC command to execute an in-memory streaming speedtest benchmark.
+#[tauri::command]
+pub async fn run_mesh_benchmark(
+    state: State<'_, Arc<DesktopState>>,
+    payload: RunBenchmarkPayload,
+) -> Result<lanflare_proto::mesh::SpeedtestResultDto, String> {
+    run_mesh_benchmark_internal(&state, payload).await
+}
+
+// ============================================================================
+// Encrypted 1:1 and Group Chat Commands
+// ============================================================================
+
+fn shorten_fp(fp: &str) -> String {
+    if fp.len() > 12 {
+        format!("{}...{}", &fp[..6], &fp[fp.len() - 6..])
+    } else {
+        fp.to_string()
+    }
+}
+
+/// Payload for sending an encrypted 1:1 chat message or stranger trust handshake.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendChatMessagePayload {
+    pub target: String,
+    pub message: String,
+    pub intro: Option<bool>,
+}
+
+/// Internal handler to dispatch a chat message or stranger handshake.
+pub async fn send_chat_message_internal(
+    state: &Arc<DesktopState>,
+    payload: SendChatMessagePayload,
+) -> Result<lanflare_proto::chat::ChatMessageDto, String> {
+    let chat = state.get_or_init_chat_engine().await?;
+    let target_query = payload.target.trim();
+    let canonical_target = if target_query.len() == 64 {
+        target_query.to_ascii_uppercase()
+    } else {
+        let peers = state.registry.get_all().await;
+        let matched = peers.iter().find(|p| {
+            p.alias.eq_ignore_ascii_case(target_query)
+                || p.fingerprint.starts_with(&target_query.to_ascii_uppercase())
+        });
+        if let Some(p) = matched {
+            p.fingerprint.clone()
+        } else {
+            target_query.to_ascii_uppercase()
+        }
+    };
+
+    let is_stranger = payload.intro.unwrap_or(false)
+        || chat.trust_gate().get_trust_state(&canonical_target)
+            == lanflare_core::chat::trust::ContactTrustState::Stranger;
+
+    if is_stranger {
+        let trust_req = chat
+            .send_trust_request(&canonical_target, &payload.message)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let msg_dto = lanflare_proto::chat::ChatMessageDto {
+            id: trust_req.request_id.clone(),
+            conversation_id: trust_req.target_fp.clone(),
+            sender_fp: trust_req.sender_fp.clone(),
+            recipient_fp: trust_req.target_fp.clone(),
+            timestamp_ms: trust_req.timestamp_ms,
+            content: lanflare_proto::chat::ChatContentDto::Text {
+                text: trust_req.message.clone(),
+            },
+            reply_to_id: None,
+            signature: trust_req.signature.clone(),
+        };
+
+        let _ = chat
+            .store()
+            .insert_message(
+                msg_dto.clone(),
+                lanflare_proto::chat::MessageDeliveryState::Queued,
+                true,
+            )
+            .await;
+
+        Ok(msg_dto)
+    } else {
+        chat.send_text_message(&canonical_target, &payload.message)
+            .await
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Tauri IPC command to dispatch an encrypted 1:1 chat message or handshake.
+#[tauri::command]
+pub async fn send_chat_message(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopState>>,
+    payload: SendChatMessagePayload,
+) -> Result<lanflare_proto::chat::ChatMessageDto, String> {
+    let msg = send_chat_message_internal(&state, payload).await?;
+    let _ = app.emit("lanflare://chat-message", &msg);
+    Ok(msg)
+}
+
+/// Payload for approving or blocking a contact trust request.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RespondTrustRequestPayload {
+    pub peer_fingerprint: String,
+    pub approve: bool,
+}
+
+/// Internal handler to approve or block a contact trust request.
+pub async fn respond_trust_request_internal(
+    state: &Arc<DesktopState>,
+    payload: RespondTrustRequestPayload,
+) -> Result<(), String> {
+    let chat = state.get_or_init_chat_engine().await?;
+    let canonical = payload.peer_fingerprint.trim().to_ascii_uppercase();
+
+    if payload.approve {
+        chat.approve_contact(&canonical).await.map_err(|e| e.to_string())
+    } else {
+        chat.block_contact(&canonical).await.map_err(|e| e.to_string())
+    }
+}
+
+/// Tauri IPC command to approve or block a contact trust request.
+#[tauri::command]
+pub async fn respond_trust_request(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopState>>,
+    payload: RespondTrustRequestPayload,
+) -> Result<(), String> {
+    respond_trust_request_internal(&state, payload.clone()).await?;
+    let _ = app.emit("lanflare://trust-request", serde_json::json!({
+        "peerFingerprint": payload.peer_fingerprint,
+        "approved": payload.approve,
+    }));
+    Ok(())
+}
+
+/// DTO representing an active 1:1 or group chat conversation.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatConversationDto {
+    pub id: String,
+    pub alias: String,
+    pub target_fp: String,
+    pub is_group: bool,
+    pub last_message: Option<String>,
+    pub last_message_time_ms: u64,
+    pub unread_count: usize,
+    pub trust_state: String,
+}
+
+/// Internal handler to list all active 1:1 and group chat conversations.
+pub async fn list_chat_conversations_internal(
+    state: &Arc<DesktopState>,
+) -> Result<Vec<ChatConversationDto>, String> {
+    let chat = state.get_or_init_chat_engine().await?;
+    let mut conv_dtos = Vec::new();
+
+    // 1:1 conversations
+    let convs = chat.store().list_conversations().await;
+    for c in convs {
+        let contact = chat.store().get_contact(&c.peer_fingerprint).await;
+        let alias = contact.map(|cnt| cnt.alias).unwrap_or_else(|| {
+            shorten_fp(&c.peer_fingerprint)
+        });
+        let trust = format!("{:?}", chat.trust_gate().get_trust_state(&c.peer_fingerprint));
+
+        conv_dtos.push(ChatConversationDto {
+            id: c.id,
+            alias,
+            target_fp: c.peer_fingerprint,
+            is_group: false,
+            last_message: c.last_message_preview,
+            last_message_time_ms: c.last_message_at_ms,
+            unread_count: c.unread_count,
+            trust_state: trust,
+        });
+    }
+
+    // Group conversations
+    let group_ids = chat.group_sync().list_groups().await;
+    for gid in group_ids {
+        if let Some(g_arc) = chat.get_group(&gid).await {
+            let g = g_arc.read().await;
+            let roster = g.roster();
+            let last_id = g.topological_sort().last().cloned();
+            let last_node = last_id.as_ref().and_then(|id| g.get_node(id));
+            let last_preview = last_id.as_ref().map(|id| format!("[Group message #{}]", &id[..8.min(id.len())]));
+            let last_time = last_node.map(|n| n.hlc.wall_time_ms).unwrap_or(0);
+
+            conv_dtos.push(ChatConversationDto {
+                id: roster.group_id.clone(),
+                alias: roster.group_name.clone(),
+                target_fp: roster.group_id.clone(),
+                is_group: true,
+                last_message: last_preview,
+                last_message_time_ms: last_time,
+                unread_count: 0,
+                trust_state: "TrustedGroup".to_string(),
+            });
+        }
+    }
+
+    conv_dtos.sort_by_key(|a| std::cmp::Reverse(a.last_message_time_ms));
+    Ok(conv_dtos)
+}
+
+/// Tauri IPC command to list all active 1:1 and group chat conversations.
+#[tauri::command]
+pub async fn list_chat_conversations(
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<Vec<ChatConversationDto>, String> {
+    list_chat_conversations_internal(&state).await
+}
+
+/// Payload for querying message history of a conversation.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetChatHistoryPayload {
+    pub conversation_id: String,
+    pub limit: Option<usize>,
+}
+
+/// View DTO for displaying a chat message in the UI timeline.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessageViewDto {
+    pub id: String,
+    pub sender_fp: String,
+    pub recipient_fp: String,
+    pub is_self: bool,
+    pub content: String,
+    pub timestamp_ms: u64,
+    pub delivery_state: String,
+}
+
+/// Internal handler to retrieve historical messages of a conversation.
+pub async fn get_chat_history_internal(
+    state: &Arc<DesktopState>,
+    payload: GetChatHistoryPayload,
+) -> Result<Vec<ChatMessageViewDto>, String> {
+    let chat = state.get_or_init_chat_engine().await?;
+    let local_fp = chat.local_fingerprint();
+
+    // Check if group conversation
+    if let Some(g_arc) = chat.get_group(&payload.conversation_id).await {
+        let g = g_arc.read().await;
+        let sorted_ids = g.topological_sort();
+        let mut views = Vec::new();
+
+        for msg_id in sorted_ids {
+            if let Some(node) = g.get_node(&msg_id) {
+                let content_str = match g.decrypt_node_payload(node) {
+                    Ok(bytes) => String::from_utf8(bytes).unwrap_or_else(|_| "[Binary Payload]".into()),
+                    Err(_) => "[Encrypted Payload]".into(),
+                };
+
+                views.push(ChatMessageViewDto {
+                    id: node.msg_id.clone(),
+                    sender_fp: node.author_fp.clone(),
+                    recipient_fp: payload.conversation_id.clone(),
+                    is_self: node.author_fp == local_fp,
+                    content: content_str,
+                    timestamp_ms: node.hlc.wall_time_ms,
+                    delivery_state: "Delivered".to_string(),
+                });
+            }
+        }
+        return Ok(views);
+    }
+
+    // 1:1 conversation
+    let msgs = chat
+        .store()
+        .get_conversation_messages(&payload.conversation_id, payload.limit, None)
+        .await;
+
+    let views = msgs
+        .into_iter()
+        .map(|m| {
+            let content_str = match m.message.content {
+                lanflare_proto::chat::ChatContentDto::Text { text } => text,
+                lanflare_proto::chat::ChatContentDto::Image { file_name, .. } => format!("[Image: {file_name}]"),
+                lanflare_proto::chat::ChatContentDto::File { file_name, .. } => format!("[File: {file_name}]"),
+                lanflare_proto::chat::ChatContentDto::Voice { duration_ms, .. } => format!("[Voice: {}s]", duration_ms / 1000),
+                lanflare_proto::chat::ChatContentDto::Video { file_name, .. } => format!("[Video: {file_name}]"),
+            };
+            ChatMessageViewDto {
+                id: m.message.id,
+                sender_fp: m.message.sender_fp.clone(),
+                recipient_fp: m.message.recipient_fp,
+                is_self: m.message.sender_fp == local_fp,
+                content: content_str,
+                timestamp_ms: m.message.timestamp_ms,
+                delivery_state: format!("{:?}", m.delivery_state),
+            }
+        })
+        .collect();
+
+    Ok(views)
+}
+
+/// Tauri IPC command to retrieve message history of a conversation.
+#[tauri::command]
+pub async fn get_chat_history(
+    state: State<'_, Arc<DesktopState>>,
+    payload: GetChatHistoryPayload,
+) -> Result<Vec<ChatMessageViewDto>, String> {
+    get_chat_history_internal(&state, payload).await
+}
+
+/// Payload for creating a new decentralized group chat.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateChatGroupPayload {
+    pub group_name: String,
+    pub member_fingerprints: Vec<String>,
+}
+
+/// Internal handler to create a new decentralized group chat.
+pub async fn create_chat_group_internal(
+    state: &Arc<DesktopState>,
+    payload: CreateChatGroupPayload,
+) -> Result<lanflare_proto::chat::GroupMembershipRoster, String> {
+    let chat = state.get_or_init_chat_engine().await?;
+    let mut members = Vec::new();
+    let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+
+    for fp in payload.member_fingerprints {
+        let canonical = fp.trim().to_ascii_uppercase();
+        let cert_pem = if let Some(p) = state.registry.get(&canonical).await && let Some(pem) = p.metadata.get("certPem") {
+            pem.clone()
+        } else if let Some(node) = state.mesh_router.graph().read().await.get_node(&canonical) && let Some(pem) = &node.cert_pem {
+            pem.clone()
+        } else {
+            lanflare_core::crypto::cert::generate_self_signed()
+                .map(|id| id.cert_pem)
+                .unwrap_or_default()
+        };
+
+        members.push(lanflare_proto::chat::GroupMember {
+            fingerprint: canonical.clone(),
+            alias: shorten_fp(&canonical),
+            role: lanflare_proto::chat::GroupRole::Member,
+            cert_pem,
+            joined_at_ms: now_ms,
+        });
+    }
+
+    let (g_arc, _roster, _keys) = chat
+        .create_group(&payload.group_name, members)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let roster = g_arc.read().await.roster().clone();
+    Ok(roster)
+}
+
+/// Tauri IPC command to create a new decentralized group chat.
+#[tauri::command]
+pub async fn create_chat_group(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopState>>,
+    payload: CreateChatGroupPayload,
+) -> Result<lanflare_proto::chat::GroupMembershipRoster, String> {
+    let roster = create_chat_group_internal(&state, payload).await?;
+    let _ = app.emit("lanflare://chat-message", serde_json::json!({
+        "groupCreated": roster.group_id,
+        "groupName": roster.group_name,
+    }));
+    Ok(roster)
+}
+
+/// Payload for synchronizing group DAG state with a peer.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncChatGroupPayload {
+    pub group_id: String,
+    pub peer_fingerprint: String,
+}
+
+/// Internal handler to synchronize group DAG state with a peer.
+pub async fn sync_chat_group_internal(
+    state: &Arc<DesktopState>,
+    payload: SyncChatGroupPayload,
+) -> Result<lanflare_core::chat::sync::SyncStats, String> {
+    let chat = state.get_or_init_chat_engine().await?;
+    let canonical = payload.peer_fingerprint.trim().to_ascii_uppercase();
+    chat.sync_group(&payload.group_id, &canonical)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Tauri IPC command to synchronize group DAG state with a peer.
+#[tauri::command]
+pub async fn sync_chat_group(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopState>>,
+    payload: SyncChatGroupPayload,
+) -> Result<lanflare_core::chat::sync::SyncStats, String> {
+    let stats = sync_chat_group_internal(&state, payload.clone()).await?;
+    let _ = app.emit("lanflare://chat-message", serde_json::json!({
+        "groupSynced": payload.group_id,
+        "nodesMerged": stats.nodes_pulled,
+    }));
+    Ok(stats)
+}
+
+// ============================================================================
+// Multi-Functional LAN Toolbox Commands
+// ============================================================================
+
+/// Current state and devices of the personal Universal Clipboard Ring.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardStateDto {
+    pub ring_id: String,
+    pub ring_name: String,
+    pub current_hash: Option<String>,
+    pub payload: Option<lanflare_proto::toolbox::ClipboardPayloadDto>,
+    pub devices: Vec<lanflare_proto::toolbox::RingDeviceDto>,
+}
+
+/// Internal handler to retrieve active Universal Clipboard state.
+pub fn get_clipboard_state_internal(
+    state: &Arc<DesktopState>,
+) -> Result<ClipboardStateDto, String> {
+    let ring = &state.device_ring;
+    let roster = ring.roster();
+    Ok(ClipboardStateDto {
+        ring_id: ring.ring_id().to_string(),
+        ring_name: ring.ring_name().to_string(),
+        current_hash: ring.current_content_hash(),
+        payload: ring.current_payload(),
+        devices: roster.devices,
+    })
+}
+
+/// Tauri IPC command to retrieve active Universal Clipboard state.
+#[tauri::command]
+pub async fn get_clipboard_state(
+    state: State<'_, Arc<DesktopState>>,
+) -> Result<ClipboardStateDto, String> {
+    get_clipboard_state_internal(&state)
+}
+
+/// Payload for broadcasting clipboard updates across paired ring devices.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BroadcastClipboardPayload {
+    pub payload: lanflare_proto::toolbox::ClipboardPayloadDto,
+}
+
+/// Internal handler to broadcast clipboard updates across paired ring devices.
+pub async fn broadcast_clipboard_internal(
+    state: &Arc<DesktopState>,
+    payload: BroadcastClipboardPayload,
+) -> Result<bool, String> {
+    let ring = &state.device_ring;
+    let peers = state.registry.get_all().await;
+    match ring.broadcast_to_ring(payload.payload, &peers).await {
+        Ok(Some(_event)) => Ok(true),
+        Ok(None) => Ok(false),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Tauri IPC command to broadcast clipboard updates across paired ring devices.
+#[tauri::command]
+pub async fn broadcast_clipboard(
+    app: AppHandle,
+    state: State<'_, Arc<DesktopState>>,
+    payload: BroadcastClipboardPayload,
+) -> Result<bool, String> {
+    let synced = broadcast_clipboard_internal(&state, payload.clone()).await?;
+    if synced {
+        let _ = app.emit("lanflare://clipboard-synced", &payload.payload);
+    }
+    Ok(synced)
+}
+
+/// Payload for executing federated file search queries across LAN and mesh peers.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchFederatedFilesPayload {
+    pub query: String,
+    pub pin: Option<String>,
+    pub timeout_secs: Option<u64>,
+}
+
+/// Internal handler to execute federated file search queries.
+pub async fn search_federated_files_internal(
+    state: &Arc<DesktopState>,
+    payload: SearchFederatedFilesPayload,
+) -> Result<Vec<lanflare_proto::toolbox::SearchHitDto>, String> {
+    let timeout = std::time::Duration::from_secs(payload.timeout_secs.unwrap_or(3));
+    let mut query_dto = lanflare_proto::toolbox::FileSearchQueryDto::new(
+        &payload.query,
+        state.federated_search.local_node_fp(),
+    );
+    query_dto.auth_pin = payload.pin;
+    let hits = state
+        .federated_search
+        .search_and_rank(&query_dto, timeout)
+        .await;
+    Ok(hits)
+}
+
+/// Tauri IPC command to execute federated file search queries.
+#[tauri::command]
+pub async fn search_federated_files(
+    state: State<'_, Arc<DesktopState>>,
+    payload: SearchFederatedFilesPayload,
+) -> Result<Vec<lanflare_proto::toolbox::SearchHitDto>, String> {
+    search_federated_files_internal(&state, payload).await
+}
+
+/// Payload for retrieving or initializing a collaborative CRDT scratchpad document.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetCollabDocPayload {
+    pub doc_id: String,
+    pub title: Option<String>,
+}
+
+/// Internal handler to retrieve or initialize a collaborative scratchpad document.
+pub async fn get_collab_doc_internal(
+    state: &Arc<DesktopState>,
+    payload: GetCollabDocPayload,
+) -> Result<lanflare_proto::toolbox::ScratchpadSyncDto, String> {
+    let title = payload.title.as_deref().unwrap_or("Untitled Scratchpad");
+    let doc = state.collab_manager.get_or_create_doc(&payload.doc_id, title).await;
+    Ok(doc.export_sync())
+}
+
+/// Tauri IPC command to retrieve or initialize a collaborative scratchpad document.
+#[tauri::command]
+pub async fn get_collab_doc(
+    state: State<'_, Arc<DesktopState>>,
+    payload: GetCollabDocPayload,
+) -> Result<lanflare_proto::toolbox::ScratchpadSyncDto, String> {
+    get_collab_doc_internal(&state, payload).await
+}
+
+/// Payload for applying an incremental CRDT edit operation.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyCollabEditPayload {
+    pub edit: lanflare_proto::toolbox::ScratchpadEditDto,
+}
+
+/// Internal handler to apply an incremental CRDT edit operation.
+pub async fn apply_collab_edit_internal(
+    state: &Arc<DesktopState>,
+    payload: ApplyCollabEditPayload,
+) -> Result<bool, String> {
+    state
+        .collab_manager
+        .apply_remote_edit(payload.edit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Tauri IPC command to apply an incremental CRDT edit operation.
+#[tauri::command]
+pub async fn apply_collab_edit(
+    state: State<'_, Arc<DesktopState>>,
+    payload: ApplyCollabEditPayload,
+) -> Result<bool, String> {
+    apply_collab_edit_internal(&state, payload).await
+}
+
 

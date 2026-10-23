@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Sub-phase 11.1 Complete; Working on **Phase 11: Desktop GUI & CLI Integration for Mesh, Chat & LAN Toolbox**.
-- **Overall Status**: Sub-phase 11.1 Complete; Ready for **Sub-phase 11.2: Tauri v2 IPC Commands & Event Bridge for Mesh, Chat & Toolbox (`lanflare-desktop`)**.
+- **Current Milestone**: Sub-phase 11.2 Complete; Working on **Phase 11: Desktop GUI & CLI Integration for Mesh, Chat & LAN Toolbox**.
+- **Overall Status**: Sub-phase 11.2 Complete; Ready for **Sub-phase 11.3: Svelte 5 Interactive Mesh Topology Inspector & Virtual Sandbox View (`web/`)**.
 
 ---
 
@@ -336,6 +336,19 @@
     - 3 new TUI unit tests in `crates/lanflare/src/tui.rs`: `test_render_mesh_status`, `test_render_traceroute_and_speedtest`, `test_render_contact_trust_and_search_results`.
     - `test_cli_mesh_and_chat_arg_parsing_and_execution` in `crates/lanflare-cli/tests/mesh_and_chat_tests.rs` and `crates/lanflare/tests/cli_tests.rs`.
   - Verified 100% test pass rate across workspace via `cargo test -p lanflare-cli`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (170+ tests passing).
+- [x] Implement Tauri v2 IPC Commands & Event Bridge for Mesh, Chat & Toolbox (`lanflare-desktop`) (Sub-phase 11.2):
+  - Wired `MeshRouter`, `MeshDiagnostics`, `VirtualNetworkMatrix`, `SimulatedMeshCluster`, `ChatEngine`, `OutboxDispatcher`, `DeviceRing`, `MeshFileCatalog`, `FederatedSearchEngine`, and `CollabManager` into `DesktopState` in [`crates/lanflare-desktop/src/state.rs`](file:///f/lanflare/crates/lanflare-desktop/src/state.rs).
+  - Extended `try_start_receiver_server_internal` to mount the full suite via `lanflare_core::server::start_server_toolbox`, exposing mesh overlay forwarding, custodial mailboxes, 1:1/group chat endpoints, Universal Clipboard sync, federated file search, and CRDT scratchpad synchronization.
+  - Implemented 16 Tauri v2 IPC commands and testable internal handlers in [`crates/lanflare-desktop/src/commands.rs`](file:///f/lanflare/crates/lanflare-desktop/src/commands.rs):
+    - Multi-hop Mesh & Simulation: `get_mesh_topology`, `start_mesh_simulation`, `toggle_mesh_link`, `run_mesh_traceroute`, `run_mesh_benchmark`.
+    - Encrypted 1:1 and Group Chat: `send_chat_message` (with automatic Hashcash PoW stranger handshake and store persistence), `respond_trust_request` (contact approval/blocking), `list_chat_conversations`, `get_chat_history`, `create_chat_group`, `sync_chat_group`.
+    - LAN Toolbox: `get_clipboard_state`, `broadcast_clipboard`, `search_federated_files`, `get_collab_doc`, `apply_collab_edit`.
+  - Built real-time asynchronous event bridge in [`crates/lanflare-desktop/src/lib.rs`](file:///f/lanflare/crates/lanflare-desktop/src/lib.rs):
+    - Subscribed to `ChatEngine::subscribe_events()`, emitting `lanflare://chat-message`, `lanflare://chat-receipt`, and `lanflare://trust-request`.
+    - Subscribed to `DeviceRing::subscribe()`, emitting `lanflare://clipboard-synced`.
+    - Integrated `lanflare://mesh-updated` on simulation lifecycle and link toggles.
+  - Comprehensive Tauri desktop integration tests in [`crates/lanflare-desktop/tests/desktop_tests.rs`](file:///f/lanflare/crates/lanflare-desktop/tests/desktop_tests.rs) (`test_desktop_mesh_and_chat_state_commands`) verifying state initialization, mesh topology and simulation link toggling, chat messaging and trust elevation, conversation history querying, group creation, clipboard synchronization, federated file searching, and CRDT scratchpad operations.
+  - Verified 100% test pass rate across workspace via `cargo test -p lanflare-desktop`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all`.
 
 ---
 
@@ -702,20 +715,33 @@
 
 ---
 
+- **ADR-042: Tauri v2 IPC Command Routing, Event Bridge & Desktop State Integration for Overlay Mesh, Chat & LAN Toolbox**
+  - *Context*: The desktop GUI requires bidirectional communication with `lanflare-core` modules for multi-hop overlay routing, virtual network matrix simulation, anti-harassment stranger handshakes, causal Merkle-DAG group chats, personal device rings, federated search, and CRDT scratchpads.
+  - *Decision*: Consolidate all background engines within `DesktopState` (`lanflare-desktop::state`), provide modular internal handlers (`*_internal`) alongside Tauri `#[tauri::command]` wrappers, launch full Hyper router endpoints via `start_server_toolbox`, and bridge real-time events to the frontend via dedicated Tokio event pumps.
+  - *Invariants*:
+    - **Dual Internal/IPC Command Interface**: Every Tauri IPC command delegates core logic to an asynchronous internal function (`*_internal`) that accepts `&Arc<DesktopState>`, allowing 100% unit and integration testing without requiring a running Tauri webview context.
+    - **Unified Receiver Daemon Mounting**: When `try_start_receiver_server_internal` runs, it invokes `start_server_toolbox`, concurrently binding LocalSend v2.2 endpoints, Dufs shared folders, multi-hop mesh gossip/forwarding/streaming/mailbox endpoints, 1:1 and group chat endpoints, and LAN toolbox endpoints on the same TCP port.
+    - **Automatic Introduction Persistence**: Stranger introductions dispatched via `send_chat_message` with Hashcash PoW are persisted into `ChatStore` as queued outgoing messages, ensuring pending stranger conversations immediately render in the UI conversation timeline.
+    - **Reactive Multi-Stream Event Bridge**: Asynchronous background workers subscribe to `ChatEngine::subscribe_events()` and `DeviceRing::subscribe()`, translating internal domain events directly into frontend Tauri events (`lanflare://chat-message`, `lanflare://chat-receipt`, `lanflare://trust-request`, `lanflare://clipboard-synced`, `lanflare://mesh-updated`).
+
+---
+
+## Known Debt & Blockers
+- *None at present.*
+
+---
+
 ## Next Session Target
-- **Target**: **Sub-phase 11.2: Tauri v2 IPC Commands & Event Bridge for Mesh, Chat & Toolbox (`lanflare-desktop`)**
+- **Target**: **Sub-phase 11.3: Svelte 5 Interactive Mesh Topology Inspector & Virtual Sandbox View (`web/`)**
 - **Action Items**:
-  1. Wire `MeshRouter`, `VirtualNetworkMatrix`, `ChatEngine`, `OutboxDispatcher`, and `Toolbox` into `DesktopState` in `crates/lanflare-desktop/src/state.rs`.
-  2. Implement Tauri IPC commands in `crates/lanflare-desktop/src/commands.rs`:
-     - Mesh & Simulation: `get_mesh_topology`, `start_mesh_simulation`, `toggle_mesh_link`, `run_mesh_traceroute`, `run_mesh_benchmark`.
-     - 1:1 and Group Chat: `send_chat_message`, `respond_trust_request`, `list_chat_conversations`, `get_chat_history`, `create_chat_group`, `sync_chat_group`.
-     - Toolbox: `get_clipboard_state`, `broadcast_clipboard`, `search_federated_files`, `get_collab_doc`, `apply_collab_edit`.
-  3. Emit real-time Tauri events: `lanflare://mesh-updated`, `lanflare://chat-message`, `lanflare://chat-receipt`, `lanflare://trust-request`, and `lanflare://clipboard-synced`.
-  4. Implement Tauri desktop integration tests:
-     - `test_desktop_mesh_and_chat_state_commands`
-  5. Verification command:
+  1. Build `MeshTopologyView.svelte` using modern Svelte 5 runes (`$state`, `$derived`, `$effect`) in `web/src/lib/components/` rendering an interactive SVG/Canvas network graph of local node, 1-hop peers, multi-subnet bridge relays, and multi-hop peers.
+  2. Implement route inspector panel displaying Dijkstra calculated paths, hop counts, and cumulative link latency.
+  3. Implement multi-hop ping/traceroute and speedtest diagnostic triggers with interactive visual hop progress and Mbps bandwidth gauges.
+  4. Build interactive **"Virtual Mesh Sandbox"** control bar allowing users to spawn virtual subnets/nodes and toggle simulated link states (sever/restore) live in the GUI with automatic reactive topology refresh (`lanflare://mesh-updated`).
+  5. Integrate the Mesh view tab into the desktop GUI navigation (`web/src/routes/+page.svelte`).
+  6. Verification commands:
      ```bash
-     cargo test -p lanflare-desktop
+     cd web && pnpm check && pnpm build
      ```
 
 

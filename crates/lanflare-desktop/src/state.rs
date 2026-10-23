@@ -67,6 +67,22 @@ pub struct DesktopState {
     pub identity_file: RwLock<PathBuf>,
     pub port_conflict: Arc<std::sync::atomic::AtomicBool>,
     pub retry_running: Arc<std::sync::atomic::AtomicBool>,
+
+    // Multi-Hop Mesh & Virtual Matrix
+    pub mesh_router: Arc<lanflare_core::mesh::router::MeshRouter>,
+    pub mesh_diagnostics: Arc<lanflare_core::mesh::diagnostics::MeshDiagnostics>,
+    pub virtual_matrix: Arc<lanflare_core::mesh::sim::VirtualNetworkMatrix>,
+    pub simulated_cluster: Mutex<Option<lanflare_core::mesh::sim::SimulatedMeshCluster>>,
+
+    // Chat Engine & Directory
+    pub chat_engine: RwLock<Option<Arc<lanflare_core::chat::engine::ChatEngine>>>,
+    pub chat_dir: RwLock<PathBuf>,
+
+    // Toolbox (Universal Clipboard Ring, Search & Collab)
+    pub device_ring: Arc<lanflare_core::toolbox::clipboard::DeviceRing>,
+    pub catalog: Arc<lanflare_core::toolbox::search::MeshFileCatalog>,
+    pub federated_search: Arc<lanflare_core::toolbox::search::FederatedSearchEngine>,
+    pub collab_manager: Arc<lanflare_core::toolbox::collab::CollabManager>,
 }
 
 use std::path::{Path, PathBuf};
@@ -173,12 +189,65 @@ impl DesktopState {
         let config = load_config();
         let registry = PeerRegistry::new();
 
+        // Mesh Router & Diagnostics
+        let graph = Arc::new(tokio::sync::RwLock::new(
+            lanflare_core::mesh::graph::MeshTopologyGraph::new(identity.fingerprint.clone()),
+        ));
+        let router_cfg = lanflare_core::mesh::router::MeshRouterConfig {
+            local_fingerprint: identity.fingerprint.clone(),
+            local_alias: config.alias.clone(),
+            relay_enabled: true,
+            ..Default::default()
+        };
+        let mesh_router = Arc::new(lanflare_core::mesh::router::MeshRouter::with_config(
+            router_cfg,
+            graph,
+        ));
+        let mesh_diagnostics = Arc::new(lanflare_core::mesh::diagnostics::MeshDiagnostics::new(&config.alias));
+        let virtual_matrix = Arc::new(lanflare_core::mesh::sim::VirtualNetworkMatrix::new());
+
+        // Toolbox: Personal Device Ring
+        let secret = lanflare_core::toolbox::clipboard::RingSecret::derive_from_pin("lanflare_ring", "000000");
+        let device_ring = lanflare_core::toolbox::clipboard::DeviceRing::new(
+            "lanflare_ring",
+            "My Devices",
+            identity.clone(),
+            secret,
+        );
+        device_ring.attach_mesh_router(mesh_router.clone());
+
+        // Toolbox: Federated Search Catalog & Engine
+        let catalog = Arc::new(lanflare_core::toolbox::search::MeshFileCatalog::new(
+            &identity.fingerprint,
+            &config.alias,
+        ));
+        let dufs_manager = Arc::new(lanflare_core::server::DufsManager::new());
+        let federated_search = Arc::new(
+            lanflare_core::toolbox::search::FederatedSearchEngine::new(
+                catalog.clone(),
+                &identity.fingerprint,
+                &config.alias,
+                config.port,
+            )
+            .with_registry(registry.clone())
+            .with_mesh_router(mesh_router.clone())
+            .with_dufs_manager(dufs_manager.clone()),
+        );
+
+        // Toolbox: CRDT Collaborative Scratchpad
+        let collab_manager = Arc::new(lanflare_core::toolbox::collab::CollabManager::new(&identity.fingerprint));
+
+        let chat_dir = dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("lanflare")
+            .join("chat");
+
         Ok(Self {
             config: Arc::new(RwLock::new(config)),
             identity: Arc::new(RwLock::new(identity)),
             registry,
             server_handle: RwLock::new(None),
-            dufs_manager: Arc::new(lanflare_core::server::DufsManager::new()),
+            dufs_manager,
             discovery: Mutex::new(DiscoveryState::default()),
             pending_incoming: Mutex::new(None),
             pending_browser_downloads: Mutex::new(std::collections::HashMap::new()),
@@ -188,6 +257,16 @@ impl DesktopState {
             identity_file: RwLock::new(id_path),
             port_conflict: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             retry_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            mesh_router,
+            mesh_diagnostics,
+            virtual_matrix,
+            simulated_cluster: Mutex::new(None),
+            chat_engine: RwLock::new(None),
+            chat_dir: RwLock::new(chat_dir),
+            device_ring,
+            catalog,
+            federated_search,
+            collab_manager,
         })
     }
 
@@ -225,6 +304,8 @@ impl DesktopState {
         if let Some(d_dir) = data_dir {
             let path = d_dir.join("lanflare").join("history.json");
             *self.history_file.write().await = path;
+            let c_dir = d_dir.join("lanflare").join("chat");
+            *self.chat_dir.write().await = c_dir;
         }
         #[cfg(target_os = "android")]
         {
@@ -270,5 +351,40 @@ impl DesktopState {
     pub async fn save_history_current(&self, items: &[serde_json::Value]) -> std::io::Result<()> {
         let path = self.history_file.read().await.clone();
         save_history_file(&path, items)
+    }
+
+    /// Returns the active `ChatEngine`, initializing it lazily if not yet created.
+    pub async fn get_or_init_chat_engine(&self) -> Result<Arc<lanflare_core::chat::engine::ChatEngine>, String> {
+        {
+            let guard = self.chat_engine.read().await;
+            if let Some(ref ce) = *guard {
+                return Ok(ce.clone());
+            }
+        }
+
+        let mut guard = self.chat_engine.write().await;
+        if let Some(ref ce) = *guard {
+            return Ok(ce.clone());
+        }
+
+        let ident = self.identity.read().await.clone();
+        let cfg = self.config.read().await;
+        let chat_dir = self.chat_dir.read().await.clone();
+        let chat_cfg = lanflare_core::chat::engine::ChatEngineConfig::new(&cfg.alias, &chat_dir);
+
+        let engine = lanflare_core::chat::engine::ChatEngine::new(ident, chat_cfg, self.registry.clone())
+            .await
+            .map_err(|e| format!("Failed to initialize ChatEngine: {e}"))?;
+
+        engine.attach_mesh_router(self.mesh_router.clone()).await;
+
+        *guard = Some(engine.clone());
+        Ok(engine)
+    }
+
+    /// Returns a reference to the delay-tolerant OutboxDispatcher if ChatEngine is initialized.
+    pub async fn outbox(&self) -> Result<Arc<lanflare_core::chat::outbox::OutboxDispatcher>, String> {
+        let ce = self.get_or_init_chat_engine().await?;
+        Ok(ce.outbox().clone())
     }
 }

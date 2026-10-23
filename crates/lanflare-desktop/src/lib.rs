@@ -73,6 +73,53 @@ pub fn run() {
                     }
                 });
 
+                // Chat Engine event pump: emit chat messages, receipts, and trust requests
+                let state_chat = state_setup.clone();
+                let app_chat = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Emitter;
+                    if let Ok(chat) = state_chat.get_or_init_chat_engine().await {
+                        let mut rx = chat.subscribe_events();
+                        while let Ok(event) = rx.recv().await {
+                            match event {
+                                lanflare_core::chat::ChatEngineEvent::MessageReceived(msg) => {
+                                    let _ = app_chat.emit("lanflare://chat-message", &msg);
+                                }
+                                lanflare_core::chat::ChatEngineEvent::DeliveryReceiptReceived(r) => {
+                                    let _ = app_chat.emit("lanflare://chat-receipt", &r);
+                                }
+                                lanflare_core::chat::ChatEngineEvent::ReadReceiptReceived(r) => {
+                                    let _ = app_chat.emit("lanflare://chat-receipt", &r);
+                                }
+                                lanflare_core::chat::ChatEngineEvent::TrustRequestReceived(req) => {
+                                    let _ = app_chat.emit("lanflare://trust-request", &req);
+                                }
+                                lanflare_core::chat::ChatEngineEvent::ContactApproved { peer_fp } => {
+                                    let _ = app_chat.emit("lanflare://trust-request", serde_json::json!({ "approved": peer_fp }));
+                                }
+                                lanflare_core::chat::ChatEngineEvent::ContactBlocked { peer_fp } => {
+                                    let _ = app_chat.emit("lanflare://trust-request", serde_json::json!({ "blocked": peer_fp }));
+                                }
+                                lanflare_core::chat::ChatEngineEvent::GroupSynced { group_id, .. } => {
+                                    let _ = app_chat.emit("lanflare://chat-message", serde_json::json!({ "groupSynced": group_id }));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                });
+
+                // Personal Device Ring Universal Clipboard event pump
+                let state_ring = state_setup.clone();
+                let app_ring = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tauri::Emitter;
+                    let mut rx = state_ring.device_ring.subscribe();
+                    while let Ok(event) = rx.recv().await {
+                        let _ = app_ring.emit("lanflare://clipboard-synced", &event);
+                    }
+                });
+
                 #[cfg(desktop)]
                 tray::setup_tray(app.handle(), state_setup)?;
                 Ok(())
@@ -111,6 +158,25 @@ pub fn run() {
             commands::start_dufs_share,
             commands::stop_dufs_share,
             commands::get_dufs_share_status,
+            // Sub-phase 11.2: Multi-Hop Mesh & Simulation
+            commands::get_mesh_topology,
+            commands::start_mesh_simulation,
+            commands::toggle_mesh_link,
+            commands::run_mesh_traceroute,
+            commands::run_mesh_benchmark,
+            // Sub-phase 11.2: Encrypted 1:1 & Group Chat
+            commands::send_chat_message,
+            commands::respond_trust_request,
+            commands::list_chat_conversations,
+            commands::get_chat_history,
+            commands::create_chat_group,
+            commands::sync_chat_group,
+            // Sub-phase 11.2: LAN Toolbox
+            commands::get_clipboard_state,
+            commands::broadcast_clipboard,
+            commands::search_federated_files,
+            commands::get_collab_doc,
+            commands::apply_collab_edit,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running LanFlare Desktop application");
