@@ -19,7 +19,21 @@ import type {
 	RunTraceroutePayload,
 	MeshTracerouteResponse,
 	RunBenchmarkPayload,
-	SpeedtestResultDto
+	SpeedtestResultDto,
+	ChatConversationDto,
+	ChatMessageViewDto,
+	SendChatMessagePayload,
+	RespondTrustRequestPayload,
+	CreateChatGroupPayload,
+	GroupMembershipRosterDto,
+	SyncChatGroupPayload,
+	SyncStatsDto,
+	UniversalClipboardPayloadDto,
+	ClipboardStateDto,
+	SearchHitDto,
+	SearchFederatedFilesPayload,
+	ScratchpadSyncDto,
+	ScratchpadEditDto
 } from './types';
 
 // Open a file using system default application
@@ -268,6 +282,52 @@ export async function runMeshBenchmark(payload: RunBenchmarkPayload): Promise<Sp
 	return tauriInvoke<SpeedtestResultDto>('run_mesh_benchmark', { payload });
 }
 
+// Encrypted 1:1 and Causal Group Chat API
+export async function sendChatMessage(payload: SendChatMessagePayload): Promise<any> {
+	return tauriInvoke<any>('send_chat_message', { payload });
+}
+
+export async function respondTrustRequest(payload: RespondTrustRequestPayload): Promise<void> {
+	return tauriInvoke<void>('respond_trust_request', { payload });
+}
+
+export async function listChatConversations(): Promise<ChatConversationDto[]> {
+	return tauriInvoke<ChatConversationDto[]>('list_chat_conversations');
+}
+
+export async function getChatHistory(payload: { conversationId: string; limit?: number }): Promise<ChatMessageViewDto[]> {
+	return tauriInvoke<ChatMessageViewDto[]>('get_chat_history', { payload });
+}
+
+export async function createChatGroup(payload: CreateChatGroupPayload): Promise<GroupMembershipRosterDto> {
+	return tauriInvoke<GroupMembershipRosterDto>('create_chat_group', { payload });
+}
+
+export async function syncChatGroup(payload: SyncChatGroupPayload): Promise<SyncStatsDto> {
+	return tauriInvoke<SyncStatsDto>('sync_chat_group', { payload });
+}
+
+// LAN Toolbox: Clipboard Ring, Federated Search & Collab Scratchpad API
+export async function getClipboardState(): Promise<ClipboardStateDto> {
+	return tauriInvoke<ClipboardStateDto>('get_clipboard_state');
+}
+
+export async function broadcastClipboard(payload: { payload: UniversalClipboardPayloadDto }): Promise<boolean> {
+	return tauriInvoke<boolean>('broadcast_clipboard', { payload });
+}
+
+export async function searchFederatedFiles(payload: SearchFederatedFilesPayload): Promise<SearchHitDto[]> {
+	return tauriInvoke<SearchHitDto[]>('search_federated_files', { payload });
+}
+
+export async function getCollabDoc(payload: { docId: string; title?: string }): Promise<ScratchpadSyncDto> {
+	return tauriInvoke<ScratchpadSyncDto>('get_collab_doc', { payload });
+}
+
+export async function applyCollabEdit(payload: { edit: ScratchpadEditDto }): Promise<boolean> {
+	return tauriInvoke<boolean>('apply_collab_edit', { payload });
+}
+
 // Fallback mocks for Vite standalone dev/test in browser
 function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 	switch (cmd) {
@@ -483,6 +543,229 @@ function getMockResponse<T>(cmd: string, _args?: Record<string, unknown>): T {
 			return null as T;
 		case 'stop_dufs_share':
 			return undefined as T;
+		case 'list_chat_conversations':
+			return [
+				{
+					id: 'CONV_MOCK_BOB_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+					alias: 'Bob (Workstation)',
+					targetFp: 'BOB_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+					isGroup: false,
+					lastMessage: 'Hey! Are you online on the local mesh?',
+					lastMessageTimeMs: Date.now() - 60000,
+					unreadCount: 1,
+					trustState: 'TrustedContact'
+				},
+				{
+					id: 'GROUP_MOCK_CORE_DEVS_ID',
+					alias: 'LanFlare Core Mesh Group',
+					targetFp: 'GROUP_MOCK_CORE_DEVS_ID',
+					isGroup: true,
+					lastMessage: '[Group message #4f2a91b0]',
+					lastMessageTimeMs: Date.now() - 120000,
+					unreadCount: 0,
+					trustState: 'TrustedGroup'
+				},
+				{
+					id: 'CONV_MOCK_STRANGER_FINGERPRINT',
+					alias: 'Untrusted Guest Node',
+					targetFp: 'STRANGER_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+					isGroup: false,
+					lastMessage: 'Hello, I would like to connect over LAN.',
+					lastMessageTimeMs: Date.now() - 300000,
+					unreadCount: 1,
+					trustState: 'Stranger'
+				}
+			] as T;
+		case 'get_chat_history':
+			return [
+				{
+					id: 'msg-1',
+					senderFp: 'BOB_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+					recipientFp: 'LOCAL_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+					isSelf: false,
+					content: 'Hey! Are you online on the local mesh?',
+					timestampMs: Date.now() - 180000,
+					deliveryState: 'Read',
+					mediaType: 'text'
+				},
+				{
+					id: 'msg-2',
+					senderFp: 'LOCAL_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+					recipientFp: 'BOB_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+					isSelf: true,
+					content: 'Yes! Connected via 2-hop overlay relay.',
+					timestampMs: Date.now() - 120000,
+					deliveryState: 'Delivered',
+					mediaType: 'text'
+				},
+				{
+					id: 'msg-3',
+					senderFp: 'LOCAL_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+					recipientFp: 'BOB_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+					isSelf: true,
+					content: '[Voice: 4s]',
+					timestampMs: Date.now() - 60000,
+					deliveryState: 'Delivered',
+					mediaType: 'voice',
+					voiceDurationSec: 4
+				}
+			] as T;
+		case 'send_chat_message':
+			return {
+				id: 'msg-mock-new',
+				timestampMs: Date.now(),
+				content: { text: 'Mock message sent' }
+			} as T;
+		case 'respond_trust_request':
+			return undefined as T;
+		case 'create_chat_group':
+			return {
+				groupId: 'group-mock-new',
+				groupName: 'New LAN Group',
+				epoch: 1,
+				members: [],
+				adminFp: 'LOCAL_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+				createdAtMs: Date.now()
+			} as T;
+		case 'sync_chat_group':
+			return {
+				nodesPushed: 0,
+				nodesPulled: 2,
+				keysExchanged: 1
+			} as T;
+		case 'get_clipboard_state':
+			return {
+				ringId: 'RING_MOCK_UUID_1234',
+				ringName: "Alice's Personal Devices",
+				currentHash: 'E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855',
+				payload: {
+					type: 'text',
+					text: 'https://github.com/lanflare/lanflare'
+				},
+				devices: [
+					{
+						fingerprint: 'LOCAL_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+						alias: 'This Laptop (Local)',
+						deviceType: 'Desktop',
+						joinedAtMs: Date.now() - 86400000
+					},
+					{
+						fingerprint: 'PHONE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+						alias: 'Personal Phone',
+						deviceType: 'Mobile',
+						joinedAtMs: Date.now() - 43200000
+					}
+				]
+			} as T;
+		case 'broadcast_clipboard':
+			return true as T;
+		case 'search_federated_files':
+			return [
+				{
+					fileName: 'architecture_diagram.png',
+					relativePath: '/shared/docs/architecture_diagram.png',
+					sizeBytes: 1548200,
+					modifiedAtMs: Date.now() - 3600000,
+					mimeType: 'image/png',
+					requiresPin: false,
+					downloadUrl: 'http://192.168.1.150:53317/dufs/shared/docs/architecture_diagram.png',
+					peerFp: 'BOB_NODE_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+					peerAlias: 'Bob (Workstation)',
+					relevanceScore: 98
+				},
+				{
+					fileName: 'lanflare_release_v2.tar.gz',
+					relativePath: '/builds/lanflare_release_v2.tar.gz',
+					sizeBytes: 24580210,
+					modifiedAtMs: Date.now() - 7200000,
+					mimeType: 'application/gzip',
+					requiresPin: true,
+					downloadUrl: 'http://192.168.1.188:53317/dufs/builds/lanflare_release_v2.tar.gz',
+					peerFp: 'RELAY_1_MOCK_FINGERPRINT_64CHARS_ABCDEF0123456789ABCDEF0123456789',
+					peerAlias: 'Relay-1 (Living Room)',
+					relevanceScore: 85
+				}
+			] as T;
+		case 'get_collab_doc':
+			return {
+				docId: 'scratchpad-main',
+				title: 'Shared Project Notes.md',
+				atoms: [
+					{
+						id: { lamport: 1, authorFp: 'AUTHOR_A', counter: 1 },
+						value: '#',
+						deleted: false,
+						lamport: 1
+					},
+					{
+						id: { lamport: 2, authorFp: 'AUTHOR_A', counter: 2 },
+						afterId: { lamport: 1, authorFp: 'AUTHOR_A', counter: 1 },
+						value: ' ',
+						deleted: false,
+						lamport: 2
+					},
+					{
+						id: { lamport: 3, authorFp: 'AUTHOR_A', counter: 3 },
+						afterId: { lamport: 2, authorFp: 'AUTHOR_A', counter: 2 },
+						value: 'L',
+						deleted: false,
+						lamport: 3
+					},
+					{
+						id: { lamport: 4, authorFp: 'AUTHOR_A', counter: 4 },
+						afterId: { lamport: 3, authorFp: 'AUTHOR_A', counter: 3 },
+						value: 'a',
+						deleted: false,
+						lamport: 4
+					},
+					{
+						id: { lamport: 5, authorFp: 'AUTHOR_A', counter: 5 },
+						afterId: { lamport: 4, authorFp: 'AUTHOR_A', counter: 4 },
+						value: 'n',
+						deleted: false,
+						lamport: 5
+					},
+					{
+						id: { lamport: 6, authorFp: 'AUTHOR_A', counter: 6 },
+						afterId: { lamport: 5, authorFp: 'AUTHOR_A', counter: 5 },
+						value: 'F',
+						deleted: false,
+						lamport: 6
+					},
+					{
+						id: { lamport: 7, authorFp: 'AUTHOR_A', counter: 7 },
+						afterId: { lamport: 6, authorFp: 'AUTHOR_A', counter: 6 },
+						value: 'l',
+						deleted: false,
+						lamport: 7
+					},
+					{
+						id: { lamport: 8, authorFp: 'AUTHOR_A', counter: 8 },
+						afterId: { lamport: 7, authorFp: 'AUTHOR_A', counter: 7 },
+						value: 'a',
+						deleted: false,
+						lamport: 8
+					},
+					{
+						id: { lamport: 9, authorFp: 'AUTHOR_A', counter: 9 },
+						afterId: { lamport: 8, authorFp: 'AUTHOR_A', counter: 8 },
+						value: 'r',
+						deleted: false,
+						lamport: 9
+					},
+					{
+						id: { lamport: 10, authorFp: 'AUTHOR_A', counter: 10 },
+						afterId: { lamport: 9, authorFp: 'AUTHOR_A', counter: 9 },
+						value: 'e',
+						deleted: false,
+						lamport: 10
+					}
+				],
+				lamport: 10,
+				lastModifiedMs: Date.now()
+			} as T;
+		case 'apply_collab_edit':
+			return true as T;
 		default:
 			return undefined as T;
 	}

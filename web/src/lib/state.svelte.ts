@@ -15,7 +15,21 @@ import type {
 	RunTraceroutePayload,
 	MeshTracerouteResponse,
 	RunBenchmarkPayload,
-	SpeedtestResultDto
+	SpeedtestResultDto,
+	ChatConversationDto,
+	ChatMessageViewDto,
+	SendChatMessagePayload,
+	RespondTrustRequestPayload,
+	CreateChatGroupPayload,
+	GroupMembershipRosterDto,
+	SyncChatGroupPayload,
+	SyncStatsDto,
+	UniversalClipboardPayloadDto,
+	ClipboardStateDto,
+	SearchHitDto,
+	SearchFederatedFilesPayload,
+	ScratchpadSyncDto,
+	ScratchpadEditDto
 } from './types';
 import {
 	getNodeStatus,
@@ -41,7 +55,18 @@ import {
 	startMeshSimulation,
 	toggleMeshLink,
 	runMeshTraceroute,
-	runMeshBenchmark
+	runMeshBenchmark,
+	listChatConversations,
+	getChatHistory,
+	sendChatMessage,
+	respondTrustRequest,
+	createChatGroup,
+	syncChatGroup,
+	getClipboardState,
+	broadcastClipboard,
+	searchFederatedFiles,
+	getCollabDoc,
+	applyCollabEdit
 } from './api';
 import { readText as tauriReadText, readImage as tauriReadImage } from '@tauri-apps/plugin-clipboard-manager';
 
@@ -74,8 +99,8 @@ export class AppState {
 	// Pending Browser Download Requests (when share_link_auto_accept is true)
 	pendingBrowserDownloads = $state<BrowserDownloadRequest[]>([]);
 
-	// Active Tab ('radar' | 'transfers' | 'mesh')
-	activeTab = $state<'radar' | 'transfers' | 'mesh'>('radar');
+	// Active Tab ('radar' | 'transfers' | 'mesh' | 'chat' | 'toolbox')
+	activeTab = $state<'radar' | 'transfers' | 'mesh' | 'chat' | 'toolbox'>('radar');
 
 	// Multi-hop Mesh Overlay & Simulation State
 	meshTopology = $state<MeshTopologyView | null>(null);
@@ -87,6 +112,24 @@ export class AppState {
 	isBenchmarking = $state<boolean>(false);
 	diagnosticError = $state<string | null>(null);
 	severedLinks = $state<string[]>([]);
+
+	// Encrypted 1:1 and Group Chat State
+	conversations = $state<ChatConversationDto[]>([]);
+	activeConversationId = $state<string | null>(null);
+	activeMessages = $state<ChatMessageViewDto[]>([]);
+	isChatLoading = $state<boolean>(false);
+
+	// Multi-Functional LAN Toolbox State
+	toolboxTab = $state<'clipboard' | 'search' | 'scratchpad'>('clipboard');
+	clipboardState = $state<ClipboardStateDto | null>(null);
+	clipboardHistory = $state<UniversalClipboardPayloadDto[]>([]);
+	searchResults = $state<SearchHitDto[]>([]);
+	isSearchingFiles = $state<boolean>(false);
+	searchQueryFiles = $state<string>('');
+	searchPinFiles = $state<string>('');
+	collabDoc = $state<ScratchpadSyncDto | null>(null);
+	collabContent = $state<string>('');
+	isCollabSaving = $state<boolean>(false);
 
 	// Active and Recent Transfers
 	transfers = $state<TransferQueueItem[]>([]);
@@ -144,6 +187,24 @@ export class AppState {
 		return this.preparedItems.reduce((acc, item) => acc + item.size, 0);
 	});
 
+	// Derived: Total Unread Chat Messages
+	totalUnreadChatCount = $derived.by(() => {
+		return this.conversations.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
+	});
+
+	// Derived: Active Chat Conversation
+	activeConversation = $derived.by(() => {
+		if (!this.activeConversationId) return null;
+		return this.conversations.find((c) => c.id === this.activeConversationId) || null;
+	});
+
+	// Derived: Stranger Status for Active Chat
+	isStrangerActive = $derived.by(() => {
+		const c = this.activeConversation;
+		if (!c) return false;
+		return c.trustState === 'Stranger' || c.trustState === 'PendingApproval';
+	});
+
 	// Initialize app, load history, and setup event listeners
 	async init() {
 		// Setup event listeners first so no events are missed
@@ -168,6 +229,11 @@ export class AppState {
 			await startDiscovery();
 			this.isDiscovering = true;
 			this.peers = await getDiscoveredPeers();
+
+			// Asynchronously initialize mesh, chat and toolbox states
+			this.loadMeshTopology().catch(() => {});
+			this.loadConversations().catch(() => {});
+			this.loadClipboardState().catch(() => {});
 		} catch (e) {
 			console.error('Failed to initialize app state:', e);
 		}
@@ -760,6 +826,48 @@ export class AppState {
 				this.selectedMeshNodeFp = nonLocal ? nonLocal.fingerprint : payload.nodes[0].fingerprint;
 			}
 		});
+
+		// 9. Chat message updates
+		await tauriListen<any>('lanflare://chat-message', async () => {
+			await this.loadConversations();
+			if (this.activeConversationId) {
+				await this.loadChatHistory(this.activeConversationId);
+			}
+		});
+
+		// 10. Chat receipt updates (Delivery/Read status)
+		await tauriListen<any>('lanflare://chat-receipt', async (receipt) => {
+			if (receipt && receipt.messageId) {
+				const msg = this.activeMessages.find((m) => m.id === receipt.messageId);
+				if (msg) {
+					const rType = String(receipt.receiptType || '').toLowerCase();
+					if (rType === 'read') {
+						msg.deliveryState = 'Read';
+					} else if (msg.deliveryState !== 'Read') {
+						msg.deliveryState = 'Delivered';
+					}
+				}
+			}
+		});
+
+		// 11. Trust request updates
+		await tauriListen<any>('lanflare://trust-request', async () => {
+			await this.loadConversations();
+		});
+
+		// 12. Universal Clipboard Ring sync
+		await tauriListen<any>('lanflare://clipboard-synced', (payload) => {
+			if (payload) {
+				const item = payload.payload || payload;
+				this.clipboardHistory.unshift(item);
+				if (this.clipboardHistory.length > 50) {
+					this.clipboardHistory.pop();
+				}
+				if (this.clipboardState) {
+					this.clipboardState.payload = item;
+				}
+			}
+		});
 	}
 
 	// Actions
@@ -974,6 +1082,176 @@ export class AppState {
 			console.error('Speedtest failed:', e);
 		} finally {
 			this.isBenchmarking = false;
+		}
+	}
+
+	// ========================================================================
+	// Chat Actions
+	// ========================================================================
+
+	async loadConversations() {
+		try {
+			this.conversations = await listChatConversations();
+			if (!this.activeConversationId && this.conversations.length > 0) {
+				this.selectConversation(this.conversations[0].id);
+			}
+		} catch (e) {
+			console.error('Failed to load chat conversations:', e);
+		}
+	}
+
+	async selectConversation(convId: string) {
+		this.activeConversationId = convId;
+		const conv = this.conversations.find((c) => c.id === convId);
+		if (conv) {
+			conv.unreadCount = 0;
+		}
+		await this.loadChatHistory(convId);
+	}
+
+	async loadChatHistory(convId: string) {
+		this.isChatLoading = true;
+		try {
+			this.activeMessages = await getChatHistory({ conversationId: convId });
+		} catch (e) {
+			console.error(`Failed to load chat history for ${convId}:`, e);
+		} finally {
+			this.isChatLoading = false;
+		}
+	}
+
+	async sendChatMessage(text: string, intro?: boolean) {
+		if (!this.activeConversationId || !text.trim()) return;
+		const conv = this.activeConversation;
+		const target = conv?.targetFp || this.activeConversationId;
+		try {
+			await sendChatMessage({
+				target,
+				message: text.trim(),
+				intro
+			});
+			await this.loadConversations();
+			await this.loadChatHistory(this.activeConversationId);
+		} catch (e) {
+			console.error('Failed to send chat message:', e);
+			throw e;
+		}
+	}
+
+	async respondTrust(peerFp: string, approve: boolean) {
+		try {
+			await respondTrustRequest({ peerFingerprint: peerFp, approve });
+			await this.loadConversations();
+		} catch (e) {
+			console.error('Failed to respond to trust request:', e);
+		}
+	}
+
+	async createChatGroup(groupName: string, memberFingerprints: string[]) {
+		try {
+			const roster = await createChatGroup({ groupName, memberFingerprints });
+			await this.loadConversations();
+			this.selectConversation(roster.groupId);
+		} catch (e) {
+			console.error('Failed to create chat group:', e);
+			throw e;
+		}
+	}
+
+	async syncChatGroup(groupId: string, peerFp: string) {
+		try {
+			await syncChatGroup({ groupId, peerFingerprint: peerFp });
+			await this.loadChatHistory(groupId);
+		} catch (e) {
+			console.error('Failed to sync chat group:', e);
+		}
+	}
+
+	// ========================================================================
+	// Multi-Functional LAN Toolbox Actions
+	// ========================================================================
+
+	async loadClipboardState() {
+		try {
+			this.clipboardState = await getClipboardState();
+			if (this.clipboardState.payload && this.clipboardHistory.length === 0) {
+				this.clipboardHistory.push(this.clipboardState.payload);
+			}
+		} catch (e) {
+			console.error('Failed to load clipboard state:', e);
+		}
+	}
+
+	async broadcastClipboardText(text: string) {
+		try {
+			const payload: UniversalClipboardPayloadDto = { type: 'text', text };
+			const synced = await broadcastClipboard({ payload });
+			if (synced) {
+				this.clipboardHistory.unshift(payload);
+				if (this.clipboardHistory.length > 50) this.clipboardHistory.pop();
+				if (this.clipboardState) this.clipboardState.payload = payload;
+			}
+			return synced;
+		} catch (e) {
+			console.error('Failed to broadcast clipboard text:', e);
+			throw e;
+		}
+	}
+
+	async broadcastClipboardImage(mimeType: string, dataBase64: string) {
+		try {
+			const payload: UniversalClipboardPayloadDto = { type: 'image', mimeType, dataBase64 };
+			const synced = await broadcastClipboard({ payload });
+			if (synced) {
+				this.clipboardHistory.unshift(payload);
+				if (this.clipboardHistory.length > 50) this.clipboardHistory.pop();
+				if (this.clipboardState) this.clipboardState.payload = payload;
+			}
+			return synced;
+		} catch (e) {
+			console.error('Failed to broadcast clipboard image:', e);
+			throw e;
+		}
+	}
+
+	async searchFederatedFiles(query: string, pin?: string) {
+		if (!query.trim()) {
+			this.searchResults = [];
+			return;
+		}
+		this.isSearchingFiles = true;
+		try {
+			this.searchResults = await searchFederatedFiles({
+				query: query.trim(),
+				pin: pin?.trim() || undefined,
+				timeoutSecs: 3
+			});
+		} catch (e) {
+			console.error('Federated search failed:', e);
+			this.searchResults = [];
+		} finally {
+			this.isSearchingFiles = false;
+		}
+	}
+
+	async loadCollabDoc(docId: string, title?: string) {
+		try {
+			this.collabDoc = await getCollabDoc({ docId, title });
+			// Reconstruct plain text by filtering out tombstones
+			this.collabContent = this.collabDoc.atoms
+				.filter((a) => !a.deleted)
+				.map((a) => a.value)
+				.join('');
+		} catch (e) {
+			console.error('Failed to load collaborative scratchpad doc:', e);
+		}
+	}
+
+	async applyCollabEdit(edit: ScratchpadEditDto) {
+		try {
+			await applyCollabEdit({ edit });
+		} catch (e) {
+			console.error('Failed to apply collab edit:', e);
 		}
 	}
 }

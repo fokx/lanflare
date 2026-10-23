@@ -295,3 +295,160 @@ export interface SpeedtestResultDto {
 	chunksReceived: number;
 }
 
+// ============================================================================
+// P2P & Causal Group Chat Types
+// ============================================================================
+
+export type TrustState = 'Stranger' | 'PendingApproval' | 'TrustedContact' | 'Blocked' | 'TrustedGroup';
+
+export interface ChatConversationDto {
+	id: string;
+	alias: string;
+	targetFp: string;
+	isGroup: boolean;
+	lastMessage?: string;
+	lastMessageTimeMs: number;
+	unreadCount: number;
+	trustState: string;
+}
+
+export interface ChatMessageViewDto {
+	id: string;
+	senderFp: string;
+	recipientFp: string;
+	isSelf: boolean;
+	content: string;
+	timestampMs: number;
+	deliveryState: string; // 'Queued' | 'Sending' | 'Relayed' | 'Delivered' | 'Read' | 'Failed'
+	mediaType?: 'text' | 'image' | 'file' | 'voice' | 'video';
+	fileName?: string;
+	fileSize?: number;
+	bytesTransferred?: number;
+	voiceDurationSec?: number;
+	mediaUrl?: string;
+}
+
+export interface SendChatMessagePayload {
+	target: string;
+	message: string;
+	intro?: boolean;
+}
+
+export interface RespondTrustRequestPayload {
+	peerFingerprint: string;
+	approve: boolean;
+}
+
+export interface CreateChatGroupPayload {
+	groupName: string;
+	memberFingerprints: string[];
+}
+
+export interface GroupMemberDto {
+	fingerprint: string;
+	alias: string;
+	role: 'Admin' | 'Member';
+	certPem: string;
+	joinedAtMs: number;
+}
+
+export interface GroupMembershipRosterDto {
+	groupId: string;
+	groupName: string;
+	epoch: number;
+	members: GroupMemberDto[];
+	adminFp: string;
+	createdAtMs: number;
+}
+
+export interface SyncChatGroupPayload {
+	groupId: string;
+	peerFingerprint: string;
+}
+
+export interface SyncStatsDto {
+	nodesPushed: number;
+	nodesPulled: number;
+	keysExchanged: number;
+}
+
+// ============================================================================
+// Multi-Functional LAN Toolbox Types
+// ============================================================================
+
+export type UniversalClipboardPayloadDto =
+	| { type: 'text'; text: string }
+	| { type: 'image'; mimeType: string; dataBase64: string }
+	| { type: 'files'; files: string[] };
+
+export interface RingDeviceDto {
+	fingerprint: string;
+	alias: string;
+	deviceType?: DeviceType;
+	joinedAtMs: number;
+}
+
+export interface ClipboardStateDto {
+	ringId: string;
+	ringName: string;
+	currentHash?: string;
+	payload?: UniversalClipboardPayloadDto;
+	devices: RingDeviceDto[];
+}
+
+export interface SearchHitDto {
+	fileName: string;
+	relativePath: string;
+	sizeBytes: number;
+	modifiedAtMs: number;
+	mimeType: string;
+	sha256?: string;
+	requiresPin: boolean;
+	downloadUrl: string;
+	peerFp: string;
+	peerAlias: string;
+	relevanceScore: number;
+}
+
+export interface SearchFederatedFilesPayload {
+	query: string;
+	pin?: string;
+	timeoutSecs?: number;
+}
+
+export interface AtomIdDto {
+	lamport: number;
+	authorFp: string;
+	counter: number;
+}
+
+export interface ScratchpadAtomDto {
+	id: AtomIdDto;
+	afterId?: AtomIdDto;
+	value: string;
+	deleted: boolean;
+	lamport: number;
+}
+
+export interface ScratchpadSyncDto {
+	docId: string;
+	title: string;
+	atoms: ScratchpadAtomDto[];
+	lamport: number;
+	lastModifiedMs: number;
+}
+
+export type ScratchpadOpDto =
+	| { type: 'insert'; atomId: AtomIdDto; afterId?: AtomIdDto; value: string }
+	| { type: 'delete'; atomId: AtomIdDto };
+
+export interface ScratchpadEditDto {
+	docId: string;
+	editId: string;
+	authorFp: string;
+	lamport: number;
+	op: ScratchpadOpDto;
+	timestampMs: number;
+}
+
+

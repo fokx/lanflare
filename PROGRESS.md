@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Sub-phase 11.3 Complete; Working on **Phase 11: Desktop GUI & CLI Integration for Mesh, Chat & LAN Toolbox**.
-- **Overall Status**: Sub-phase 11.3 Complete; Ready for **Sub-phase 11.4: Svelte 5 Rich P2P/Group Chat View, Voice Recorder & LAN Toolbox UI (`web/`)**.
+- **Current Milestone**: **Phase 11 Complete — All Roadmap Phases (Phases 1 through 11) Fully Implemented & Verified**.
+- **Overall Status**: Project feature milestones achieved; Ready for **Production Packaging, Cross-Platform Bundling & End-to-End User Acceptance Verification**.
 
 ---
 
@@ -369,6 +369,31 @@
     - `cd web && pnpm build` (clean static export)
     - `cargo clippy --all-targets -- -D warnings` (0 warnings)
     - `cargo test --all` (170+ tests passing)
+- [x] Implement Svelte 5 Rich P2P/Group Chat View, Voice Recorder & LAN Toolbox UI (`web/`) (Sub-phase 11.4):
+  - Defined TypeScript models in [`web/src/lib/types.ts`](file:///f/lanflare/web/src/lib/types.ts) and typed IPC wrappers in [`web/src/lib/api.ts`](file:///f/lanflare/web/src/lib/api.ts) for:
+    - Chat: `ChatConversationDto`, `ChatMessageViewDto`, `SendChatMessagePayload`, `RespondTrustRequestPayload`, `CreateChatGroupPayload`, `GroupMembershipRosterDto`, `SyncChatGroupPayload`, `SyncStatsDto`.
+    - Toolbox: `UniversalClipboardPayloadDto`, `RingDeviceDto`, `ClipboardStateDto`, `SearchHitDto`, `SearchFederatedFilesPayload`, `ScratchpadAtomDto`, `ScratchpadSyncDto`, `ScratchpadEditDto`.
+    - Comprehensive fallback mock responses for browser development mode.
+  - Extended `AppState` in [`web/src/lib/state.svelte.ts`](file:///f/lanflare/web/src/lib/state.svelte.ts):
+    - Reactive state for conversations, active messages, unread badge calculation, and stranger trust states.
+    - Reactive state for clipboard ring, clipboard history stream, federated file search results, and collaborative scratchpad text/atoms.
+    - Real-time Tauri listeners for `lanflare://chat-message`, `lanflare://chat-receipt`, `lanflare://trust-request`, and `lanflare://clipboard-synced`.
+  - Built [`web/src/lib/components/ChatView.svelte`](file:///f/lanflare/web/src/lib/components/ChatView.svelte):
+    - Master-detail responsive conversation list with unread badges, peer trust indicators, and new chat/group creation modals.
+    - 5-layer anti-harassment stranger request approval/block banner with 1-click elevation.
+    - Timeline with monotonic delivery checkmarks (`Queued 🕒`, `Relayed ⇄`, `Delivered ✓✓`, `Read ✓✓`).
+    - Inline previews for images, video, and resumable attachment progress bars with byte-offset indicators.
+    - Microphone voice-note recorder (`navigator.mediaDevices.getUserMedia` / Web Audio API) with live duration counter, sound wave visualization, instant preview, and send.
+  - Built [`web/src/lib/components/ToolboxView.svelte`](file:///f/lanflare/web/src/lib/components/ToolboxView.svelte):
+    - Universal Clipboard Ring status, paired device list, 3-layer echo-loop suppression indicator, live clipboard history, and universal text/image broadcast.
+    - Federated Inverted Index File Search querying local Dufs catalog and multi-hop mesh peers, displaying relevance score badges, PIN authorization tags, and direct download links.
+    - Live Collaborative RGA Sequence CRDT Scratchpad with character-by-character edit synchronization, Lamport clock counter, and atom/tombstone tracking.
+  - Integrated `P2P & Group Chat` and `LAN Toolbox` navigation tabs into desktop sidebar and mobile bottom navigation in [`web/src/routes/+page.svelte`](file:///f/lanflare/web/src/routes/+page.svelte).
+  - Verified 100% clean check and build:
+    - `cd web && pnpm check` (0 errors, 0 warnings)
+    - `cd web && pnpm build` (clean static export)
+    - `cargo clippy --all-targets -- -D warnings` (0 warnings)
+    - `cargo test --all` (170+ tests passing across workspace)
 
 ---
 
@@ -751,14 +776,15 @@
 
 ---
 
-- **ADR-043: Svelte 5 Reactive Mesh Topology Graph, Client-Side Dijkstra Route Projection & Live Simulation Matrix Controls**
-  - *Context*: The desktop GUI requires an intuitive, high-performance visualization of multi-hop overlay mesh networks, showing local device context, intermediate relays, multi-subnet connectivity, live link latencies, and route health without heavy external charting library dependencies.
-  - *Decision*: Implement `MeshTopologyView.svelte` using pure SVG rendering, custom radial positioning with pointer-driven drag-to-position, client-side Dijkstra shortest-path projection mirroring `lanflare-core::mesh::graph`, and interactive sandbox link severing/restoration controls.
+- **ADR-044: Svelte 5 Reactive P2P/Group Chat, Voice Recorder & LAN Toolbox UI Architecture**
+  - *Context*: The desktop GUI frontend requires real-time reactive presentation of decentralized 1:1 and Merkle-DAG group chats, live audio recording, anti-harassment stranger approval banners, multi-device clipboard synchronization with echo loop filtering, federated file search, and collaborative CRDT editing without heavy external framework bloat.
+  - *Decision*: Implement `ChatView.svelte` and `ToolboxView.svelte` using native Svelte 5 runes (`$state`, `$derived.by`, `$effect`), Web Audio API / `MediaRecorder` voice capture, and modular IPC integrations in `AppState`.
   - *Invariants*:
-    - **Zero External Heavy Dependencies**: Render topology using native responsive SVG elements with hardware-accelerated CSS filters and gradients rather than D3 or WebGL bundles, keeping package size minimal and instant-loading.
-    - **Client-Side Dijkstra Invariant Parity**: The client-side route calculator enforces identical invariants to the Rust `MeshTopologyGraph`: link cost $= \text{DEFAULT\_HOP\_PENALTY\_MS} (15) + \text{rtt\_ms}$, skipping intermediate nodes with `relayEnabled === false`, and bypassing severed links dynamically.
-    - **Bi-Directional Severed Link Representation**: Link severing in the GUI triggers `toggle_mesh_link`, updating both internal matrix state and local reactive views with red dashed styling and `CUT` status tags, immediately prompting topology re-calculation.
-    - **Non-Destructive In-Memory Speedtest**: Diagnostics stream purely in-memory buffers across the overlay mesh with zero disk I/O, reporting instantaneous throughput in Mbps, total transferred bytes, elapsed time, and chunk counts.
+    - **Single Introduction Gate Visibility**: If a counter-party is classified as `Stranger` or `PendingApproval`, the UI displays a prominent amber stranger banner with 1-click `Approve` or `Block` actions, restricts the composition input to $\le 280$ characters, and prevents rich media attachments until approved.
+    - **Monotonic Delivery Indicator Progression**: Message bubbles display delivery state checkmarks matching `MessageDeliveryState`: `Queued` (clock icon for delay-tolerant reconnect), `Relayed` (double arrow for custodial mailbox), `Delivered` (gray double-check), and `Read` (blue double-check).
+    - **In-Browser Audio Recording & Waveform Visualization**: Microphone recording utilizes `navigator.mediaDevices.getUserMedia` with fallback simulation for headless/restricted webview environments, providing live duration counters and animated sound wave bars.
+    - **Echo-Loop & Security Status Surface**: The Universal Clipboard Ring UI displays active 3-layer echo-loop suppression status, current content SHA-256 hash, and paired device trust rosters.
+    - **RGA Sequence CRDT Real-Time Convergence**: Scratchpad edits compute incremental `ScratchpadEditDto` operations (character atom insertion or tombstone deletion with Lamport clock timestamps) gossiped to peers with Strong Eventual Consistency.
 
 ---
 
@@ -768,24 +794,18 @@
 ---
 
 ## Next Session Target
-- **Target**: **Sub-phase 11.4: Svelte 5 Rich P2P/Group Chat View, Voice Recorder & LAN Toolbox UI (`web/`)**
+- **Target**: **Production Packaging, Cross-Platform Bundling & End-to-End User Acceptance Verification**
 - **Action Items**:
-  1. Build `ChatView.svelte` supporting:
-     - 1:1 and Group conversations list with unread badges.
-     - Stranger Request approval/block banner with 1-click elevation.
-     - Offline outbox causal queue badges and monotonic delivery/read checkmarks.
-     - Inline image/video preview and audio player.
-     - Microphone voice-note recorder (`navigator.mediaDevices.getUserMedia` / Web Audio API) with instant preview and send.
-     - Resumable attachment progress bars with byte-offset indicators.
-  2. Build `ToolboxView.svelte` supporting:
-     - Universal Clipboard Ring status, paired device list, and live clipboard history/broadcast.
-     - Federated File Search querying local catalog and remote peer endpoints with instant preview/download.
-     - Live Collaborative CRDT Scratchpad editor with synchronized character streaming and peer cursors.
-  3. Integrate Chat and Toolbox navigation tabs into desktop sidebar and mobile bottom navigation in `web/src/routes/+page.svelte`.
-  4. Run full workspace verification:
-     ```bash
-     cd web && pnpm build && cd .. && cargo clippy --all-targets -- -D warnings && cargo test --all
-     ```
+  1. Build and verify production release packages across desktop platforms:
+     - Linux: AppImage, `.deb` package (`cargo tauri build --bundles deb,appimage`).
+     - macOS: `.dmg`, `.app` bundle.
+     - Windows: MSI / NSIS installer.
+  2. Verify Android APK release bundle (`cd src-tauri && cargo tauri android build`).
+  3. Perform final end-to-end integration checklist:
+     - Interoperability with official LocalSend v2.2 mobile client.
+     - Multi-hop overlay mesh routing and virtual network matrix simulator.
+     - End-to-end encrypted 1:1 chat, Hashcash stranger introduction, and causal Merkle-DAG group sync.
+     - Universal Clipboard Ring synchronization, federated file search, and collaborative scratchpad.
 
 
 

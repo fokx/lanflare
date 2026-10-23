@@ -5,6 +5,8 @@
 	import DeviceGrid from '$lib/components/DeviceGrid.svelte';
 	import TransferQueue from '$lib/components/TransferQueue.svelte';
 	import MeshTopologyView from '$lib/components/MeshTopologyView.svelte';
+	import ChatView from '$lib/components/ChatView.svelte';
+	import ToolboxView from '$lib/components/ToolboxView.svelte';
 	import IncomingTransferModal from '$lib/components/IncomingTransferModal.svelte';
 	import IncomingBrowserDownloadModal from '$lib/components/IncomingBrowserDownloadModal.svelte';
 	import SettingsModal from '$lib/components/SettingsModal.svelte';
@@ -16,6 +18,8 @@
 		Radio,
 		Activity,
 		Network,
+		MessageSquare,
+		Wrench,
 		Settings,
 		RefreshCw,
 		Sun,
@@ -268,6 +272,43 @@
 						</span>
 					{/if}
 				</button>
+
+				<button
+					onclick={() => (appState.activeTab = 'chat')}
+					class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all {appState.activeTab ===
+					'chat'
+						? 'bg-indigo-50 dark:bg-indigo-600/15 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 shadow-sm'
+						: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900'}"
+				>
+					<div class="flex items-center gap-2.5">
+						<MessageSquare
+							class="w-4 h-4 {appState.activeTab === 'chat' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}"
+						/>
+						<span>P2P & Group Chat</span>
+					</div>
+					{#if appState.totalUnreadChatCount > 0}
+						<span
+							class="text-[10px] px-1.5 py-0.5 rounded-full font-mono bg-indigo-600 text-white font-bold"
+						>
+							{appState.totalUnreadChatCount}
+						</span>
+					{/if}
+				</button>
+
+				<button
+					onclick={() => (appState.activeTab = 'toolbox')}
+					class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all {appState.activeTab ===
+					'toolbox'
+						? 'bg-indigo-50 dark:bg-indigo-600/15 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-500/30 shadow-sm'
+						: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900'}"
+				>
+					<div class="flex items-center gap-2.5">
+						<Wrench
+							class="w-4 h-4 {appState.activeTab === 'toolbox' ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-400 dark:text-slate-500'}"
+						/>
+						<span>LAN Toolbox</span>
+					</div>
+				</button>
 			</nav>
 		</div>
 
@@ -385,6 +426,10 @@
 			<TransferQueue />
 		{:else if appState.activeTab === 'mesh'}
 			<MeshTopologyView onSelectPeer={handleSelectPeer} />
+		{:else if appState.activeTab === 'chat'}
+			<ChatView />
+		{:else if appState.activeTab === 'toolbox'}
+			<ToolboxView />
 		{/if}
 	</main>
 
@@ -440,6 +485,35 @@
 				{/if}
 			</div>
 			<span class="text-[10px]">Mesh</span>
+		</button>
+
+		<button
+			onclick={() => (appState.activeTab = 'chat')}
+			class="flex flex-col items-center gap-1 px-4 py-1.5 rounded-xl transition-all {appState.activeTab === 'chat'
+				? 'text-indigo-600 dark:text-indigo-400 font-semibold'
+				: 'text-slate-500 dark:text-slate-400'}"
+		>
+			<div class="relative">
+				<MessageSquare class="w-5 h-5" />
+				{#if appState.totalUnreadChatCount > 0}
+					<span class="absolute -top-1 -right-2 px-1 py-0.2 rounded-full text-[9px] font-mono bg-indigo-600 text-white font-bold">
+						{appState.totalUnreadChatCount}
+					</span>
+				{/if}
+			</div>
+			<span class="text-[10px]">Chat</span>
+		</button>
+
+		<button
+			onclick={() => (appState.activeTab = 'toolbox')}
+			class="flex flex-col items-center gap-1 px-4 py-1.5 rounded-xl transition-all {appState.activeTab === 'toolbox'
+				? 'text-indigo-600 dark:text-indigo-400 font-semibold'
+				: 'text-slate-500 dark:text-slate-400'}"
+		>
+			<div class="relative">
+				<Wrench class="w-5 h-5" />
+			</div>
+			<span class="text-[10px]">Toolbox</span>
 		</button>
 	</nav>
 </div>
