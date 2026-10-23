@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 7 Complete; Phase 8: Anti-Harassment Trust Engine, Persistent Chat Store & Resumable Transfers in Progress.
-- **Overall Status**: Ready for **Sub-phase 8.1: Chat, Receipt & Trust Protocol DTOs + Hashcash Proof-of-Work Engine (`lanflare-proto::chat` & `lanflare-core::chat::trust`)**.
+- **Current Milestone**: Sub-phase 8.1 Complete; Ready for Sub-phase 8.2: Persistent Contact Book, Conversation Store & Delay-Tolerant Outbox.
+- **Overall Status**: Ready for **Sub-phase 8.2: Persistent Contact Book, Conversation Store & Delay-Tolerant Outbox (`lanflare-core::chat::store` & `lanflare-core::chat::outbox`)**.
 
 ---
 
@@ -177,6 +177,16 @@
     - `test_three_hop_chain_e2ee_file_transfer`: verified 4-node chain (`A -> B -> C -> D`) 3-hop route resolution and cut-through file transfer (512 KB) with bit-for-bit SHA-256 integrity match.
     - `test_dual_relay_failover_under_simulated_link_cut`: verified dual-relay diamond topology preferring low-latency Relay B1, dynamic link severing of A-B1 link, automatic Dijkstra failover to backup Relay B2, and successful envelope and streaming completion.
   - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --test mesh_sim_e2e`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (137 tests passing).
+- [x] Implement Chat, Receipt & Trust Protocol DTOs + Hashcash Proof-of-Work Engine (Sub-phase 8.1):
+  - Defined protocol DTOs in `lanflare-proto::chat`: `ChatMessageDto`, `ChatContentDto` (`Text`, `Image`, `File`, `Voice`, `Video`), `DeliveryReceiptDto`, `ReadReceiptDto`, `TrustRequestDto`, `HashcashStamp`, and `ResumeTransferDto`, with canonical signing bytes and validation helpers.
+  - Implemented 5-layer anti-harassment trust gate in `lanflare-core::chat::trust` (`TrustGate`, `ContactTrustState`, `TrustError`, `TrustGateConfig`, `TokenBucket`):
+    - 3-tier contact trust state machine (`Stranger`, `PendingApproval`, `TrustedContact`, `Blocked`).
+    - Anti-Sybil Hashcash Proof-of-Work generator (`generate_hashcash_pow`) and $O(1)$ single-SHA256 verifier (`verify_hashcash_pow`) enforcing leading zero bits, target fingerprint matching, and time bucket freshness.
+    - Stranger message gate enforcing max 280 plain-text characters, immediate rejection of rich media attachments, and single-request lock (`PendingApprovalLocked`) until user approval.
+    - Token-bucket rate limiter per IP address and per fingerprint defending against Sybil identity rotation (`regenerate_identity`) from the same IP/subnet.
+    - Global "Contacts Only" mode rejecting all stranger handshake requests, and explicit IP/fingerprint blocklists dropped in $O(1)$ time with zero disk I/O.
+  - Comprehensive unit test suite covering DTO serde round-tripping, Hashcash PoW generation and verification, stranger gate & media block, Sybil rotation IP rate limiting, and contacts-only mode.
+  - Verified 100% test pass rate across workspace via `cargo test -p lanflare-proto --lib chat && cargo test -p lanflare-core --lib chat::trust`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (141 tests passing).
 
 ---
 
@@ -424,6 +434,17 @@
     - **Mesh Peer Registry Representation**: Multi-hop mesh peers are ingested into `PeerRegistry` with `DiscoverySource::Mesh`, populating `hop_count`, `route_path`, and `next_hop` metadata without overwriting direct IP endpoints if discovered on 1-hop channels.
     - **Full Gossip Propagation**: Nodes gossiping via `MeshRouter` exchange all known node announcements and generated path-vector route advertisements, enabling multi-hop nodes $N$ hops away to discover remote aliases and X.509 certificates.
 
+- **ADR-032: 5-Layer Anti-Harassment Trust Gate, Hashcash Proof-of-Work & Token-Bucket Sybil Defense**
+  - *Context*: Open local area networks (universities, coffee shops, hotels, offices) expose devices to unsolicited message flooding, malicious media bombing, and Sybil identity rotation (`regenerate_identity`) where an attacker cycles certificates to bypass blocklists.
+  - *Decision*: Enforce a strict 5-layer trust gate (`TrustGate` in `lanflare-core::chat::trust`) backed by `lanflare-proto::chat` protocol DTOs.
+  - *Invariants*:
+    - **3-Tier Contact Trust State Machine**: Peers are classified into `Stranger`, `PendingApproval`, `TrustedContact`, or `Blocked`. Unknown fingerprints start strictly as `Stranger`.
+    - **Zero Unsolicited Disk Allocation**: `Stranger` and `Blocked` peers are strictly forbidden from transmitting rich media attachments (`Image`, `File`, `Voice`, `Video`). Any attempt is rejected immediately prior to disk I/O with `TrustError::MediaNotPermittedForStranger`.
+    - **Single Introduction Gate**: `Stranger` introduction messages and `TrustRequestDto`s are limited to $\le 280$ UTF-8 characters. Successfully evaluated requests transition the sender to `PendingApproval`. Any subsequent message or request prior to explicit user approval is locked and rejected with `TrustError::PendingApprovalLocked`.
+    - **O(1) Anti-Sybil Hashcash PoW**: Stranger requests must carry a valid `HashcashStamp` satisfying `LeadingZeroBits(SHA256(sender_fp || target_fp || time_bucket || nonce)) >= k` (default $k=16$). Verification is $O(1)$ (1 single SHA-256 computation), while generation requires computational work, throttling mass botnet probes. Target fingerprint matching and time bucket freshness (`max_bucket_skew = 1`) prevent replay across nodes or across time.
+    - **Token-Bucket Rate Limiter Defense**: Per-IP and per-fingerprint token buckets constrain burst rates (e.g. 5 requests capacity, refill 0.1/s). Even if an attacker rapidly rotates ephemeral certificate fingerprints from the same IP, the IP rate limiter rejects subsequent attempts in $O(1)$ time with `TrustError::RateLimited`.
+    - **Contacts-Only Mode & O(1) Dropping**: Enabling "Contacts Only" mode immediately drops all stranger handshakes with `TrustError::ContactsOnlyMode`. Blocked fingerprints and blocked IPs are rejected at the boundary in $O(1)$ time.
+
 ---
 
 ## Known Debt & Blockers
@@ -432,19 +453,23 @@
 ---
 
 ## Next Session Target
-- **Target**: **Sub-phase 8.1: Chat, Receipt & Trust Protocol DTOs + Hashcash Proof-of-Work Engine (`lanflare-proto::chat` & `lanflare-core::chat::trust`)**
+- **Target**: **Sub-phase 8.2: Persistent Contact Book, Conversation Store & Delay-Tolerant Outbox (`lanflare-core::chat::store` & `lanflare-core::chat::outbox`)**
 - **Action Items**:
-  1. Define protocol DTOs in `lanflare-proto::chat`: `ChatMessageDto`, `ChatContentDto` (Text, Image, File, Voice, Video), `DeliveryReceiptDto`, `ReadReceiptDto`, `TrustRequestDto`, `HashcashStamp`, and `ResumeTransferDto`.
-  2. Implement the 5-Layer Anti-Harassment & Trust Gate in `lanflare-core::chat::trust`:
-     - 3-tier contact state machine (`Stranger`, `PendingApproval`, `TrustedContact`, `Blocked`).
-     - Hashcash Proof-of-Work generator and $O(1)$ verifier (`SHA256(sender_fp || target_fp || time_bucket || nonce)` with configurable leading zero bits).
-     - Single 280-char plain-text handshake request limit for `Stranger`s, per-IP/per-fingerprint token-bucket rate limiter, and "Contacts Only" mode.
-  3. Implement unit tests in `crates/lanflare-proto/src/chat.rs` and `crates/lanflare-core/src/chat/trust.rs`:
-     - `chat::tests::test_chat_dto_serde_roundtrip`
-     - `chat::trust::tests::test_hashcash_pow_generation_and_verification`
-     - `chat::trust::tests::test_stranger_single_message_gate_and_media_block`
-     - `chat::trust::tests::test_sybil_identity_rotation_ip_rate_limiter`
-  4. Verification command: `cargo test -p lanflare-proto --lib chat && cargo test -p lanflare-core --lib chat::trust`.
+  1. Implement persistent `ChatStore` in `lanflare-core::chat::store`:
+     - Contacts table persisting `fingerprint`, `alias`, `trust_state`, `avatar_thumbnail`, and `last_seen_ms` to disk under `<data_dir>/chat/contacts.json`.
+     - Conversations and message thread store persisting message histories and delivery states (`Queued`, `Sending`, `Relayed`, `Delivered`, `Read`, `Failed`) keyed by canonical `fingerprint`.
+  2. Implement reactive `OutboxDispatcher` in `lanflare-core::chat::outbox`:
+     - Delay-tolerant queue storing pending outgoing messages and receipts when recipients are offline.
+     - Event subscriber listening to `PeerRegistry` events (`PeerAdded`, `PeerUpdated`) and `MeshTopologyGraph` route events to automatically trigger FIFO causal outbox flushes when an offline peer's fingerprint appears online (1-hop LAN or multi-hop mesh).
+     - Cryptographic receipt processing transitioning message states monotonically (`Queued -> Delivered -> Read`).
+  3. Implement unit and integration tests:
+     - `chat::store::tests::test_persistent_store_crud_and_reload_recovery`
+     - `chat::outbox::tests::test_offline_queue_auto_flush_on_peer_discovery`
+     - `chat::outbox::tests::test_delivery_and_read_receipt_monotonic_transitions`
+  4. Verification command:
+     ```bash
+     cargo test -p lanflare-core --lib chat::store && cargo test -p lanflare-core --lib chat::outbox
+     ```
 
 
 

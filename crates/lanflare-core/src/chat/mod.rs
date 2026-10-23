@@ -8,3 +8,8 @@ pub mod outbox;
 pub mod store;
 pub mod sync;
 pub mod trust;
+
+pub use trust::{
+    compute_time_bucket, count_leading_zeros, generate_hashcash_pow, verify_hashcash_pow,
+    ContactTrustState, TokenBucket, TrustError, TrustGate, TrustGateConfig,
+};

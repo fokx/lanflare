@@ -9,6 +9,11 @@ pub mod toolbox;
 pub mod transfer;
 
 // Convenience re-exports
+pub use chat::{
+    ChatContentDto, ChatMessageDto, DeliveryReceiptDto, HashcashStamp, ReadReceiptDto,
+    ResumeTransferDto, TrustRequestDto, DEFAULT_POW_DIFFICULTY_BITS, DEFAULT_TIME_BUCKET_SECS,
+    MAX_INTRO_MESSAGE_LEN,
+};
 pub use discovery::{
     DeviceType, InfoResponseDtoV2, MulticastMessageV2, ProtocolType, RegisterDtoV2,
     RegisterResponseDtoV2, PROTOCOL_VERSION_V2,
