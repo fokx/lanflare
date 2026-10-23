@@ -97,6 +97,8 @@ pub struct ServerState {
     pub dufs_manager: Arc<DufsManager>,
     pub tls_identity: Option<crate::crypto::cert::TlsIdentity>,
     pub mesh_router: Option<Arc<crate::mesh::router::MeshRouter>>,
+    pub chat_engine: Option<Arc<crate::chat::engine::ChatEngine>>,
+    pub resume_manager: Option<Arc<crate::storage::resume::ResumeManager>>,
 }
 
 /// Helper decoding percent-encoded strings (e.g. `%40` -> `@`, `%3A` -> `:`).

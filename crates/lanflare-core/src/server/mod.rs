@@ -43,6 +43,10 @@ pub struct ServerHandle {
     download_manager: Arc<DownloadManager>,
     /// Dufs manager for serving shared folders to local peers.
     dufs_manager: Arc<DufsManager>,
+    /// Chat engine for 1:1 chat and resumable media.
+    chat_engine: Option<Arc<crate::chat::engine::ChatEngine>>,
+    /// Resume manager for resumable streaming.
+    resume_manager: Option<Arc<crate::storage::resume::ResumeManager>>,
 }
 
 impl ServerHandle {
@@ -59,6 +63,16 @@ impl ServerHandle {
     /// Returns a reference to the Dufs folder manager.
     pub fn dufs_manager(&self) -> &Arc<DufsManager> {
         &self.dufs_manager
+    }
+
+    /// Returns a reference to the Chat engine if active.
+    pub fn chat_engine(&self) -> Option<&Arc<crate::chat::engine::ChatEngine>> {
+        self.chat_engine.as_ref()
+    }
+
+    /// Returns a reference to the Resume manager if active.
+    pub fn resume_manager(&self) -> Option<&Arc<crate::storage::resume::ResumeManager>> {
+        self.resume_manager.as_ref()
     }
 
     /// Signals the server to stop accepting connections and terminate.
@@ -133,6 +147,31 @@ pub async fn start_server_full(
     dufs_manager: Option<Arc<DufsManager>>,
     mesh_router: Option<Arc<crate::mesh::router::MeshRouter>>,
 ) -> anyhow::Result<ServerHandle> {
+    start_server_all(
+        config,
+        tls_identity,
+        registry,
+        event_tx,
+        download_manager,
+        dufs_manager,
+        mesh_router,
+        None,
+    )
+    .await
+}
+
+/// Comprehensive server launcher with chat engine and resumable streaming support.
+#[allow(clippy::too_many_arguments)]
+pub async fn start_server_all(
+    config: impl Into<ServerConfigHolder>,
+    tls_identity: Option<TlsIdentity>,
+    registry: Arc<PeerRegistry>,
+    event_tx: Option<mpsc::Sender<ServerTransferEvent>>,
+    download_manager: Option<Arc<DownloadManager>>,
+    dufs_manager: Option<Arc<DufsManager>>,
+    mesh_router: Option<Arc<crate::mesh::router::MeshRouter>>,
+    chat_engine: Option<Arc<crate::chat::engine::ChatEngine>>,
+) -> anyhow::Result<ServerHandle> {
     let cancel_token = CancellationToken::new();
     let config_holder = config.into();
     let port = config_holder.0.read().await.port;
@@ -164,6 +203,7 @@ pub async fn start_server_full(
 
     let download_manager = download_manager.unwrap_or_else(|| Arc::new(DownloadManager::new()));
     let dufs_manager = dufs_manager.unwrap_or_else(|| Arc::new(DufsManager::new()));
+    let resume_manager = chat_engine.as_ref().map(|c| c.resume_manager().clone());
 
     let state = ServerState {
         config: config_holder.0,
@@ -175,6 +215,8 @@ pub async fn start_server_full(
         dufs_manager: dufs_manager.clone(),
         tls_identity: tls_identity.clone(),
         mesh_router,
+        chat_engine: chat_engine.clone(),
+        resume_manager: resume_manager.clone(),
     };
 
     let cancel = cancel_token.clone();
@@ -223,6 +265,8 @@ pub async fn start_server_full(
         join_handle,
         download_manager,
         dufs_manager,
+        chat_engine,
+        resume_manager,
     })
 }
 

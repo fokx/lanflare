@@ -358,6 +358,9 @@ pub struct SimulatedNode {
 
     /// Ephemeral TCP port bound by the HTTP server.
     pub bound_port: u16,
+
+    /// Chat engine instance if chat is enabled on this node.
+    pub chat_engine: Option<Arc<crate::chat::engine::ChatEngine>>,
 }
 
 impl SimulatedNode {
@@ -400,6 +403,11 @@ impl SimulatedNode {
     pub fn subnets(&self) -> &[String] {
         &self.subnets
     }
+
+    /// Returns a reference to the chat engine if active.
+    pub fn chat_engine(&self) -> Option<&Arc<crate::chat::engine::ChatEngine>> {
+        self.chat_engine.as_ref()
+    }
 }
 
 /// In-process simulated cluster managing $N$ isolated LanFlare nodes on localhost.
@@ -427,6 +435,27 @@ impl SimulatedMeshCluster {
         alias: &str,
         subnets: Vec<String>,
         relay_enabled: bool,
+    ) -> anyhow::Result<String> {
+        self.spawn_node_ext(alias, subnets, relay_enabled, false).await
+    }
+
+    /// Spawns a new isolated LanFlare node with an active ChatEngine attached.
+    pub async fn spawn_node_with_chat(
+        &mut self,
+        alias: &str,
+        subnets: Vec<String>,
+        relay_enabled: bool,
+    ) -> anyhow::Result<String> {
+        self.spawn_node_ext(alias, subnets, relay_enabled, true).await
+    }
+
+    /// Extended node spawner supporting optional ChatEngine.
+    pub async fn spawn_node_ext(
+        &mut self,
+        alias: &str,
+        subnets: Vec<String>,
+        relay_enabled: bool,
+        enable_chat: bool,
     ) -> anyhow::Result<String> {
         let ident = crate::crypto::cert::generate_self_signed()?;
         let canonical_fp = ident.fingerprint.clone();
@@ -472,11 +501,20 @@ impl SimulatedMeshCluster {
             alias: alias.to_string(),
             port: 0, // ephemeral port
             auto_accept: true,
-            download_dir: temp_download_dir,
+            download_dir: temp_download_dir.clone(),
             ..Default::default()
         };
 
-        let server_handle = crate::server::start_server_full(
+        let chat_engine = if enable_chat {
+            let chat_cfg = crate::chat::ChatEngineConfig::new(alias, &temp_download_dir);
+            let ce = crate::chat::ChatEngine::new(ident.clone(), chat_cfg, registry.clone()).await?;
+            ce.attach_mesh_router(mesh_router.clone()).await;
+            Some(ce)
+        } else {
+            None
+        };
+
+        let server_handle = crate::server::start_server_all(
             app_cfg,
             None, // Plain HTTP on loopback for lightweight simulator execution
             registry.clone(),
@@ -484,6 +522,7 @@ impl SimulatedMeshCluster {
             None,
             None,
             Some(mesh_router.clone()),
+            chat_engine.clone(),
         )
         .await?;
 
@@ -498,6 +537,7 @@ impl SimulatedMeshCluster {
             registry,
             subnets,
             bound_port,
+            chat_engine,
         };
 
         self.nodes.insert(canonical_fp.clone(), node);

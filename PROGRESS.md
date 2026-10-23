@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Sub-phase 8.2 Complete; Ready for Sub-phase 8.3: Resumable Byte-Offset Media/File Streaming & 1:1 Chat Endpoints.
-- **Overall Status**: Ready for **Sub-phase 8.3: Resumable Byte-Offset Media/File Streaming & 1:1 Chat Endpoints (`lanflare-core::chat::engine` & `lanflare-core::storage::resume`)**.
+- **Current Milestone**: Phase 8 Complete (Sub-phases 8.1, 8.2, 8.3); Ready for Phase 9: Decentralized Mesh Group Chat & Custodial Relay Mailbox.
+- **Overall Status**: Ready for **Sub-phase 9.1: Hybrid Logical Clock (HLC) & Causal Merkle-DAG Group State (`lanflare-core::chat::group`)**.
 
 ---
 
@@ -194,6 +194,29 @@
   - Monotonic cryptographic receipt processing (`DeliveryReceiptDto` -> `Delivered`, `ReadReceiptDto` -> `Read`) preventing stale updates or delayed delivery receipts from regressing read states.
   - Comprehensive unit test suite (3 tests: `test_persistent_store_crud_and_reload_recovery`, `test_offline_queue_auto_flush_on_peer_discovery`, `test_delivery_and_read_receipt_monotonic_transitions`).
   - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib chat::store && cargo test -p lanflare-core --lib chat::outbox`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (144 tests passing).
+- [x] Implement Resumable Byte-Offset Media/File Streaming & 1:1 Chat Endpoints (Sub-phase 8.3):
+  - Implemented resumable `.lanflare-part` streaming persistence in `lanflare-core::storage::resume` (`ResumeManager`, `PartialTransferState`, `ResumableFileWriter`, `ResumeError`):
+    - Checkpoint metadata persisted in `.{filename}.{session_id}.lanflare-resume.json` tracking `received_bytes`, chunk hashes (128 KB chunks), `total_expected_bytes`, and `sha256_full`.
+    - Resuming opens existing `.lanflare-part` file in append mode, verifying existing file size against recorded byte offset.
+    - Checkpoint deleted automatically on successful atomic rename `commit()`, while uncommitted instances preserve partial data and checkpoint on Drop for subsequent resumption (explicit `abort()` purges both).
+    - Unit test `storage::resume::tests::test_interrupted_stream_checkpoint_and_byte_offset_resume` tested interrupted 4 MB transfer at 50% (2 MB), probing via `ResumeTransferDto`, resuming remaining 2 MB, and verifying full-file SHA-256 match and checkpoint cleanup.
+  - Implemented high-level `ChatEngine` in `lanflare-core::chat::engine`:
+    - Integrated `TrustGate`, `ChatStore`, `OutboxDispatcher`, and `ResumeManager` with `ChatEngineConfig`.
+    - Outbound methods: `send_text_message`, `send_media_message`, `send_trust_request`, `approve_contact`, `block_contact`, `mark_message_as_read`.
+    - Inbound handlers: `handle_trust_request`, `handle_chat_message`, `handle_receipt_json`, `handle_resume_request`, and media chunk streaming into `ResumableFileWriter`.
+    - Integrated with `MeshRouter` via `attach_mesh_router`, `handle_routed_envelope`, and `open_envelope` for multi-hop overlay E2EE transit and local delivery.
+  - Mounted Hyper router endpoints:
+    - `POST /api/lanflare/v1/chat/request`
+    - `POST /api/lanflare/v1/chat/message`
+    - `POST /api/lanflare/v1/chat/receipt`
+    - `POST /api/lanflare/v1/chat/media`
+    - `POST /api/lanflare/v1/transfer/resume`
+    - Extended `ServerState`, `route_request`, `start_server_all`, and `ServerHandle`.
+  - Extended in-process mesh simulator (`SimulatedNode`, `SimulatedMeshCluster`) with `spawn_node_with_chat` and `chat_engine()`.
+  - Implemented end-to-end integration test suite in [`crates/lanflare-core/tests/chat_dtn_e2e.rs`](file:///f/lanflare/crates/lanflare-core/tests/chat_dtn_e2e.rs):
+    - `test_dtn_offline_chat_and_resumable_media_e2e`: verified offline DTN message queuing, auto-flush upon peer discovery, stranger handshake approval, 4 MB resumable media transfer interrupted at 50% and resumed to completion, and delivery/read receipt round-trip.
+    - `test_multi_hop_mesh_chat_with_receipts_e2e`: verified 3-node chain (`A -> B -> C`) stranger trust handshake, approval, text message delivery, and cryptographic delivery receipt over 2-hop mesh relay with zero plain-text exposure on intermediate relay B.
+  - Verified 100% test pass rate across workspace via `cargo clippy --all-targets -- -D warnings` and `cargo test --all` (147 tests passing).
 
 ---
 
@@ -462,6 +485,17 @@
     - **Reactive Peer Reconnection Flush**: The reactive listener automatically detects when an offline peer's fingerprint appears online in `PeerRegistry` (1-hop) or `MeshTopologyGraph` (multi-hop) and triggers outbox flushing within 200ms.
     - **Offline Receipt Queuing**: Delivery and read receipts generated for offline counter-parties are stored in the outbox queue and flushed when the counter-party reconnects.
 
+- **ADR-034: Resumable .lanflare-part Checkpointing & 1:1 Rich Media Chat Orchestration**
+  - *Context*: Large media files (photos, voice notes, video) transferred over ad-hoc Wi-Fi or multi-hop overlay mesh are susceptible to disconnection or packet loss. Re-transmitting full files from byte 0 wastes bandwidth and user time. In addition, 1:1 chat endpoints must coordinate trust validation, message persistence, DTN outbox queues, and mesh relay delivery.
+  - *Decision*: Implement `ResumeManager` and `ResumableFileWriter` in `lanflare-core::storage::resume`, and orchestrate all 1:1 chat interactions in `ChatEngine` (`lanflare-core::chat::engine`).
+  - *Invariants*:
+    - **Byte-Offset Checkpoint Persistence**: Checkpoint state (`PartialTransferState`) is persisted in `.{filename}.{session_id}.lanflare-resume.json` tracking `session_id`, `file_id`, `filename`, `total_expected_bytes`, `received_bytes`, `sha256_full`, and incremental 128 KB `chunk_hashes`.
+    - **Crash-Safe Append Resumption**: When resuming, `ResumableFileWriter::open_resuming` validates that the physical `.lanflare-part` file exists and that its length matches `received_bytes`. New incoming chunks append to the file and incrementally update hash state.
+    - **RAII Drop Preservation**: Unlike non-resumable `StreamingFileWriter` which purges incomplete files on `Drop`, `ResumableFileWriter` preserves partial files and checkpoints on uncommitted drop so connections can resume later. Only explicit `abort()` purges the partial file and checkpoint JSON.
+    - **Atomic Commit & Checkpoint Cleanup**: Upon receiving all expected bytes, full-file SHA-256 is verified against `sha256_full`. If valid, the file is atomically renamed to its destination and the checkpoint JSON is deleted.
+    - **Trust Gate Pre-Flight**: Chat media endpoints (`POST /api/lanflare/v1/chat/media`) and text message endpoints reject stranger/blocked uploads before allocating files or buffering chunks.
+    - **End-to-End Cryptographic Receipts**: Inbound chat messages immediately elicit a signed `DeliveryReceiptDto` sent to the sender's HTTP endpoint or routed via `MeshRouter`. When read by the user, a `ReadReceiptDto` is dispatched. If the sender is offline, receipts are buffered in the outbox.
+
 ---
 
 ## Known Debt & Blockers
@@ -470,18 +504,18 @@
 ---
 
 ## Next Session Target
-- **Target**: **Sub-phase 8.3: Resumable Byte-Offset Media/File Streaming & 1:1 Chat Endpoints (`lanflare-core::chat::engine` & `lanflare-core::storage::resume`)**
+- **Target**: **Sub-phase 9.1: Hybrid Logical Clock (HLC) & Causal Merkle-DAG Group State (`lanflare-core::chat::group`)**
 - **Action Items**:
-  1. Implement resumable `.lanflare-part` checkpointing in `lanflare-core::storage::resume` (`ResumeManager`, `PartialTransferState` persisting `bytes_written` and chunk hashes in `.{filename}.{session_id}.lanflare-resume.json`).
-  2. Mount 1:1 chat & media endpoints in Hyper router (`POST /api/lanflare/v1/chat/request`, `POST /api/lanflare/v1/chat/message`, `POST /api/lanflare/v1/chat/receipt`, `POST /api/lanflare/v1/transfer/resume`) and wire `ChatEngine` in `lanflare-core::chat::engine`.
-  3. Wire `ChatEngine` with `TrustGate`, `ChatStore`, `OutboxDispatcher`, and `ResumeManager`.
-  4. Implement unit and integration tests:
-     - `storage::resume::tests::test_interrupted_stream_checkpoint_and_byte_offset_resume`
-     - `test_dtn_offline_chat_and_resumable_media_e2e`
-     - `test_multi_hop_mesh_chat_with_receipts_e2e`
+  1. Implement `HybridLogicalClock` (`wall_time_ms`, `counter`, `node_fp`) in `lanflare-core::chat::group` with clock skew bounding, monotonicity guarantees, and causality tracking.
+  2. Implement `GroupDagState` with group creation, member roster management, pairwise-encrypted `GroupEpochKey` distribution, and content-addressed group message nodes (`msg_id = SHA256(header || parent_ids || payload)`).
+  3. Implement topological sort merge for causal Merkle-DAG branches generated across offline/partitioned members.
+  4. Implement unit tests:
+     - `chat::group::tests::test_hlc_monotonicity_and_clock_skew_bound`
+     - `chat::group::tests::test_causal_dag_topological_merge_determinism`
+     - `chat::group::tests::test_group_key_sealing_and_non_member_rejection`
   5. Verification command:
      ```bash
-     cargo test -p lanflare-core --lib storage::resume && cargo test -p lanflare-core --lib chat::engine
+     cargo test -p lanflare-core --lib chat::group
      ```
 
 
