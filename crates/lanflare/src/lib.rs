@@ -39,6 +39,15 @@ pub enum Commands {
 
     /// Print local status and identity
     Status,
+
+    /// Multi-hop mesh overlay operations, simulation, and network diagnostics
+    Mesh(MeshArgs),
+
+    /// Encrypted peer-to-peer and group chat with stranger trust gating
+    Chat(ChatArgs),
+
+    /// Federated file search across 1-hop LAN and multi-hop mesh peers
+    Search(SearchArgs),
 }
 
 #[derive(Args, Debug)]
@@ -125,6 +134,149 @@ pub struct ServeArgs {
     pub no_auth: bool,
 }
 
+#[derive(Args, Debug)]
+pub struct MeshArgs {
+    #[command(subcommand)]
+    pub command: MeshCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MeshCommands {
+    /// Print local node overlay state, relay mode, and known peer topology
+    Status(MeshStatusArgs),
+
+    /// Launch interactive/programmatic multi-subnet virtual network sandbox
+    Sim(MeshSimArgs),
+
+    /// Run multi-hop traceroute to target fingerprint or alias
+    Trace(MeshTraceArgs),
+
+    /// Run in-memory throughput speedtest to target
+    Benchmark(MeshBenchmarkArgs),
+}
+
+#[derive(Args, Debug, Default)]
+pub struct MeshStatusArgs {
+    /// Enable relay mode for this node
+    #[arg(long)]
+    pub relay: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct MeshSimArgs {
+    /// Number of nodes to spawn in virtual cluster
+    #[arg(long, short = 'n', default_value = "4")]
+    pub nodes: usize,
+
+    /// Duration in seconds to run the simulator (0 = run indefinitely until Ctrl+C)
+    #[arg(long, short = 'd', default_value = "5")]
+    pub duration: u64,
+
+    /// Subnets to create (comma-separated, e.g. "SubnetA,SubnetB,SubnetC")
+    #[arg(long, default_value = "SubnetA,SubnetB,SubnetC")]
+    pub subnets: String,
+
+    /// Inject simulated link latency in milliseconds
+    #[arg(long, default_value = "20")]
+    pub latency_ms: u32,
+}
+
+#[derive(Args, Debug)]
+pub struct MeshTraceArgs {
+    /// Destination peer alias, IP, or fingerprint
+    #[arg(required = true)]
+    pub target: String,
+
+    /// Maximum Time-To-Live / hop limit
+    #[arg(long, default_value = "5")]
+    pub ttl: u8,
+}
+
+#[derive(Args, Debug)]
+pub struct MeshBenchmarkArgs {
+    /// Destination peer alias, IP, or fingerprint
+    #[arg(required = true)]
+    pub target: String,
+
+    /// Number of chunk payloads to stream
+    #[arg(long, short = 'n', default_value = "16")]
+    pub chunks: u32,
+
+    /// Chunk payload size in bytes (defaults to 128 KB)
+    #[arg(long, short = 's', default_value = "131072")]
+    pub chunk_size: usize,
+}
+
+#[derive(Args, Debug)]
+pub struct ChatArgs {
+    #[command(subcommand)]
+    pub command: ChatCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ChatCommands {
+    /// Send 1:1 text message with stranger trust verification
+    Send(ChatSendArgs),
+
+    /// Inspect or approve stranger trust handshakes
+    Trust(ChatTrustArgs),
+
+    /// List causal DAG group conversations and membership
+    Groups(ChatGroupsArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ChatSendArgs {
+    /// Recipient peer alias, IP, or fingerprint
+    #[arg(required = true)]
+    pub target: String,
+
+    /// Message text to transmit
+    #[arg(required = true)]
+    pub message: String,
+
+    /// Force sending as introductory stranger trust handshake
+    #[arg(long)]
+    pub intro: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ChatTrustArgs {
+    /// Target peer alias or fingerprint to inspect or approve
+    #[arg(required = true)]
+    pub target: String,
+
+    /// Approve pending stranger handshake from this peer
+    #[arg(long)]
+    pub approve: bool,
+
+    /// Block this peer
+    #[arg(long)]
+    pub block: bool,
+}
+
+#[derive(Args, Debug, Default)]
+pub struct ChatGroupsArgs {
+    /// Optional group ID to inspect specific causal DAG state
+    #[arg(long)]
+    pub id: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct SearchArgs {
+    /// Search query term or filename pattern
+    #[arg(required = true)]
+    pub query: String,
+
+    /// Security PIN for protected shares
+    #[arg(long)]
+    pub pin: Option<String>,
+
+    /// Search timeout in seconds
+    #[arg(long, default_value = "3")]
+    pub timeout: u64,
+}
+
 /// Executes the CLI application lifecycle based on parsed command line arguments.
 pub async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -182,6 +334,76 @@ pub async fn run() -> anyhow::Result<()> {
                 pin,
             };
             commands::serve(&config, &identity, &serve_opts).await?;
+        }
+        Some(Commands::Mesh(args)) => match args.command {
+            MeshCommands::Status(s_args) => {
+                let opts = commands::MeshStatusOptions {
+                    relay: s_args.relay,
+                };
+                commands::mesh_status(&config, &identity, &opts).await?;
+            }
+            MeshCommands::Sim(sim_args) => {
+                let subnets = sim_args
+                    .subnets
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let opts = commands::MeshSimOptions {
+                    nodes: sim_args.nodes,
+                    duration: sim_args.duration,
+                    subnets,
+                    latency_ms: sim_args.latency_ms,
+                };
+                commands::mesh_sim(&config, &identity, &opts).await?;
+            }
+            MeshCommands::Trace(trace_args) => {
+                let opts = commands::MeshTraceOptions {
+                    target: trace_args.target,
+                    ttl: trace_args.ttl,
+                };
+                commands::mesh_trace(&config, &identity, &opts).await?;
+            }
+            MeshCommands::Benchmark(bench_args) => {
+                let opts = commands::MeshBenchmarkOptions {
+                    target: bench_args.target,
+                    chunks: bench_args.chunks,
+                    chunk_size: bench_args.chunk_size,
+                };
+                commands::mesh_benchmark(&config, &identity, &opts).await?;
+            }
+        },
+        Some(Commands::Chat(args)) => match args.command {
+            ChatCommands::Send(send_args) => {
+                let opts = commands::ChatSendOptions {
+                    target: send_args.target,
+                    message: send_args.message,
+                    intro: send_args.intro,
+                };
+                commands::chat_send(&config, &identity, &opts).await?;
+            }
+            ChatCommands::Trust(trust_args) => {
+                let opts = commands::ChatTrustOptions {
+                    target: trust_args.target,
+                    approve: trust_args.approve,
+                    block: trust_args.block,
+                };
+                commands::chat_trust(&config, &identity, &opts).await?;
+            }
+            ChatCommands::Groups(groups_args) => {
+                let opts = commands::ChatGroupsOptions {
+                    id: groups_args.id,
+                };
+                commands::chat_groups(&config, &identity, &opts).await?;
+            }
+        },
+        Some(Commands::Search(args)) => {
+            let opts = commands::SearchOptions {
+                query: args.query,
+                pin: args.pin,
+                timeout: args.timeout,
+            };
+            commands::search(&config, &identity, &opts).await?;
         }
         Some(Commands::Status) | None => {
             commands::status(&config, &identity).await?;

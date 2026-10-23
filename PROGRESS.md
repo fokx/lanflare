@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 10 Complete; Working on **Phase 11: Desktop GUI & CLI Integration for Mesh, Chat & LAN Toolbox**.
-- **Overall Status**: Phase 10 Complete; Ready for **Sub-phase 11.1: CLI Subcommands for Mesh Topology, Simulator, Chat & Diagnostics (`lanflare-cli`)**.
+- **Current Milestone**: Sub-phase 11.1 Complete; Working on **Phase 11: Desktop GUI & CLI Integration for Mesh, Chat & LAN Toolbox**.
+- **Overall Status**: Sub-phase 11.1 Complete; Ready for **Sub-phase 11.2: Tauri v2 IPC Commands & Event Bridge for Mesh, Chat & Toolbox (`lanflare-desktop`)**.
 
 ---
 
@@ -313,6 +313,29 @@
     - `toolbox::collab::tests::test_collab_manager_crud_and_sync`: validated document CRUD, snapshot exporting, and text queries.
     - `mesh::diagnostics::tests::test_multi_hop_traceroute_and_bandwidth_benchmark`: validated 4-node 3-hop simulated mesh across 3 isolated subnets (`Node A -> Relay B -> Relay C -> Node D`), accurately measuring 4-hop traceroute path and multi-chunk memory streaming throughput in Mbps.
   - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib toolbox::collab && cargo test -p lanflare-core --lib mesh::diagnostics`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (167 tests passing).
+- [x] Implement CLI Subcommands for Mesh Topology, Simulator, Chat & Diagnostics (`lanflare-cli`) (Sub-phase 11.1):
+  - Extended CLI clap parser in `crates/lanflare/src/lib.rs` and `crates/lanflare-cli`:
+    - `lanflare mesh status`: prints local node overlay state, relay mode, and known peer topology.
+    - `lanflare mesh sim`: launches interactive/programmatic multi-subnet virtual network sandbox with configurable node counts, subnets, and injected latencies.
+    - `lanflare mesh trace <target>`: runs multi-hop traceroute to target fingerprint or alias with TTL limit.
+    - `lanflare mesh benchmark <target>`: runs in-memory throughput speedtest streaming memory chunks.
+    - `lanflare chat send <target> <message>`: sends 1:1 text message with stranger trust verification and Hashcash PoW.
+    - `lanflare chat trust <target>`: inspects, approves, or blocks stranger trust handshakes.
+    - `lanflare chat groups`: lists causal DAG group conversations or inspects detailed topological DAG state.
+    - `lanflare search <query>`: executes federated file search across 1-hop LAN and multi-hop mesh peers.
+  - Implemented command handlers in `crates/lanflare/src/commands.rs`: `mesh_status`, `mesh_sim`, `mesh_trace`, `mesh_benchmark`, `chat_send`, `chat_trust`, `chat_groups`, and `search`.
+  - Implemented terminal table and tree formatters in `crates/lanflare/src/tui.rs`:
+    - `render_mesh_status`: prints overlay status and formatted Dijkstra-resolved topology table.
+    - `render_sim_cluster_status`: prints simulated virtual cluster nodes, bound ports, subnets, and relay status.
+    - `render_traceroute_table`: formats hop-by-hop RTT latencies, hop deltas, and completion status.
+    - `render_speedtest_result`: renders payload size, elapsed time, and transfer rates in Mbps and MB/s.
+    - `render_contact_trust_status`: displays contact alias, fingerprint, and 3-tier trust state machine details.
+    - `render_groups_table` and `render_group_detail`: displays group lists, member rosters, frontier heads, and topologically sorted causal messages with HLC timestamps.
+    - `render_search_results_table`: ranks federated search hits descending by relevance score with human-readable file sizes and reachable URLs.
+  - Comprehensive unit and integration test suite:
+    - 3 new TUI unit tests in `crates/lanflare/src/tui.rs`: `test_render_mesh_status`, `test_render_traceroute_and_speedtest`, `test_render_contact_trust_and_search_results`.
+    - `test_cli_mesh_and_chat_arg_parsing_and_execution` in `crates/lanflare-cli/tests/mesh_and_chat_tests.rs` and `crates/lanflare/tests/cli_tests.rs`.
+  - Verified 100% test pass rate across workspace via `cargo test -p lanflare-cli`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (170+ tests passing).
 
 ---
 
@@ -662,24 +685,37 @@
 
 ---
 
+- **ADR-041: CLI Subcommands for Multi-Hop Mesh Overlay, Simulator, Encrypted Chat & Federated Search**
+  - *Context*: LanFlare features expanded capabilities including multi-hop overlay routing, virtual network simulation, anti-harassment stranger gating, causal Merkle-DAG group chat, and federated file search. These capabilities require high-level CLI interfaces with structured terminal tables and interactive controls before desktop GUI integration.
+  - *Decision*: Extend `Cli` parser and `commands` module in `lanflare` (re-exported by `lanflare-cli`) with structured subcommands for `mesh` (`status`, `sim`, `trace`, `benchmark`), `chat` (`send`, `trust`, `groups`), and `search`.
+  - *Invariants*:
+    - **Single-Source Interface Definition**: `lanflare` implements the CLI parser, commands, and TUI formatters, while `lanflare-cli` re-exports them and provides standalone binary entrypoints.
+    - **Dynamic Discovery & Fallback Probing**: Commands targeting a peer alias or fingerprint query `PeerRegistry` and dual discovery engines (Multicast and mDNS) before falling back to manual subnet IP probes.
+    - **Automated Virtual Matrix Simulation**: `lanflare mesh sim` programmatically builds isolated multi-subnet virtual clusters, sets up direct links, runs gossip propagation rounds, and displays topological routing tables.
+    - **Anti-Harassment Trust Pre-Flight**: `lanflare chat send` inspects recipient trust states, automatically generating and attaching Hashcash PoW stamps for unapproved stranger handshakes while enforcing monotonic delivery state progression.
+    - **Federated Inverted Search Ranking**: `lanflare search` aggregates hits across local catalog inverted indexes and remote peer endpoints, ranking results descending by relevance score with human-readable file sizes and clickable URLs.
+
+---
+
+## Known Debt & Blockers
+- *None at present.*
+
+---
+
 ## Next Session Target
-- **Target**: **Sub-phase 11.1: CLI Subcommands for Mesh Topology, Simulator, Chat & Diagnostics (`lanflare-cli`)**
+- **Target**: **Sub-phase 11.2: Tauri v2 IPC Commands & Event Bridge for Mesh, Chat & Toolbox (`lanflare-desktop`)**
 - **Action Items**:
-  1. Extend `lanflare-cli` clap parser with subcommands:
-     - `lanflare mesh status`: prints local node overlay state, relay mode, and known peer topology.
-     - `lanflare mesh sim`: launches interactive/programmatic multi-subnet virtual network sandbox.
-     - `lanflare mesh trace <target>`: runs multi-hop traceroute to target fingerprint or alias.
-     - `lanflare mesh benchmark <target>`: runs in-memory throughput speedtest to target.
-     - `lanflare chat send <target> <message>`: sends 1:1 text message with stranger trust verification.
-     - `lanflare chat trust <target>`: inspects or approves stranger trust handshakes.
-     - `lanflare chat groups`: lists causal DAG group conversations and membership.
-     - `lanflare search <query>`: executes federated file search across 1-hop and multi-hop peers.
-  2. Implement command handlers in `crates/lanflare-cli/src/commands.rs` and terminal table formatters in `crates/lanflare-cli/src/tui.rs`.
-  3. Implement CLI argument parsing and execution integration test:
-     - `test_cli_mesh_and_chat_arg_parsing_and_execution`
-  4. Verification command:
+  1. Wire `MeshRouter`, `VirtualNetworkMatrix`, `ChatEngine`, `OutboxDispatcher`, and `Toolbox` into `DesktopState` in `crates/lanflare-desktop/src/state.rs`.
+  2. Implement Tauri IPC commands in `crates/lanflare-desktop/src/commands.rs`:
+     - Mesh & Simulation: `get_mesh_topology`, `start_mesh_simulation`, `toggle_mesh_link`, `run_mesh_traceroute`, `run_mesh_benchmark`.
+     - 1:1 and Group Chat: `send_chat_message`, `respond_trust_request`, `list_chat_conversations`, `get_chat_history`, `create_chat_group`, `sync_chat_group`.
+     - Toolbox: `get_clipboard_state`, `broadcast_clipboard`, `search_federated_files`, `get_collab_doc`, `apply_collab_edit`.
+  3. Emit real-time Tauri events: `lanflare://mesh-updated`, `lanflare://chat-message`, `lanflare://chat-receipt`, `lanflare://trust-request`, and `lanflare://clipboard-synced`.
+  4. Implement Tauri desktop integration tests:
+     - `test_desktop_mesh_and_chat_state_commands`
+  5. Verification command:
      ```bash
-     cargo test -p lanflare-cli
+     cargo test -p lanflare-desktop
      ```
 
 

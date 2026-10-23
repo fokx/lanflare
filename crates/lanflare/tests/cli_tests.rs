@@ -259,3 +259,84 @@ async fn test_cli_transfer_orchestration_e2e() {
 
     server_handle.stop();
 }
+
+#[tokio::test]
+async fn test_cli_mesh_and_chat_arg_parsing_and_execution() {
+    use lanflare::{ChatCommands, Cli, Commands, MeshCommands};
+
+    // Verify parsing of mesh subcommands
+    let cli_mesh_status = Cli::try_parse_from(["lanflare", "mesh", "status", "--relay"]).unwrap();
+    assert!(matches!(
+        cli_mesh_status.command,
+        Some(Commands::Mesh(ref m)) if matches!(m.command, MeshCommands::Status(ref s) if s.relay)
+    ));
+
+    let cli_mesh_sim = Cli::try_parse_from(["lanflare", "mesh", "sim", "-n", "3", "-d", "1"]).unwrap();
+    assert!(matches!(
+        cli_mesh_sim.command,
+        Some(Commands::Mesh(ref m)) if matches!(m.command, MeshCommands::Sim(ref s) if s.nodes == 3 && s.duration == 1)
+    ));
+
+    let cli_mesh_trace = Cli::try_parse_from(["lanflare", "mesh", "trace", "NodeA", "--ttl", "3"]).unwrap();
+    assert!(matches!(
+        cli_mesh_trace.command,
+        Some(Commands::Mesh(ref m)) if matches!(m.command, MeshCommands::Trace(ref t) if t.target == "NodeA" && t.ttl == 3)
+    ));
+
+    let cli_mesh_bench = Cli::try_parse_from(["lanflare", "mesh", "benchmark", "NodeB", "-n", "4"]).unwrap();
+    assert!(matches!(
+        cli_mesh_bench.command,
+        Some(Commands::Mesh(ref m)) if matches!(m.command, MeshCommands::Benchmark(ref b) if b.target == "NodeB" && b.chunks == 4)
+    ));
+
+    // Verify parsing of chat subcommands
+    let cli_chat_send = Cli::try_parse_from(["lanflare", "chat", "send", "Bob", "Hello!"]).unwrap();
+    assert!(matches!(
+        cli_chat_send.command,
+        Some(Commands::Chat(ref c)) if matches!(c.command, ChatCommands::Send(ref s) if s.target == "Bob" && s.message == "Hello!")
+    ));
+
+    let cli_chat_trust = Cli::try_parse_from(["lanflare", "chat", "trust", "Bob", "--approve"]).unwrap();
+    assert!(matches!(
+        cli_chat_trust.command,
+        Some(Commands::Chat(ref c)) if matches!(c.command, ChatCommands::Trust(ref t) if t.target == "Bob" && t.approve)
+    ));
+
+    let cli_chat_groups = Cli::try_parse_from(["lanflare", "chat", "groups"]).unwrap();
+    assert!(matches!(
+        cli_chat_groups.command,
+        Some(Commands::Chat(ref c)) if matches!(c.command, ChatCommands::Groups(_))
+    ));
+
+    // Verify parsing of search subcommand
+    let cli_search = Cli::try_parse_from(["lanflare", "search", "report.pdf", "--pin", "1234"]).unwrap();
+    assert!(matches!(
+        cli_search.command,
+        Some(Commands::Search(ref s)) if s.query == "report.pdf" && s.pin.as_deref() == Some("1234")
+    ));
+
+    // Verify execution handlers
+    let config = AppConfig::default();
+    let identity = generate_self_signed().unwrap();
+
+    let status_res = lanflare::commands::mesh_status(
+        &config,
+        &identity,
+        &lanflare::commands::MeshStatusOptions { relay: false },
+    )
+    .await;
+    assert!(status_res.is_ok());
+
+    let sim_res = lanflare::commands::mesh_sim(
+        &config,
+        &identity,
+        &lanflare::commands::MeshSimOptions {
+            nodes: 2,
+            duration: 1,
+            subnets: vec!["SubnetA".to_string()],
+            latency_ms: 10,
+        },
+    )
+    .await;
+    assert!(sim_res.is_ok());
+}

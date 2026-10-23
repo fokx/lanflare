@@ -854,3 +854,541 @@ pub async fn serve(
     handle.stop();
     Ok(())
 }
+
+fn current_time_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+// ============================================================================
+// Mesh & Network Simulator Commands
+// ============================================================================
+
+/// Options for the `lanflare mesh status` command.
+#[derive(Clone, Debug, Default)]
+pub struct MeshStatusOptions {
+    /// Whether to advertise relay capability
+    pub relay: bool,
+}
+
+/// Handles `lanflare mesh status`.
+pub async fn mesh_status(
+    config: &AppConfig,
+    identity: &TlsIdentity,
+    options: &MeshStatusOptions,
+) -> anyhow::Result<()> {
+    let local_fp = &identity.fingerprint;
+    println!("Inspecting local mesh overlay and discovering peers...");
+
+    let scan_opts = ScanOptions {
+        duration_secs: 2,
+        ..Default::default()
+    };
+    let peers = scan(config, identity, &scan_opts).await.unwrap_or_default();
+
+    let mut graph = lanflare_core::mesh::graph::MeshTopologyGraph::new(local_fp.clone());
+    let mut local_node = lanflare_core::mesh::graph::MeshNode::new(
+        local_fp.clone(),
+        &config.alias,
+        options.relay,
+    );
+    local_node.cert_pem = Some(identity.cert_pem.clone());
+    graph.insert_node(local_node);
+
+    let now_ms = current_time_millis();
+    for peer in &peers {
+        let is_relay = peer.device_type == Some(lanflare_proto::discovery::DeviceType::Server)
+            || peer.metadata.get("relay").map(|v| v == "true").unwrap_or(false);
+        let node = lanflare_core::mesh::graph::MeshNode::new(
+            peer.fingerprint.clone(),
+            &peer.alias,
+            is_relay,
+        );
+        graph.insert_node(node);
+
+        let rtt_est = 10;
+        graph.add_bidirectional_link(local_fp, &peer.fingerprint, rtt_est, now_ms);
+    }
+
+    let rendered = crate::tui::render_mesh_status(
+        &config.alias,
+        local_fp,
+        options.relay,
+        &graph,
+    );
+    println!("{rendered}");
+    Ok(())
+}
+
+/// Options for `lanflare mesh sim`.
+#[derive(Clone, Debug)]
+pub struct MeshSimOptions {
+    pub nodes: usize,
+    pub duration: u64,
+    pub subnets: Vec<String>,
+    pub latency_ms: u32,
+}
+
+/// Handles `lanflare mesh sim`.
+pub async fn mesh_sim(
+    _config: &AppConfig,
+    _identity: &TlsIdentity,
+    options: &MeshSimOptions,
+) -> anyhow::Result<()> {
+    println!("Initializing LanFlare Virtual Network Simulator...");
+    let matrix = std::sync::Arc::new(lanflare_core::mesh::sim::VirtualNetworkMatrix::new());
+    let mut cluster = lanflare_core::mesh::sim::SimulatedMeshCluster::new(matrix.clone());
+
+    let node_count = options.nodes.max(2);
+    let subnets = if options.subnets.is_empty() {
+        vec!["SubnetA".to_string(), "SubnetB".to_string()]
+    } else {
+        options.subnets.clone()
+    };
+
+    println!("Spawning {node_count} simulated nodes across {} subnets...", subnets.len());
+
+    let mut spawned_fps = Vec::new();
+    for i in 0..node_count {
+        let alias = match i {
+            0 => "Alice".to_string(),
+            1 if node_count == 2 => "Bob".to_string(),
+            1 => "Relay-1".to_string(),
+            2 if node_count == 3 => "Bob".to_string(),
+            2 => "Relay-2".to_string(),
+            3 => "Bob".to_string(),
+            n => format!("Node-{}", n + 1),
+        };
+
+        let node_subnets = if node_count <= 2 || i == 0 {
+            vec![subnets[0].clone()]
+        } else if i == node_count - 1 {
+            vec![subnets[subnets.len() - 1].clone()]
+        } else {
+            let s1 = (i - 1) % subnets.len();
+            let s2 = i % subnets.len();
+            if s1 != s2 {
+                vec![subnets[s1].clone(), subnets[s2].clone()]
+            } else {
+                vec![subnets[s1].clone()]
+            }
+        };
+
+        let is_relay = i > 0 && i < node_count - 1;
+        let fp = cluster.spawn_node(&alias, node_subnets, is_relay).await?;
+        spawned_fps.push(fp);
+    }
+
+    if options.latency_ms > 0 {
+        for i in 0..spawned_fps.len() {
+            for j in (i + 1)..spawned_fps.len() {
+                let cfg = lanflare_core::mesh::sim::SimulatedLinkConfig::new()
+                    .with_latency(options.latency_ms)
+                    .with_jitter(options.latency_ms / 4);
+                matrix.set_bidirectional_link_config(&spawned_fps[i], &spawned_fps[j], cfg);
+            }
+        }
+    }
+
+    let direct_links = cluster.establish_direct_links().await;
+    println!("Established {direct_links} direct virtual links.");
+
+    println!("Running 3 gossip exchange rounds across overlay...");
+    cluster.exchange_gossip_rounds(3).await?;
+
+    let table = crate::tui::render_sim_cluster_status(&cluster);
+    println!("{table}");
+
+    if options.duration > 0 {
+        println!("Virtual mesh sandbox running for {} seconds (Ctrl+C to abort)...", options.duration);
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(options.duration)) => {},
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nReceived Ctrl+C, shutting down cluster...");
+            }
+        }
+    } else {
+        println!("Virtual mesh sandbox running interactively. Press Ctrl+C to terminate...");
+        let _ = tokio::signal::ctrl_c().await;
+        println!("\nShutting down cluster...");
+    }
+
+    cluster.shutdown();
+    println!("Virtual mesh simulator shutdown cleanly.");
+    Ok(())
+}
+
+/// Options for `lanflare mesh trace`.
+#[derive(Clone, Debug)]
+pub struct MeshTraceOptions {
+    pub target: String,
+    pub ttl: u8,
+}
+
+/// Handles `lanflare mesh trace <target>`.
+pub async fn mesh_trace(
+    config: &AppConfig,
+    identity: &TlsIdentity,
+    options: &MeshTraceOptions,
+) -> anyhow::Result<()> {
+    let target_peer = discover_or_select_target(config, identity, Some(&options.target)).await?;
+    let canonical_target = target_peer.fingerprint.to_ascii_uppercase();
+
+    println!(
+        "Running traceroute to {} ({}) with TTL={}...",
+        target_peer.alias,
+        crate::tui::shorten_fingerprint(&target_peer.fingerprint),
+        options.ttl
+    );
+
+    let graph = std::sync::Arc::new(tokio::sync::RwLock::new(
+        lanflare_core::mesh::graph::MeshTopologyGraph::new(identity.fingerprint.clone()),
+    ));
+    let router_cfg = lanflare_core::mesh::router::MeshRouterConfig {
+        local_fingerprint: identity.fingerprint.clone(),
+        local_alias: config.alias.clone(),
+        relay_enabled: true,
+        ..Default::default()
+    };
+    let router = std::sync::Arc::new(lanflare_core::mesh::router::MeshRouter::with_config(router_cfg, graph.clone()));
+
+    let now_ms = current_time_millis();
+    if let Some(base_url) = target_peer.primary_base_url() {
+        router.register_peer_endpoint(&canonical_target, &base_url).await;
+        let mut g = graph.write().await;
+        let node = lanflare_core::mesh::graph::MeshNode::new(
+            canonical_target.clone(),
+            &target_peer.alias,
+            false,
+        );
+        g.insert_node(node);
+        g.add_bidirectional_link(&identity.fingerprint, &canonical_target, 15, now_ms);
+    }
+
+    let diagnostics = lanflare_core::mesh::diagnostics::MeshDiagnostics::new(&config.alias);
+    match diagnostics.traceroute(&router, &canonical_target).await {
+        Ok(trace_res) => {
+            let rendered = crate::tui::render_traceroute_table(&target_peer.alias, &canonical_target, &trace_res);
+            println!("{rendered}");
+            Ok(())
+        }
+        Err(e) => {
+            let hop = lanflare_proto::mesh::TracerouteHop {
+                node_fp: identity.fingerprint.clone(),
+                alias: config.alias.clone(),
+                rtt_ms: 0,
+                ingress_timestamp_ms: current_time_millis(),
+            };
+            let synth_res = lanflare_proto::mesh::MeshTracerouteResponse {
+                trace_id: uuid::Uuid::new_v4().to_string(),
+                origin_fp: identity.fingerprint.clone(),
+                target_fp: canonical_target.clone(),
+                success: false,
+                total_hops: 1,
+                total_rtt_ms: 0,
+                hops: vec![hop],
+                error: Some(e.to_string()),
+            };
+            let rendered = crate::tui::render_traceroute_table(&target_peer.alias, &canonical_target, &synth_res);
+            println!("{rendered}");
+            println!("Note: Diagnostics reported: {e}");
+            Ok(())
+        }
+    }
+}
+
+/// Options for `lanflare mesh benchmark`.
+#[derive(Clone, Debug)]
+pub struct MeshBenchmarkOptions {
+    pub target: String,
+    pub chunks: u32,
+    pub chunk_size: usize,
+}
+
+/// Handles `lanflare mesh benchmark <target>`.
+pub async fn mesh_benchmark(
+    config: &AppConfig,
+    identity: &TlsIdentity,
+    options: &MeshBenchmarkOptions,
+) -> anyhow::Result<()> {
+    let target_peer = discover_or_select_target(config, identity, Some(&options.target)).await?;
+    let canonical_target = target_peer.fingerprint.to_ascii_uppercase();
+
+    println!(
+        "Starting in-memory throughput benchmark to {} ({}): {} chunks of {} bytes...",
+        target_peer.alias,
+        crate::tui::shorten_fingerprint(&target_peer.fingerprint),
+        options.chunks,
+        options.chunk_size
+    );
+
+    let graph = std::sync::Arc::new(tokio::sync::RwLock::new(
+        lanflare_core::mesh::graph::MeshTopologyGraph::new(identity.fingerprint.clone()),
+    ));
+    let router_cfg = lanflare_core::mesh::router::MeshRouterConfig {
+        local_fingerprint: identity.fingerprint.clone(),
+        local_alias: config.alias.clone(),
+        relay_enabled: true,
+        ..Default::default()
+    };
+    let router = std::sync::Arc::new(lanflare_core::mesh::router::MeshRouter::with_config(router_cfg, graph.clone()));
+
+    let now_ms = current_time_millis();
+    if let Some(base_url) = target_peer.primary_base_url() {
+        router.register_peer_endpoint(&canonical_target, &base_url).await;
+        let mut g = graph.write().await;
+        let node = lanflare_core::mesh::graph::MeshNode::new(
+            canonical_target.clone(),
+            &target_peer.alias,
+            false,
+        );
+        g.insert_node(node);
+        g.add_bidirectional_link(&identity.fingerprint, &canonical_target, 15, now_ms);
+    }
+
+    let diagnostics = lanflare_core::mesh::diagnostics::MeshDiagnostics::new(&config.alias);
+    match diagnostics.run_speedtest(&router, &canonical_target, options.chunks, options.chunk_size).await {
+        Ok(res) => {
+            let rendered = crate::tui::render_speedtest_result(&target_peer.alias, &canonical_target, &res);
+            println!("{rendered}");
+            Ok(())
+        }
+        Err(e) => {
+            println!("Benchmark error: {e}");
+            Err(e.into())
+        }
+    }
+}
+
+// ============================================================================
+// Encrypted Chat & Stranger Trust Commands
+// ============================================================================
+
+/// Options for `lanflare chat send`.
+#[derive(Clone, Debug)]
+pub struct ChatSendOptions {
+    pub target: String,
+    pub message: String,
+    pub intro: bool,
+}
+
+/// Handles `lanflare chat send <target> <message>`.
+pub async fn chat_send(
+    config: &AppConfig,
+    identity: &TlsIdentity,
+    options: &ChatSendOptions,
+) -> anyhow::Result<()> {
+    let target_peer = discover_or_select_target(config, identity, Some(&options.target)).await?;
+    let canonical_target = target_peer.fingerprint.to_ascii_uppercase();
+
+    let chat_dir = dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("lanflare")
+        .join("chat");
+    tokio::fs::create_dir_all(&chat_dir).await?;
+
+    let chat_cfg = lanflare_core::chat::ChatEngineConfig::new(&config.alias, &chat_dir);
+    let registry = PeerRegistry::new();
+    registry.insert_or_update(target_peer.clone()).await;
+
+    let chat_engine = lanflare_core::chat::ChatEngine::new(identity.clone(), chat_cfg, registry).await?;
+
+    let is_stranger = options.intro
+        || chat_engine.trust_gate().get_trust_state(&canonical_target)
+            == lanflare_core::chat::trust::ContactTrustState::Stranger;
+
+    if is_stranger {
+        println!("Peer is not yet trusted. Sending stranger introduction handshake with Hashcash PoW...");
+        let req = chat_engine.send_trust_request(&canonical_target, &options.message).await?;
+        println!("Trust handshake dispatched:");
+        println!("  Request ID:  {}", req.request_id);
+        println!("  Target FP:   {}", req.target_fp);
+        println!("  PoW Nonce:   {}", req.pow_stamp.nonce);
+        println!("  Status:      Pending recipient approval");
+    } else {
+        let msg = chat_engine.send_text_message(&canonical_target, &options.message).await?;
+        println!("Chat message dispatched:");
+        println!("  Message ID:  {}", msg.id);
+        println!("  Recipient:   {} ({})", target_peer.alias, canonical_target);
+        println!("  Content:     {}", options.message);
+        println!("  Status:      Enqueued in DTN Outbox (Queued / Sending)");
+    }
+
+    Ok(())
+}
+
+/// Options for `lanflare chat trust`.
+#[derive(Clone, Debug)]
+pub struct ChatTrustOptions {
+    pub target: String,
+    pub approve: bool,
+    pub block: bool,
+}
+
+/// Handles `lanflare chat trust <target>`.
+pub async fn chat_trust(
+    config: &AppConfig,
+    identity: &TlsIdentity,
+    options: &ChatTrustOptions,
+) -> anyhow::Result<()> {
+    let canonical_target = options.target.trim().to_ascii_uppercase();
+
+    let chat_dir = dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("lanflare")
+        .join("chat");
+    tokio::fs::create_dir_all(&chat_dir).await?;
+
+    let chat_cfg = lanflare_core::chat::ChatEngineConfig::new(&config.alias, &chat_dir);
+    let registry = PeerRegistry::new();
+    let chat_engine = lanflare_core::chat::ChatEngine::new(identity.clone(), chat_cfg, registry).await?;
+
+    if options.approve {
+        chat_engine.approve_contact(&canonical_target).await?;
+        println!(
+            "Contact {} successfully approved and elevated to TrustedContact.",
+            crate::tui::shorten_fingerprint(&canonical_target)
+        );
+    } else if options.block {
+        chat_engine.block_contact(&canonical_target).await?;
+        println!(
+            "Contact {} successfully blocked.",
+            crate::tui::shorten_fingerprint(&canonical_target)
+        );
+    } else {
+        let state = chat_engine.trust_gate().get_trust_state(&canonical_target);
+        let contact_alias = chat_engine
+            .store()
+            .get_contact(&canonical_target)
+            .await
+            .map(|c| c.alias)
+            .unwrap_or_else(|| "Unknown".to_string());
+        let rendered = crate::tui::render_contact_trust_status(&contact_alias, &canonical_target, state);
+        println!("{rendered}");
+    }
+
+    Ok(())
+}
+
+/// Options for `lanflare chat groups`.
+#[derive(Clone, Debug, Default)]
+pub struct ChatGroupsOptions {
+    pub id: Option<String>,
+}
+
+/// Handles `lanflare chat groups`.
+pub async fn chat_groups(
+    config: &AppConfig,
+    identity: &TlsIdentity,
+    options: &ChatGroupsOptions,
+) -> anyhow::Result<()> {
+    let chat_dir = dirs::data_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("lanflare")
+        .join("chat");
+    tokio::fs::create_dir_all(&chat_dir).await?;
+
+    let chat_cfg = lanflare_core::chat::ChatEngineConfig::new(&config.alias, &chat_dir);
+    let registry = PeerRegistry::new();
+    let chat_engine = lanflare_core::chat::ChatEngine::new(identity.clone(), chat_cfg, registry).await?;
+
+    if let Some(group_id) = &options.id {
+        if let Some(group_arc) = chat_engine.get_group(group_id).await {
+            let state = group_arc.read().await;
+            let rendered = crate::tui::render_group_detail(&state);
+            println!("{rendered}");
+        } else {
+            println!("Group not found: {}", group_id);
+        }
+    } else {
+        let group_ids = chat_engine.group_sync().list_groups().await;
+        let mut group_info = Vec::new();
+        for gid in &group_ids {
+            if let Some(g_arc) = chat_engine.get_group(gid).await {
+                let s = g_arc.read().await;
+                group_info.push((
+                    s.roster().group_id.clone(),
+                    s.roster().group_name.clone(),
+                    s.current_epoch(),
+                    s.roster().members.len(),
+                    s.len(),
+                ));
+            }
+        }
+        let borrowed_info: Vec<(&str, &str, u64, usize, usize)> = group_info
+            .iter()
+            .map(|(id, name, ep, mems, msgs)| (id.as_str(), name.as_str(), *ep, *mems, *msgs))
+            .collect();
+        let rendered = crate::tui::render_groups_table(&borrowed_info);
+        println!("{rendered}");
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Federated File Search Commands
+// ============================================================================
+
+/// Options for `lanflare search`.
+#[derive(Clone, Debug)]
+pub struct SearchOptions {
+    pub query: String,
+    pub pin: Option<String>,
+    pub timeout: u64,
+}
+
+/// Handles `lanflare search <query>`.
+pub async fn search(
+    config: &AppConfig,
+    identity: &TlsIdentity,
+    options: &SearchOptions,
+) -> anyhow::Result<()> {
+    println!("Executing federated search for \"{}\" across LAN and mesh peers...", options.query);
+
+    let catalog = std::sync::Arc::new(lanflare_core::toolbox::search::MeshFileCatalog::new(
+        &identity.fingerprint,
+        &config.alias,
+    ));
+    if config.download_dir.exists() {
+        let _ = catalog.add_shared_folder("Shared", &config.download_dir, "/", None);
+    }
+
+    let scan_opts = ScanOptions {
+        duration_secs: options.timeout.min(2),
+        ..Default::default()
+    };
+    let peers = scan(config, identity, &scan_opts).await.unwrap_or_default();
+
+    let registry = PeerRegistry::new();
+    for peer in peers {
+        registry.insert_or_update(peer).await;
+    }
+
+    let search_engine = lanflare_core::toolbox::search::FederatedSearchEngine::new(
+        catalog,
+        &identity.fingerprint,
+        &config.alias,
+        config.port,
+    )
+    .with_registry(registry);
+
+    let mut query_dto = lanflare_proto::toolbox::FileSearchQueryDto::new(
+        &options.query,
+        &identity.fingerprint,
+    )
+    .with_max_results(50);
+    if let Some(pin) = &options.pin {
+        query_dto = query_dto.with_pin(pin);
+    }
+
+    let results = search_engine
+        .search_federated(&query_dto, Duration::from_secs(options.timeout))
+        .await;
+
+    let rendered = crate::tui::render_search_results_table(&options.query, &results);
+    println!("{rendered}");
+    Ok(())
+}
