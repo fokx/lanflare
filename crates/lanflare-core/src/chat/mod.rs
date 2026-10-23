@@ -16,13 +16,14 @@ pub use group::{
 };
 pub use lanflare_proto::chat::{
     GroupDagNodeDto, GroupKeyDistributionDto, GroupMember, GroupMembershipRoster, GroupRole,
-    HlcTimestamp, MessageDeliveryState,
+    GroupSyncRequestDto, GroupSyncResponseDto, HlcTimestamp, MessageDeliveryState,
 };
 pub use outbox::{
     OutboxConfig, OutboxDispatchError, OutboxDispatcher, OutboxError, OutboxItem, OutboxPayload,
     OutboxTransport,
 };
 pub use store::{ChatStore, ChatStoreError, Contact, Conversation, StoredMessage};
+pub use sync::{GroupSyncEngine, SyncError, SyncStats};
 pub use trust::{
     compute_time_bucket, count_leading_zeros, generate_hashcash_pow, verify_hashcash_pow,
     ContactTrustState, TokenBucket, TrustError, TrustGate, TrustGateConfig,

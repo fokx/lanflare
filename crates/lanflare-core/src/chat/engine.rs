@@ -24,7 +24,8 @@ use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode};
 use lanflare_proto::chat::{
-    ChatContentDto, ChatMessageDto, DeliveryReceiptDto, MessageDeliveryState, ReadReceiptDto,
+    ChatContentDto, ChatMessageDto, DeliveryReceiptDto, GroupDagNodeDto, GroupKeyDistributionDto,
+    GroupMember, GroupSyncRequestDto, GroupSyncResponseDto, MessageDeliveryState, ReadReceiptDto,
     ResumeTransferDto, TrustRequestDto, DEFAULT_POW_DIFFICULTY_BITS, DEFAULT_TIME_BUCKET_SECS,
 };
 use lanflare_proto::mesh::{RoutedEnvelope, MAX_MESH_TTL};
@@ -32,11 +33,13 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{broadcast, RwLock};
 
+use crate::chat::group::{author_group_message as author_group_msg, GroupDagState, GroupEpochKey};
 use crate::chat::outbox::{
     OutboxConfig, OutboxDispatchError, OutboxDispatcher, OutboxError, OutboxItem, OutboxPayload,
     OutboxTransport,
 };
 use crate::chat::store::{ChatStore, ChatStoreError, Contact};
+use crate::chat::sync::{GroupSyncEngine, SyncError, SyncStats};
 use crate::chat::trust::{
     compute_time_bucket, generate_hashcash_pow, ContactTrustState, TrustError, TrustGate,
     TrustGateConfig,
@@ -143,6 +146,13 @@ pub enum ChatEngineEvent {
         target_path: PathBuf,
         sha256: String,
     },
+
+    /// Anti-entropy group sync completed.
+    GroupSynced {
+        group_id: String,
+        peer_fp: String,
+        stats: SyncStats,
+    },
 }
 
 /// Configuration options for initializing `ChatEngine`.
@@ -197,6 +207,7 @@ pub struct ChatEngine {
     trust_gate: Arc<TrustGate>,
     outbox: Arc<OutboxDispatcher>,
     resume_manager: Arc<ResumeManager>,
+    group_sync: Arc<GroupSyncEngine>,
     media_dir: PathBuf,
     registry: Arc<PeerRegistry>,
     mesh_router: RwLock<Option<Arc<MeshRouter>>>,
@@ -227,6 +238,7 @@ impl ChatEngine {
         .await?;
 
         let resume_manager = Arc::new(ResumeManager::new(&config.media_dir));
+        let group_sync = Arc::new(GroupSyncEngine::new(identity.clone()));
         let (event_tx, _) = broadcast::channel(128);
 
         let http_client = reqwest::Client::builder()
@@ -242,6 +254,7 @@ impl ChatEngine {
             trust_gate,
             outbox: outbox.clone(),
             resume_manager,
+            group_sync,
             media_dir: config.media_dir,
             registry: registry.clone(),
             mesh_router: RwLock::new(None),
@@ -313,9 +326,174 @@ impl ChatEngine {
         &self.media_dir
     }
 
+    /// Returns a reference to the group anti-entropy synchronization engine.
+    pub fn group_sync(&self) -> &Arc<GroupSyncEngine> {
+        &self.group_sync
+    }
+
     /// Subscribes to the live chat engine event stream.
     pub fn subscribe_events(&self) -> broadcast::Receiver<ChatEngineEvent> {
         self.event_tx.subscribe()
+    }
+
+    // --- Group Chat Actions ---
+
+    /// Creates a new group with the local identity as Admin and pre-computed pairwise key distribution envelopes.
+    pub async fn create_group(
+        &self,
+        group_name: &str,
+        other_members: Vec<GroupMember>,
+    ) -> Result<
+        (
+            Arc<RwLock<GroupDagState>>,
+            GroupEpochKey,
+            Vec<GroupKeyDistributionDto>,
+        ),
+        ChatEngineError,
+    > {
+        let (state, epoch_key, distributions) =
+            GroupDagState::create_group(&self.identity, group_name, other_members)
+                .map_err(|e| ChatEngineError::BadRequest(e.to_string()))?;
+        let group_arc = self.group_sync.register_group(state).await;
+        Ok((group_arc, epoch_key, distributions))
+    }
+
+    /// Registers a group's DAG state with the local engine.
+    pub async fn register_group(&self, state: GroupDagState) -> Arc<RwLock<GroupDagState>> {
+        self.group_sync.register_group(state).await
+    }
+
+    /// Retrieves the thread-safe DAG state for a group by ID.
+    pub async fn get_group(&self, group_id: &str) -> Option<Arc<RwLock<GroupDagState>>> {
+        self.group_sync.get_group(group_id).await
+    }
+
+    /// Authors an encrypted group chat message, digitally signing it and adding it to the group DAG.
+    pub async fn author_group_message(
+        &self,
+        group_id: &str,
+        plaintext: &[u8],
+    ) -> Result<GroupDagNodeDto, ChatEngineError> {
+        let group_arc = self
+            .group_sync
+            .get_group(group_id)
+            .await
+            .ok_or_else(|| ChatEngineError::BadRequest(format!("Group not found: {group_id}")))?;
+        let mut state = group_arc.write().await;
+        let node = author_group_msg(&self.identity, &mut state, plaintext)
+            .map_err(|e| ChatEngineError::BadRequest(e.to_string()))?;
+        Ok(node)
+    }
+
+    /// Synchronizes a group's DAG frontier with a target peer, automatically choosing direct HTTP or multi-hop mesh.
+    pub async fn sync_group(
+        &self,
+        group_id: &str,
+        target_peer_fp: &str,
+    ) -> Result<SyncStats, SyncError> {
+        let target_fp = target_peer_fp.to_ascii_uppercase();
+        if let Some(peer) = self.registry.get(&target_fp).await
+            && let Some(base_url) = peer.primary_base_url()
+        {
+            return self
+                .group_sync
+                .sync_with_peer_http(&base_url, group_id)
+                .await;
+        }
+        self.sync_group_mesh(&target_fp, group_id).await
+    }
+
+    /// Synchronizes a group's DAG frontier with a remote peer across multi-hop overlay mesh relays.
+    pub async fn sync_group_mesh(
+        &self,
+        target_fp: &str,
+        group_id: &str,
+    ) -> Result<SyncStats, SyncError> {
+        let target_fp = target_fp.to_ascii_uppercase();
+        let mesh = self
+            .mesh_router
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| SyncError::Network("Mesh router not attached".into()))?;
+
+        let group = self
+            .group_sync
+            .get_group(group_id)
+            .await
+            .ok_or_else(|| SyncError::GroupNotFound(group_id.to_string()))?;
+
+        let (frontier_heads, current_epoch) = {
+            let state = group.read().await;
+            (state.heads(), state.highest_possessed_epoch())
+        };
+
+        let sync_req = GroupSyncRequestDto {
+            group_id: group_id.to_string(),
+            requester_fp: self.identity.fingerprint.clone(),
+            current_epoch,
+            frontier_heads,
+            push_nodes: Vec::new(),
+            signature: None,
+        };
+
+        let mut cert_pem_opt = mesh
+            .graph()
+            .read()
+            .await
+            .get_node(&target_fp)
+            .and_then(|n| n.cert_pem.clone());
+
+        if cert_pem_opt.is_none() {
+            let state = group.read().await;
+            cert_pem_opt = state
+                .roster()
+                .get_member(&target_fp)
+                .map(|m| m.cert_pem.clone());
+        }
+
+        let cert_pem = cert_pem_opt.ok_or_else(|| {
+            SyncError::Network(format!("Target peer cert not found: {target_fp}"))
+        })?;
+
+        let json_bytes = serde_json::to_vec(&sync_req)?;
+        let e2ee = seal_envelope(&self.identity, &target_fp, &cert_pem, &json_bytes)
+            .map_err(|e| SyncError::Network(format!("Failed to seal sync request: {e}")))?;
+
+        let mut event_rx = self.event_tx.subscribe();
+
+        let routed = RoutedEnvelope {
+            packet_id: uuid::Uuid::new_v4().to_string(),
+            src_fp: self.identity.fingerprint.clone(),
+            dst_fp: target_fp.clone(),
+            ttl: MAX_MESH_TTL,
+            route_path: vec![self.identity.fingerprint.clone()],
+            payload: e2ee,
+        };
+
+        mesh.forward_envelope(routed)
+            .await
+            .map_err(|e| SyncError::Network(format!("Failed to forward sync request: {e}")))?;
+
+        let timeout = Duration::from_secs(5);
+        let start = tokio::time::Instant::now();
+        while start.elapsed() < timeout {
+            match tokio::time::timeout(timeout - start.elapsed(), event_rx.recv()).await {
+                Ok(Ok(ChatEngineEvent::GroupSynced {
+                    group_id: gid,
+                    peer_fp,
+                    stats,
+                })) => {
+                    if gid == group_id && peer_fp.eq_ignore_ascii_case(&target_fp) {
+                        return Ok(stats);
+                    }
+                }
+                Ok(Ok(_)) => continue,
+                _ => break,
+            }
+        }
+
+        Err(SyncError::Timeout)
     }
 
     // --- Outbound Actions ---
@@ -838,6 +1016,64 @@ impl ChatEngine {
                 let _ = self
                     .event_tx
                     .send(ChatEngineEvent::ReadReceiptReceived(read));
+                return;
+            }
+
+            // 5. Try GroupSyncRequestDto
+            if let Ok(sync_req) = serde_json::from_slice::<GroupSyncRequestDto>(&decrypted) {
+                if let Ok(sync_resp) = self.group_sync.handle_sync_request(sync_req).await {
+                    let resp_bytes = serde_json::to_vec(&sync_resp).unwrap_or_default();
+                    if let Some(mesh) = self.mesh_router.read().await.as_ref() {
+                        let mut target_cert_opt = mesh
+                            .graph()
+                            .read()
+                            .await
+                            .get_node(&routed.src_fp)
+                            .and_then(|n| n.cert_pem.clone());
+
+                        if target_cert_opt.is_none()
+                            && let Some(group) = self.group_sync.get_group(&sync_resp.group_id).await
+                        {
+                            let state = group.read().await;
+                            target_cert_opt = state
+                                .roster()
+                                .get_member(&routed.src_fp)
+                                .map(|m| m.cert_pem.clone());
+                        }
+
+                        if let Some(cert_pem) = target_cert_opt
+                            && let Ok(e2ee) = seal_envelope(
+                                &self.identity,
+                                &routed.src_fp,
+                                &cert_pem,
+                                &resp_bytes,
+                            )
+                        {
+                            let resp_routed = RoutedEnvelope {
+                                packet_id: uuid::Uuid::new_v4().to_string(),
+                                src_fp: self.identity.fingerprint.clone(),
+                                dst_fp: routed.src_fp.clone(),
+                                ttl: MAX_MESH_TTL,
+                                route_path: vec![self.identity.fingerprint.clone()],
+                                payload: e2ee,
+                            };
+                            let _ = mesh.forward_envelope(resp_routed).await;
+                        }
+                    }
+                }
+                return;
+            }
+
+            // 6. Try GroupSyncResponseDto
+            if let Ok(sync_resp) = serde_json::from_slice::<GroupSyncResponseDto>(&decrypted) {
+                let group_id = sync_resp.group_id.clone();
+                if let Ok(stats) = self.group_sync.apply_sync_response(sync_resp).await {
+                    let _ = self.event_tx.send(ChatEngineEvent::GroupSynced {
+                        group_id,
+                        peer_fp: routed.src_fp.clone(),
+                        stats,
+                    });
+                }
             }
         }
     }
@@ -1125,6 +1361,42 @@ impl ChatEngine {
                             "totalBytes": paused.total_bytes,
                         }),
                     )
+                }
+            }
+
+            (Method::POST, "/api/lanflare/v1/chat/group-sync") => {
+                let body_bytes = match req.body_mut().collect().await {
+                    Ok(collected) => collected.to_bytes(),
+                    Err(e) => {
+                        return text_box_response(
+                            StatusCode::BAD_REQUEST,
+                            format!("Failed to read request body: {e}"),
+                        );
+                    }
+                };
+
+                let sync_req = match serde_json::from_slice::<GroupSyncRequestDto>(&body_bytes) {
+                    Ok(sr) => sr,
+                    Err(e) => {
+                        return text_box_response(
+                            StatusCode::BAD_REQUEST,
+                            format!("Invalid GroupSyncRequestDto JSON: {e}"),
+                        );
+                    }
+                };
+
+                match self.group_sync.handle_sync_request(sync_req).await {
+                    Ok(resp) => json_response(StatusCode::OK, &resp),
+                    Err(SyncError::GroupNotFound(gid)) => {
+                        text_box_response(StatusCode::NOT_FOUND, format!("Group not found: {gid}"))
+                    }
+                    Err(SyncError::NotAMember(fp)) => {
+                        text_box_response(StatusCode::FORBIDDEN, format!("Sender not a member: {fp}"))
+                    }
+                    Err(SyncError::Group(e)) => {
+                        text_box_response(StatusCode::UNPROCESSABLE_ENTITY, e.to_string())
+                    }
+                    Err(e) => text_box_response(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
                 }
             }
 

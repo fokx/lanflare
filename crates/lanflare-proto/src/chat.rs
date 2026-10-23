@@ -658,6 +658,94 @@ impl GroupDagNodeDto {
     }
 }
 
+/// Request payload sent by a group member to synchronize DAG state with a peer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSyncRequestDto {
+    /// Target group identifier (UUID v4).
+    pub group_id: String,
+
+    /// Canonical uppercase SHA-256 fingerprint of the requesting member.
+    pub requester_fp: String,
+
+    /// Highest key epoch known to the requester.
+    pub current_epoch: u64,
+
+    /// Known frontier head message IDs held by the requester.
+    pub frontier_heads: Vec<String>,
+
+    /// Optional batch of newly authored DAG nodes to push to the remote peer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub push_nodes: Vec<GroupDagNodeDto>,
+
+    /// Optional digital signature over canonical request bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+impl GroupSyncRequestDto {
+    /// Constructs canonical signing bytes.
+    pub fn canonical_signing_bytes(&self) -> Vec<u8> {
+        let mut sorted_heads = self.frontier_heads.clone();
+        sorted_heads.sort();
+        format!(
+            "{}:{}:{}:{}",
+            self.group_id,
+            self.requester_fp.to_ascii_uppercase(),
+            self.current_epoch,
+            sorted_heads.join(",")
+        )
+        .into_bytes()
+    }
+}
+
+/// Response payload containing missing DAG nodes and optional epoch keys for catch-up.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupSyncResponseDto {
+    /// Group identifier.
+    pub group_id: String,
+
+    /// Canonical uppercase SHA-256 fingerprint of the responding peer.
+    pub responder_fp: String,
+
+    /// Current key epoch on the responder.
+    pub current_epoch: u64,
+
+    /// Updated frontier head message IDs after processing request.
+    pub frontier_heads: Vec<String>,
+
+    /// Topologically sorted list of DAG nodes missing from the requester's frontier.
+    pub missing_nodes: Vec<GroupDagNodeDto>,
+
+    /// Epoch key distribution envelopes for epochs newer than the requester's epoch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub epoch_keys: Vec<GroupKeyDistributionDto>,
+
+    /// Optional digital signature over canonical response bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+impl GroupSyncResponseDto {
+    /// Constructs canonical signing bytes.
+    pub fn canonical_signing_bytes(&self) -> Vec<u8> {
+        let mut sorted_heads = self.frontier_heads.clone();
+        sorted_heads.sort();
+        let mut missing_ids: Vec<String> = self.missing_nodes.iter().map(|n| n.msg_id.clone()).collect();
+        missing_ids.sort();
+        format!(
+            "{}:{}:{}:{}:{}",
+            self.group_id,
+            self.responder_fp.to_ascii_uppercase(),
+            self.current_epoch,
+            sorted_heads.join(","),
+            missing_ids.join(",")
+        )
+        .into_bytes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -915,5 +1003,33 @@ mod tests {
         let deserialized_node: GroupDagNodeDto =
             serde_json::from_str(&node_json).expect("deserialize dag node");
         assert_eq!(dag_node, deserialized_node);
+
+        // 12. GroupSyncRequestDto and GroupSyncResponseDto Serde Round-Trip
+        let sync_req = GroupSyncRequestDto {
+            group_id: "grp-100".to_string(),
+            requester_fp: "BBBB111122223333444455556666777788889999AAAABBBBCCCCDDDDEEEEFFFF0002".to_string(),
+            current_epoch: 1,
+            frontier_heads: vec!["ROOT0000".to_string()],
+            push_nodes: vec![dag_node.clone()],
+            signature: Some("sync_req_sig".to_string()),
+        };
+        let req_json = serde_json::to_string(&sync_req).expect("serialize sync req");
+        let deserialized_req: GroupSyncRequestDto =
+            serde_json::from_str(&req_json).expect("deserialize sync req");
+        assert_eq!(sync_req, deserialized_req);
+
+        let sync_resp = GroupSyncResponseDto {
+            group_id: "grp-100".to_string(),
+            responder_fp: "AAAA111122223333444455556666777788889999AAAABBBBCCCCDDDDEEEEFFFF0001".to_string(),
+            current_epoch: 1,
+            frontier_heads: vec!["HASH0001".to_string()],
+            missing_nodes: vec![dag_node],
+            epoch_keys: Vec::new(),
+            signature: Some("sync_resp_sig".to_string()),
+        };
+        let resp_json = serde_json::to_string(&sync_resp).expect("serialize sync resp");
+        let deserialized_resp: GroupSyncResponseDto =
+            serde_json::from_str(&resp_json).expect("deserialize sync resp");
+        assert_eq!(sync_resp, deserialized_resp);
     }
 }

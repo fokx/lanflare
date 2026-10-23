@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 9 in progress; Sub-phase 9.1 Complete.
-- **Overall Status**: Ready for **Sub-phase 9.2: Group Anti-Entropy Frontier Sync & Pairwise Group Key Distribution (`lanflare-core::chat::sync`)**.
+- **Current Milestone**: Phase 9 in progress; Sub-phases 9.1 & 9.2 Complete.
+- **Overall Status**: Ready for **Sub-phase 9.3: Custodial Mesh Relay Mailbox for Asynchronous Offline Delivery (`lanflare-core::mesh::mailbox`)**.
 
 ---
 
@@ -234,6 +234,26 @@
     - `test_causal_dag_topological_merge_determinism`: verified 3 partitioned members authoring concurrent branches merge deterministically into an identical conflict-free sequence across all nodes.
     - `test_group_key_sealing_and_non_member_rejection`: verified pairwise epoch key decapsulation, message decryption, non-member rejection (`NotAMember`), envelope theft rejection (`RecipientMismatch`), and forged signature rejection (`InvalidSignature`).
   - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib chat::group`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (151 tests passing).
+- [x] Implement Group Anti-Entropy Frontier Sync & Pairwise Group Key Distribution in `lanflare-core::chat::sync` (Sub-phase 9.2):
+  - Defined protocol DTOs in `lanflare-proto::chat`: `GroupSyncRequestDto` and `GroupSyncResponseDto` with canonical signing bytes and serde round-trip tests.
+  - Extended `GroupDagState` in `lanflare-core::chat::group`:
+    - Implemented `find_missing_nodes(&self, known_frontier_heads: &[String]) -> Vec<GroupDagNodeDto>` using backwards DAG parent traversal to calculate known ancestor sets and filtering `topological_sort()` to return missing nodes in deterministic causal topological order.
+    - Implemented pairwise key distribution persistence (`add_key_distribution`, `key_distributions_for`, `all_key_distributions`, `apply_epoch_key_distribution`) and `highest_possessed_epoch(&self) -> u64` tracking possessed cryptographic keys distinctly from roster epoch numbers.
+  - Implemented `GroupSyncEngine` in `lanflare-core::chat::sync`:
+    - Multi-group registry and thread-safe DAG state access (`register_group`, `get_group`, `list_groups`).
+    - Sync request handler (`handle_sync_request`) enforcing member verification against group roster (`SyncError::NotAMember` -> HTTP 403), ingesting optional pushed nodes, computing missing DAG nodes, and collecting epoch key envelopes addressed to the requester.
+    - Sync response processor (`apply_sync_response`) decapsulating epoch keys addressed to the local identity and merging missing DAG nodes in causal topological order.
+    - Direct HTTP client synchronization (`sync_with_peer_http`, `sync_with_peer_http_with_push`) targeting `POST /api/lanflare/v1/chat/group-sync`.
+  - Mounted Hyper group chat sync router endpoint: `POST /api/lanflare/v1/chat/group-sync` in `ChatEngine::handle_hyper_request`.
+  - Integrated `GroupSyncEngine` with `ChatEngine`:
+    - Exposed `create_group`, `register_group`, `get_group`, `author_group_message`, and `sync_group`.
+    - Integrated multi-hop overlay mesh sync in `sync_group_mesh` and `handle_routed_envelope`, supporting E2EE group sync across intermediate relays with zero plain-text leakage and reactive event notification (`ChatEngineEvent::GroupSynced`).
+  - Implemented unit and integration test suites:
+    - Unit tests in `lanflare-core::chat::sync`: verified request handling, response application, decryption, idempotent subsequent sync with 0 missing nodes, non-member rejection (HTTP 403), and unknown group rejection (HTTP 404).
+    - Integration tests in `lanflare-core/tests/group_sync_e2e.rs`:
+      - `test_four_peer_group_partition_and_anti_entropy_catchup`: verified 4-peer group where Peer D is offline while Peers A, B, and C author and exchange 20 messages; bringing Peer D online catches up all 20 missing messages and decapsulates epoch key in 1 sync round; verifies identical topological ordering and 100% plaintext decryption match.
+      - `test_group_sync_over_multi_hop_mesh_relay`: verified 3-node multi-subnet mesh (`Node A -> Relay B -> Node C`); verified physical subnet partition between A and C; Node C synchronizes group state with Node A over 2-hop mesh relay; verifies full message retrieval, topological ordering, and decryption on Node C with zero plaintext exposure on Relay B.
+  - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --test group_sync_e2e`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (156 tests passing).
 
 ---
 
@@ -524,6 +544,16 @@
     - **Causal DAG Frontier & Heads**: Messages reference up to 4 frontier heads (`parent_ids`). Inserting a child node automatically removes its parents from the frontier heads set and registers the child as a new head.
     - **Kahn's Deterministic Topological Sort**: `GroupDagState::topological_sort()` applies Kahn's algorithm using a min-heap prioritized by `HlcTimestamp`. This guarantees that parents always precede children, and concurrent branches across partitioned members resolve into the exact same conflict-free message sequence across all nodes regardless of network arrival order.
 
+- **ADR-036: Group Anti-Entropy DAG Frontier Synchronization & Pairwise Epoch Key Distribution**
+  - *Context*: Decentralized group chat members frequently go offline or roam across subnets while other members continue to author messages and rotate epoch keys. Members reconnecting to the LAN or mesh must reconcile missing Causal Merkle-DAG history and decrypt keys in minimal round-trips without central coordinator bottlenecks.
+  - *Decision*: Implement anti-entropy DAG frontier synchronization (`GroupSyncEngine`, `POST /api/lanflare/v1/chat/group-sync`, `GroupSyncRequestDto`, `GroupSyncResponseDto`) integrated with `GroupDagState` and `ChatEngine`.
+  - *Invariants*:
+    - **Causal Backwards Traversal & Topological Ordering**: `find_missing_nodes(&self, known_frontier_heads)` traverses backwards from the requester's known frontier heads along parent references to identify all ancestor message IDs already possessed by the requester (`known_set`). All local DAG nodes not in `known_set` are returned in causal topological sort order (parents always preceding children), ensuring the recipient can ingest them sequentially via `merge_dag` with zero missing parent errors.
+    - **Possessed Epoch Key vs Roster Epoch**: A node's `current_epoch` in `GroupSyncRequestDto` represents its `highest_possessed_epoch()` (the maximum key epoch actually decapsulated in `epoch_keys`, or 0 if none yet decapsulated), distinguishing between membership roster version and possessed cryptographic keys. Responders return all key distribution envelopes (`GroupKeyDistributionDto`) addressed to the requester for epochs newer than `req.current_epoch`.
+    - **Pairwise Envelope Relay Safety**: Pre-sealed pairwise key distribution envelopes are sealed with each member's X.509 public key using RSA-OAEP. Therefore, any authorized group member can relay another member's sealed epoch key envelope without compromising key secrecy.
+    - **Non-Member Rejection**: Sync requests from peers not listed as authorized participants in `roster.is_member` are rejected at the boundary with `SyncError::NotAMember` (HTTP 403 Forbidden).
+    - **Multi-Hop Overlay Mesh Group Sync**: If direct HTTP is blocked across subnets, `ChatEngine::sync_group` encapsulates `GroupSyncRequestDto` inside an `E2eeEnvelope` and routes it across intermediate mesh relays to the destination node. The remote node processes the sync request and routes `GroupSyncResponseDto` back across the mesh. Intermediate relays inspect only outer routing metadata without access to group messages or epoch keys.
+
 ---
 
 ## Known Debt & Blockers
@@ -532,17 +562,19 @@
 ---
 
 ## Next Session Target
-- **Target**: **Sub-phase 9.2: Group Anti-Entropy Frontier Sync & Pairwise Group Key Distribution (`lanflare-core::chat::sync`)**
+- **Target**: **Sub-phase 9.3: Custodial Mesh Relay Mailbox for Asynchronous Offline Delivery (`lanflare-core::mesh::mailbox`)**
 - **Action Items**:
-  1. Implement anti-entropy DAG frontier synchronization protocol in `lanflare-core::chat::sync` with `GroupSyncRequestDto` and `GroupSyncResponseDto`.
-  2. Mount Hyper group chat sync endpoint: `POST /api/lanflare/v1/chat/group-sync`.
-  3. Wire `GroupDagState` frontier heads exchange, computing missing DAG node subsets and streaming causal catchup batches.
+  1. Implement `RelayMailbox` in `lanflare-core::mesh::mailbox` with deposit and fetch operations:
+     - `POST /api/lanflare/v1/mesh/mailbox/deposit`
+     - `POST /api/lanflare/v1/mesh/mailbox/fetch`
+  2. Implement bounded per-recipient and total ring-buffer quotas (`max_mailbox_bytes_per_peer`, `ttl_seconds`) and automatic expiration.
+  3. Wire custodial E2EE envelope store-and-forward routing into `MeshRouter` and `ChatEngine` outbox dispatch when counter-parties are never online simultaneously.
   4. Implement unit and integration tests:
-     - `test_four_peer_group_partition_and_anti_entropy_catchup`
-     - `test_group_sync_over_multi_hop_mesh_relay`
+     - `mesh::mailbox::tests::test_asynchronous_never_simultaneously_online_delivery`
+     - `mesh::mailbox::tests::test_mailbox_quota_enforcement_and_ttl_eviction`
   5. Verification command:
      ```bash
-     cargo test -p lanflare-core --test group_sync_e2e
+     cargo test -p lanflare-core --lib mesh::mailbox
      ```
 
 

@@ -11,9 +11,9 @@ pub mod transfer;
 // Convenience re-exports
 pub use chat::{
     ChatContentDto, ChatMessageDto, DeliveryReceiptDto, GroupDagNodeDto, GroupKeyDistributionDto,
-    GroupMember, GroupMembershipRoster, GroupRole, HashcashStamp, HlcTimestamp,
-    MessageDeliveryState, ReadReceiptDto, ResumeTransferDto, TrustRequestDto,
-    DEFAULT_POW_DIFFICULTY_BITS, DEFAULT_TIME_BUCKET_SECS, MAX_INTRO_MESSAGE_LEN,
+    GroupMember, GroupMembershipRoster, GroupRole, GroupSyncRequestDto, GroupSyncResponseDto,
+    HashcashStamp, HlcTimestamp, MessageDeliveryState, ReadReceiptDto, ResumeTransferDto,
+    TrustRequestDto, DEFAULT_POW_DIFFICULTY_BITS, DEFAULT_TIME_BUCKET_SECS, MAX_INTRO_MESSAGE_LEN,
 };
 pub use discovery::{
     DeviceType, InfoResponseDtoV2, MulticastMessageV2, ProtocolType, RegisterDtoV2,

@@ -430,6 +430,7 @@ pub fn author_group_message(
 pub struct GroupDagState {
     roster: GroupMembershipRoster,
     epoch_keys: HashMap<u64, GroupEpochKey>,
+    key_distributions: Vec<GroupKeyDistributionDto>,
     current_epoch: u64,
     hlc: Arc<Mutex<HybridLogicalClock>>,
     nodes: HashMap<String, GroupDagNodeDto>,
@@ -445,6 +446,7 @@ impl GroupDagState {
         Self {
             roster,
             epoch_keys: HashMap::new(),
+            key_distributions: Vec::new(),
             current_epoch,
             hlc: Arc::new(Mutex::new(HybridLogicalClock::new(local_fp))),
             nodes: HashMap::new(),
@@ -505,6 +507,9 @@ impl GroupDagState {
 
         let mut state = Self::new(roster, creator_fp);
         state.set_epoch_key(epoch_key.clone());
+        for dist in &distributions {
+            state.add_key_distribution(dist.clone());
+        }
 
         Ok((state, epoch_key, distributions))
     }
@@ -522,6 +527,11 @@ impl GroupDagState {
     /// Returns the current epoch sequence number.
     pub fn current_epoch(&self) -> u64 {
         self.current_epoch
+    }
+
+    /// Returns the highest epoch for which this node possesses an epoch key (or 0 if none possessed).
+    pub fn highest_possessed_epoch(&self) -> u64 {
+        self.epoch_keys.keys().copied().max().unwrap_or(0)
     }
 
     /// Stores a `GroupEpochKey` for message decryption/authoring.
@@ -566,6 +576,88 @@ impl GroupDagState {
     /// Checks if the DAG contains no messages.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
+    }
+
+    /// Adds a key distribution envelope for a member.
+    pub fn add_key_distribution(&mut self, dist: GroupKeyDistributionDto) {
+        if !self.key_distributions.iter().any(|d| {
+            d.group_id == dist.group_id
+                && d.epoch == dist.epoch
+                && d.recipient_fp.eq_ignore_ascii_case(&dist.recipient_fp)
+        }) {
+            self.key_distributions.push(dist);
+        }
+    }
+
+    /// Retrieves key distribution envelopes for a specific member fingerprint for epochs > since_epoch.
+    pub fn key_distributions_for(
+        &self,
+        recipient_fp: &str,
+        since_epoch: u64,
+    ) -> Vec<GroupKeyDistributionDto> {
+        self.key_distributions
+            .iter()
+            .filter(|d| {
+                d.recipient_fp.eq_ignore_ascii_case(recipient_fp) && d.epoch > since_epoch
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Returns all stored key distribution envelopes.
+    pub fn all_key_distributions(&self) -> &[GroupKeyDistributionDto] {
+        &self.key_distributions
+    }
+
+    /// Decapsulates and stores an epoch key from a distribution envelope addressed to the local identity.
+    pub fn apply_epoch_key_distribution(
+        &mut self,
+        identity: &TlsIdentity,
+        dist: &GroupKeyDistributionDto,
+    ) -> Result<bool, GroupError> {
+        if !dist.recipient_fp.eq_ignore_ascii_case(&identity.fingerprint) {
+            return Ok(false);
+        }
+        if self.epoch_keys.contains_key(&dist.epoch) {
+            return Ok(false);
+        }
+        let key = GroupEpochKey::from_distribution(identity, dist)?;
+        self.set_epoch_key(key);
+        self.add_key_distribution(dist.clone());
+        Ok(true)
+    }
+
+    /// Computes the list of DAG nodes missing from the requester's frontier heads.
+    ///
+    /// Invariant:
+    /// The returned missing nodes are ordered in causal topological order (parents before children),
+    /// ensuring the recipient can insert them sequentially with zero missing parent errors.
+    pub fn find_missing_nodes(&self, known_frontier_heads: &[String]) -> Vec<GroupDagNodeDto> {
+        let mut known_set: HashSet<String> = HashSet::new();
+        let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+
+        for head in known_frontier_heads {
+            if self.nodes.contains_key(head) && known_set.insert(head.clone()) {
+                queue.push_back(head.clone());
+            }
+        }
+
+        while let Some(msg_id) = queue.pop_front() {
+            if let Some(parents) = self.parents.get(&msg_id) {
+                for parent_id in parents {
+                    if self.nodes.contains_key(parent_id) && known_set.insert(parent_id.clone()) {
+                        queue.push_back(parent_id.clone());
+                    }
+                }
+            }
+        }
+
+        let sorted_ids = self.topological_sort();
+        sorted_ids
+            .into_iter()
+            .filter(|id| !known_set.contains(id))
+            .filter_map(|id| self.nodes.get(&id).cloned())
+            .collect()
     }
 
     /// Ingests a new message node into the DAG, performing strict verification:
