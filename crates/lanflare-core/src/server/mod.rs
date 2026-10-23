@@ -47,6 +47,8 @@ pub struct ServerHandle {
     chat_engine: Option<Arc<crate::chat::engine::ChatEngine>>,
     /// Resume manager for resumable streaming.
     resume_manager: Option<Arc<crate::storage::resume::ResumeManager>>,
+    /// Device ring for personal self-trust and universal clipboard sync.
+    device_ring: Option<Arc<crate::toolbox::clipboard::DeviceRing>>,
 }
 
 impl ServerHandle {
@@ -73,6 +75,11 @@ impl ServerHandle {
     /// Returns a reference to the Resume manager if active.
     pub fn resume_manager(&self) -> Option<&Arc<crate::storage::resume::ResumeManager>> {
         self.resume_manager.as_ref()
+    }
+
+    /// Returns a reference to the Device ring if active.
+    pub fn device_ring(&self) -> Option<&Arc<crate::toolbox::clipboard::DeviceRing>> {
+        self.device_ring.as_ref()
     }
 
     /// Signals the server to stop accepting connections and terminate.
@@ -172,6 +179,33 @@ pub async fn start_server_all(
     mesh_router: Option<Arc<crate::mesh::router::MeshRouter>>,
     chat_engine: Option<Arc<crate::chat::engine::ChatEngine>>,
 ) -> anyhow::Result<ServerHandle> {
+    start_server_toolbox(
+        config,
+        tls_identity,
+        registry,
+        event_tx,
+        download_manager,
+        dufs_manager,
+        mesh_router,
+        chat_engine,
+        None,
+    )
+    .await
+}
+
+/// Comprehensive server launcher with chat engine, mesh router, and toolbox device ring support.
+#[allow(clippy::too_many_arguments)]
+pub async fn start_server_toolbox(
+    config: impl Into<ServerConfigHolder>,
+    tls_identity: Option<TlsIdentity>,
+    registry: Arc<PeerRegistry>,
+    event_tx: Option<mpsc::Sender<ServerTransferEvent>>,
+    download_manager: Option<Arc<DownloadManager>>,
+    dufs_manager: Option<Arc<DufsManager>>,
+    mesh_router: Option<Arc<crate::mesh::router::MeshRouter>>,
+    chat_engine: Option<Arc<crate::chat::engine::ChatEngine>>,
+    device_ring: Option<Arc<crate::toolbox::clipboard::DeviceRing>>,
+) -> anyhow::Result<ServerHandle> {
     let cancel_token = CancellationToken::new();
     let config_holder = config.into();
     let port = config_holder.0.read().await.port;
@@ -217,6 +251,7 @@ pub async fn start_server_all(
         mesh_router,
         chat_engine: chat_engine.clone(),
         resume_manager: resume_manager.clone(),
+        device_ring: device_ring.clone(),
     };
 
     let cancel = cancel_token.clone();
@@ -267,6 +302,7 @@ pub async fn start_server_all(
         dufs_manager,
         chat_engine,
         resume_manager,
+        device_ring,
     })
 }
 

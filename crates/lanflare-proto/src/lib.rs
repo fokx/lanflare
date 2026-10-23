@@ -26,6 +26,10 @@ pub use mesh::{
     MailboxItemDto, MeshGossipPacket, MeshLinkMetric, MeshNodeAnnouncement,
     MeshRouteAdvertisement, MeshStreamHeader, RoutedEnvelope,
 };
+pub use toolbox::{
+    ClipboardEventDto, ClipboardPayloadDto, ClipboardResponseDto, DeviceRingRosterDto,
+    EncryptedClipboardDto, RingDeviceDto, RingKeyDistributionDto,
+};
 pub use transfer::{
     FileDto, FileMetadataDto, PrepareDownloadResponseDtoV2, PrepareUploadRequestDtoV2,
     PrepareUploadResponseDtoV2,

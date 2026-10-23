@@ -5,3 +5,5 @@
 pub mod clipboard;
 pub mod collab;
 pub mod search;
+
+pub use clipboard::{ClipboardError, DeviceRing, HandleClipboardResult, RingSecret};

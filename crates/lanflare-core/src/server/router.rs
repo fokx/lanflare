@@ -38,13 +38,14 @@ pub async fn route_request(
     let is_mesh_api = path.starts_with("/api/lanflare/v1/mesh/");
     let is_chat_api = path.starts_with("/api/lanflare/v1/chat/");
     let is_resume_api = path == "/api/lanflare/v1/transfer/resume";
+    let is_toolbox_api = path.starts_with("/api/lanflare/v1/toolbox/");
     if let Some(dufs_cfg) = state.dufs_manager.get_config().await {
         let is_dufs_explicit = path == "/dufs" || path.starts_with("/dufs/");
         let is_localsend_api = path.starts_with("/api/localsend/");
         let is_download_endpoint = path == "/download" || path == "/api/localsend/v2/download";
 
         // Route to Dufs if explicit /dufs prefix, or if root/static file access while dufs is active
-        if is_dufs_explicit || (!is_localsend_api && !is_download_endpoint && !is_mesh_api && !is_chat_api && !is_resume_api) {
+        if is_dufs_explicit || (!is_localsend_api && !is_download_endpoint && !is_mesh_api && !is_chat_api && !is_resume_api && !is_toolbox_api) {
             let mut cfg = dufs_cfg;
             if is_dufs_explicit {
                 cfg.path_prefix = "/dufs".to_string();
@@ -66,6 +67,14 @@ pub async fn route_request(
     if is_chat_api || is_resume_api {
         if let Some(chat_engine) = &state.chat_engine {
             return Ok(chat_engine.handle_hyper_request(req, Some(client)).await);
+        } else {
+            return Ok(to_box_body(empty_response(StatusCode::NOT_FOUND)));
+        }
+    }
+
+    if is_toolbox_api {
+        if let Some(device_ring) = &state.device_ring {
+            return Ok(device_ring.handle_hyper_request(req, Some(client)).await);
         } else {
             return Ok(to_box_body(empty_response(StatusCode::NOT_FOUND)));
         }

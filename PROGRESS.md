@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 9 Complete; Ready for **Phase 10: Multi-Functional LAN Toolbox (Clipboard Ring, Federated Search, Scratchpad & Diagnostics)**.
-- **Overall Status**: Ready for **Sub-phase 10.1: "My Devices" Self-Trust Ring & Universal Mesh Clipboard Sync (`lanflare-core::toolbox::clipboard`)**.
+- **Current Milestone**: Phase 9 Complete; Working on **Phase 10: Multi-Functional LAN Toolbox (Clipboard Ring, Federated Search, Scratchpad & Diagnostics)**.
+- **Overall Status**: Sub-phase 10.1 Complete; Ready for **Sub-phase 10.2: Federated Mesh File Catalog & Distributed Dufs Search (`lanflare-core::toolbox::search`)**.
 
 ---
 
@@ -269,6 +269,20 @@
     - `test_asynchronous_never_simultaneously_online_delivery`: verified Node A deposits E2EE message on Relay B while Node C is offline; Node A goes offline; Relay B cannot read plaintext; Node C comes online and fetches/decrypts bit-for-bit payload; subsequent fetch yields 0 items.
     - `test_mailbox_quota_enforcement_and_ttl_eviction`: verified per-peer quota rejection (HTTP 413), peer non-starvation, total capacity quota rejection (HTTP 429), and TTL eviction freeing quota for new deposits.
   - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib mesh::mailbox`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (158 tests passing).
+- [x] Implement "My Devices" Self-Trust Ring & Universal Mesh Clipboard Sync (`lanflare-core::toolbox::clipboard`) (Sub-phase 10.1):
+  - Defined clipboard protocol DTOs in `lanflare-proto::toolbox`: `ClipboardPayloadDto` (`Text`, `Image`, `Files`), `ClipboardEventDto`, `DeviceRingRosterDto`, `RingDeviceDto`, `EncryptedClipboardDto`, `RingKeyDistributionDto`, and `ClipboardResponseDto`.
+  - Implemented `DeviceRing` pairing, shared 32-byte ring secret distribution (`RingSecret`, `create_key_distribution_for`, `apply_key_distribution`, `pair_with_pin`), and E2EE clipboard broadcast in `lanflare-core::toolbox::clipboard` using ChaCha20-Poly1305 symmetric encryption and X.509 digital signatures.
+  - Implemented 3-layer echo-loop suppression:
+    1. Origin device loopback filtering (`origin_device_fp == local_device_fp`).
+    2. SHA-256 content hashing (`current_content_hash` and bounded `recent_hashes` ring buffer).
+    3. Monotonic per-device sequence numbers (`last_seen_seq`).
+    4. Local re-broadcast suppression of previously received/applied content.
+  - Mounted Hyper router endpoint: `POST /api/lanflare/v1/toolbox/clipboard` in `ServerState`, `route_request`, `start_server_toolbox`, and `ServerHandle`.
+  - Comprehensive unit and integration test suite (3 tests in `crates/lanflare-core/src/toolbox/clipboard.rs`):
+    - `test_device_ring_e2ee_clipboard_sync_and_echo_suppression`: verified key distribution, text/image/files synchronization, loopback self-suppression, duplicate content hash suppression, stale sequence number rejection, and local re-broadcast suppression.
+    - `test_unauthorized_peer_clipboard_rejection`: verified unauthorized peer rejection (HTTP 403), wrong secret / forgery rejection (HTTP 401), and mismatched ring ID rejection (HTTP 403) with zero state mutation.
+    - `test_hyper_clipboard_endpoint_e2e_sync_and_rejection`: verified end-to-end HTTP synchronization over `start_server_toolbox`, subsequent echo suppression, and HTTP 403 rejection of rogue peers.
+  - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib toolbox::clipboard`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (161 tests passing).
 
 ---
 
@@ -579,6 +593,19 @@
     - **TTL Eviction & Explicit/Auto Acknowledgement**: Envelopes carry a TTL (`expires_at_ms`). Expired items are pruned opportunistically on deposit/fetch and during periodic sweeps (`evict_expired`), returning reclaimed bytes to peer and total quotas. Setting `auto_ack = true` or supplying `ack_deposit_ids` automatically deletes retrieved envelopes from the mailbox.
     - **Outbox Relayed State Progression**: When `OutboxDispatcher` deposits an envelope into a custodial relay mailbox, the message transitions to `MessageDeliveryState::Relayed` in `ChatStore`. When the recipient comes online, fetches the mailbox, and replies with `DeliveryReceiptDto`, the message transitions monotonically to `MessageDeliveryState::Delivered`.
 
+- **ADR-038: "My Devices" Self-Trust Ring, E2EE Universal Clipboard Sync & 3-Layer Echo-Loop Suppression**
+  - *Context*: Users owning multiple personal devices (laptops, desktops, phones) on local Wi-Fi or multi-hop overlay mesh want universal, real-time clipboard synchronization (text, screenshots, files). However, clipboard sync must never expose private data to untrusted peers or intermediate mesh relays, must block unauthorized injections, and must avoid infinite echo loops when devices apply remote clipboard content locally.
+  - *Decision*: Implement `DeviceRing` in `lanflare-core::toolbox::clipboard` backed by `lanflare-proto::toolbox` protocol DTOs and mounted at `POST /api/lanflare/v1/toolbox/clipboard`.
+  - *Invariants*:
+    - **Personal Self-Trust Ring & Symmetric Secret**: A user's devices form a personal `DeviceRing` governed by a 32-byte symmetric `RingSecret`. The key can be derived via mutual PIN (`derive_from_pin`), or sealed in an RSA-OAEP E2EE envelope (`create_key_distribution_for` / `RingKeyDistributionDto`) addressed to a member's X.509 certificate.
+    - **End-to-End Encryption & Outer Authentication**: Outbound clipboard updates are encrypted using `ChaCha20-Poly1305` with randomized 12-byte nonces and AAD binding `ring_id`, `origin_device_fp`, and `seq_no`. Outer wire metadata carries an X.509 digital signature verifiable against the member's certificate in the roster.
+    - **Unauthorized Peer Rejection**: Endpoints immediately reject requests with HTTP 403 Forbidden if `origin_device_fp` is not in the ring roster, if the caller cert fingerprint is not in the roster, or if the `ring_id` mismatches. Tampered payloads or unauthorized keys fail AEAD authentication with HTTP 401 Unauthorized, causing zero state mutation on the receiver.
+    - **3-Layer Echo-Loop Suppression**:
+      1. *Origin Device Loopback Filtering*: If `origin_device_fp == local_device_fp`, the event is dropped (`SuppressedEchoSelf`).
+      2. *SHA-256 Content Hashing*: Computes canonical 64-char hex uppercase hash over payload content. If it matches `current_content_hash` or exists in the bounded ring buffer `recent_hashes`, the event is dropped (`SuppressedEchoHash`).
+      3. *Monotonic Sequence Number Tracking*: Each origin device's monotonic `seq_no` is tracked in `last_seen_seq`. If `seq_no <= last_seen_seq[origin]`, the event is dropped (`SuppressedEchoSeq`).
+      4. *Local Re-Broadcast Suppression*: When a remote clipboard update is received and applied, its hash is recorded in `current_content_hash`. Any subsequent local clipboard watch trigger with identical content hash returns `Ok(None)` and is not re-broadcasted.
+
 ---
 
 ## Known Debt & Blockers
@@ -587,20 +614,23 @@
 ---
 
 ## Next Session Target
-- **Target**: **Sub-phase 10.1: "My Devices" Self-Trust Ring & Universal Mesh Clipboard Sync (`lanflare-core::toolbox::clipboard`)**
+- **Target**: **Sub-phase 10.2: Federated Mesh File Catalog & Distributed Dufs Search (`lanflare-core::toolbox::search`)**
 - **Action Items**:
-  1. Define clipboard protocol DTOs in `lanflare-proto::toolbox`:
-     - `ClipboardPayloadDto` (`Text`, `Image`, `Files`), `ClipboardEventDto`, and `DeviceRingRosterDto`.
-  2. Implement `DeviceRing` pairing, shared ring secret distribution, and E2EE clipboard broadcast in `lanflare-core::toolbox::clipboard`:
-     - `POST /api/lanflare/v1/toolbox/clipboard`
-  3. Implement echo-loop suppression using SHA-256 content hashing, monotonic device sequence numbers, and origin device filtering.
+  1. Define search protocol DTOs in `lanflare-proto::toolbox`:
+     - `FileSearchQueryDto`, `FileSearchResultDto`, `SearchHitDto`, and `MeshFileCatalogDto`.
+  2. Implement `MeshFileCatalog` indexing in `lanflare-core::toolbox::search`:
+     - Inverted index / trigram scanning over shared folders registered in `DufsManager`.
+     - Visibility bounds respecting PIN-protected folder permissions and hidden directories.
+  3. Implement federated query dispatcher mounting `POST /api/lanflare/v1/toolbox/search`:
+     - Dispatches and aggregates search queries across 1-hop LAN peers and multi-hop overlay mesh peers.
+     - Result ranking, deduplication, and resolution of direct download/stream URLs.
   4. Implement unit and integration tests:
-     - `toolbox::clipboard::tests::test_device_ring_e2ee_clipboard_sync_and_echo_suppression`
-     - `toolbox::clipboard::tests::test_unauthorized_peer_clipboard_rejection`
+     - `toolbox::search::tests::test_local_index_and_federated_mesh_query_aggregation`
   5. Verification command:
      ```bash
-     cargo test -p lanflare-core --lib toolbox::clipboard
+     cargo test -p lanflare-core --lib toolbox::search
      ```
+
 
 
 
