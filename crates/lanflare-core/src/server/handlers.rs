@@ -101,6 +101,7 @@ pub struct ServerState {
     pub resume_manager: Option<Arc<crate::storage::resume::ResumeManager>>,
     pub device_ring: Option<Arc<crate::toolbox::clipboard::DeviceRing>>,
     pub federated_search: Option<Arc<crate::toolbox::search::FederatedSearchEngine>>,
+    pub collab_manager: Option<Arc<crate::toolbox::collab::CollabManager>>,
 }
 
 /// Helper decoding percent-encoded strings (e.g. `%40` -> `@`, `%3A` -> `:`).

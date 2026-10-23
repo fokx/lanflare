@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 9 Complete; Working on **Phase 10: Multi-Functional LAN Toolbox (Clipboard Ring, Federated Search, Scratchpad & Diagnostics)**.
-- **Overall Status**: Sub-phase 10.2 Complete; Ready for **Sub-phase 10.3: Collaborative CRDT Scratchpad & Multi-Hop Mesh Speedtest/Traceroute (`lanflare-core::toolbox::collab` & `lanflare-core::mesh::diagnostics`)**.
+- **Current Milestone**: Phase 10 Complete; Working on **Phase 11: Desktop GUI & CLI Integration for Mesh, Chat & LAN Toolbox**.
+- **Overall Status**: Phase 10 Complete; Ready for **Sub-phase 11.1: CLI Subcommands for Mesh Topology, Simulator, Chat & Diagnostics (`lanflare-cli`)**.
 
 ---
 
@@ -294,6 +294,25 @@
     - `test_local_index_and_federated_mesh_query_aggregation`: validated multi-node network discovery, parallel federated search query aggregation, absolute download URL resolution, and unified ranking.
     - `test_hyper_search_endpoint_and_bad_request_defense`: validated Hyper endpoint routing, malformed JSON defense (400 Bad Request), and route isolation (404 Not Found).
   - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib toolbox::search`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (164 tests passing).
+- [x] Implement Collaborative CRDT Scratchpad & Multi-Hop Mesh Speedtest/Traceroute (`lanflare-core::toolbox::collab` & `lanflare-core::mesh::diagnostics`) (Sub-phase 10.3):
+  - Defined collab & diagnostic protocol DTOs in `lanflare-proto::toolbox` and `lanflare-proto::mesh`:
+    - `AtomId` (Lamport timestamp, author fingerprint, session counter with deterministic total ordering), `ScratchpadOpDto` (`Insert`, `Delete`), `ScratchpadEditDto`, `ScratchpadAtomDto`, and `ScratchpadSyncDto`.
+    - `TracerouteHop`, `MeshTracerouteRequest`, `MeshTracerouteResponse`, `SpeedtestChunkDto`, and `SpeedtestResultDto`.
+  - Implemented `ScratchpadDoc` in `lanflare-core::toolbox::collab`:
+    - RGA (Replicated Growable Array) sequence CRDT guaranteeing Strong Eventual Consistency (SEC) and deterministic convergence under arbitrary concurrent/out-of-order edits.
+    - Deterministic sibling precedence resolution using `AtomId` total ordering, higher-priority sibling skipping, and transitive descendant tracking.
+    - Tombstone deletion preservation ensuring concurrent edit anchors remain intact.
+    - Dependency buffering (`pending_atoms`) resolving out-of-order network arrival upon anchor insertion.
+    - Multi-document manager `CollabManager` with CRUD, sync snapshots, and Hyper router endpoints `POST /api/lanflare/v1/toolbox/collab/edit`, `POST /api/lanflare/v1/toolbox/collab/sync`, `GET /api/lanflare/v1/toolbox/collab/doc`, `GET /api/lanflare/v1/toolbox/collab/list`.
+  - Implemented `MeshDiagnostics` in `lanflare-core::mesh::diagnostics`:
+    - Multi-hop hop-by-hop traceroute (`POST /api/lanflare/v1/mesh/trace`) recording per-hop RTT, node aliases, and fingerprints with TTL bounds and Dijkstra next-hop forwarding.
+    - Memory-to-memory throughput speedtest (`POST /api/lanflare/v1/mesh/benchmark`) calculating elapsed duration and non-zero Mbps streaming transfer rate without disk I/O.
+    - Integrated with `MeshRouter` (`traceroute`, `run_speedtest`) and virtual network matrix latency and partition simulation.
+  - Comprehensive unit and integration test suite:
+    - `toolbox::collab::tests::test_crdt_scratchpad_concurrent_convergence`: validated 3 concurrent nodes typing and deleting at identical anchors in different arrival orders converging to 100% bit-for-bit identical text, plus out-of-order arrival dependency buffering.
+    - `toolbox::collab::tests::test_collab_manager_crud_and_sync`: validated document CRUD, snapshot exporting, and text queries.
+    - `mesh::diagnostics::tests::test_multi_hop_traceroute_and_bandwidth_benchmark`: validated 4-node 3-hop simulated mesh across 3 isolated subnets (`Node A -> Relay B -> Relay C -> Node D`), accurately measuring 4-hop traceroute path and multi-chunk memory streaming throughput in Mbps.
+  - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib toolbox::collab && cargo test -p lanflare-core --lib mesh::diagnostics`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (167 tests passing).
 
 ---
 
@@ -626,6 +645,16 @@
     - **Hidden Directory & Transfer File Exclusion**: Traversal automatically prunes any file or folder beginning with `.` (e.g. `.git`, `.DS_Store`, `.lanflare-part`) and any `.part` file, preventing leakage of sensitive system files or partial downloads.
     - **Distributed URL Resolution & Score Ranking**: Remote search hits with relative URLs (e.g. `/dufs/...`) are automatically rewritten by `FederatedSearchEngine` to full reachable URLs (`http(s)://{peer_ip}:{port}/dufs/...{?pin}`) based on the responding peer's endpoint. Hits are ranked descending by relevance score (exact > prefix > substring > token > trigram overlap).
 
+- **ADR-040: Collaborative CRDT Scratchpad (RGA) & Multi-Hop Mesh Diagnostics (Traceroute & In-Memory Speedtest)**
+  - *Context*: Distributed users on ad-hoc LANs and multi-hop overlay mesh require shared scratchpads for code and markdown collaboration that converge deterministically under concurrent edits and network partitions. Additionally, network operators and users need diagnostics to inspect multi-hop path latencies (traceroute) and measure raw transport capacity without touching disk.
+  - *Decision*: Implement `ScratchpadDoc` in `lanflare-core::toolbox::collab` using an RGA (Replicated Growable Array) sequence CRDT, and implement `MeshDiagnostics` in `lanflare-core::mesh::diagnostics` mounted at `POST /api/lanflare/v1/mesh/trace` and `POST /api/lanflare/v1/mesh/benchmark`.
+  - *Invariants*:
+    - **Total Ordering of Atom IDs**: Each character atom is uniquely keyed by `AtomId { lamport: u64, author_fp: String, counter: u64 }`. Comparisons prioritize Lamport timestamp, tie-broken by author fingerprint and sequence counter, ensuring deterministic total ordering across all peers.
+    - **RGA Sibling Precedence & Transitive Descendants**: Concurrent insertions anchored at the same preceding atom (`after_id`) are ordered by `AtomId`. When scanning for insertion positions, higher-priority siblings and all their transitive descendants are skipped.
+    - **Tombstone Preservation & Out-of-Order Anchor Buffering**: Deletions flag atoms as tombstones (`deleted = true`) rather than purging them, ensuring concurrent insertions dependent on deleted anchors remain valid. Edits arriving before their anchor atoms are buffered in `pending_atoms` and drained causally upon anchor arrival.
+    - **Multi-Hop Hop-by-Hop Latency Measurement**: `POST /api/lanflare/v1/mesh/trace` probes measure per-hop transit time, append `TracerouteHop { node_fp, alias, rtt_ms, ingress_timestamp_ms }`, decrement TTL, and forward along Dijkstra next-hop paths until reaching the target or expiring.
+    - **Zero-Disk In-Memory Throughput Benchmarking**: Speedtest chunks (`SpeedtestChunkDto`) stream purely in memory without disk I/O, recording receive timestamps and total bytes on the target to calculate aggregate throughput in Mbps across single or multi-hop overlay paths.
+
 ---
 
 ## Known Debt & Blockers
@@ -634,22 +663,25 @@
 ---
 
 ## Next Session Target
-- **Target**: **Sub-phase 10.3: Collaborative CRDT Scratchpad & Multi-Hop Mesh Speedtest/Traceroute (`lanflare-core::toolbox::collab` & `lanflare-core::mesh::diagnostics`)**
+- **Target**: **Sub-phase 11.1: CLI Subcommands for Mesh Topology, Simulator, Chat & Diagnostics (`lanflare-cli`)**
 - **Action Items**:
-  1. Define collab & diagnostic protocol DTOs in `lanflare-proto::toolbox` and `lanflare-proto::mesh`:
-     - `ScratchpadEditDto`, `ScratchpadSyncDto`, `MeshTracerouteRequest`, `MeshTracerouteResponse`, `SpeedtestChunkDto`.
-  2. Implement `ScratchpadDoc` in `lanflare-core::toolbox::collab`:
-     - Conflict-free replicated shared scratchpad using LWW / sequence CRDT over gossip/group sync.
-  3. Implement multi-hop traceroute and throughput benchmark in `lanflare-core::mesh::diagnostics`:
-     - Endpoints `POST /api/lanflare/v1/mesh/trace` and `POST /api/lanflare/v1/mesh/benchmark`.
-     - Per-hop latency probing and memory-to-memory chunk streaming rate calculation.
-  4. Implement unit and integration tests:
-     - `toolbox::collab::tests::test_crdt_scratchpad_concurrent_convergence`
-     - `mesh::diagnostics::tests::test_multi_hop_traceroute_and_bandwidth_benchmark`
-  5. Verification command:
+  1. Extend `lanflare-cli` clap parser with subcommands:
+     - `lanflare mesh status`: prints local node overlay state, relay mode, and known peer topology.
+     - `lanflare mesh sim`: launches interactive/programmatic multi-subnet virtual network sandbox.
+     - `lanflare mesh trace <target>`: runs multi-hop traceroute to target fingerprint or alias.
+     - `lanflare mesh benchmark <target>`: runs in-memory throughput speedtest to target.
+     - `lanflare chat send <target> <message>`: sends 1:1 text message with stranger trust verification.
+     - `lanflare chat trust <target>`: inspects or approves stranger trust handshakes.
+     - `lanflare chat groups`: lists causal DAG group conversations and membership.
+     - `lanflare search <query>`: executes federated file search across 1-hop and multi-hop peers.
+  2. Implement command handlers in `crates/lanflare-cli/src/commands.rs` and terminal table formatters in `crates/lanflare-cli/src/tui.rs`.
+  3. Implement CLI argument parsing and execution integration test:
+     - `test_cli_mesh_and_chat_arg_parsing_and_execution`
+  4. Verification command:
      ```bash
-     cargo test -p lanflare-core --lib toolbox::collab && cargo test -p lanflare-core --lib mesh::diagnostics
+     cargo test -p lanflare-cli
      ```
+
 
 
 

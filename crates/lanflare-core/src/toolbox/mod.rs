@@ -7,4 +7,5 @@ pub mod collab;
 pub mod search;
 
 pub use clipboard::{ClipboardError, DeviceRing, HandleClipboardResult, RingSecret};
+pub use collab::{CollabError, CollabManager, ScratchpadDoc};
 pub use search::{CatalogItem, FederatedSearchEngine, MeshFileCatalog, SearchError};

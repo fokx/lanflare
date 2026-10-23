@@ -162,6 +162,9 @@ pub struct MeshRouterConfig {
 
     /// Request timeout for forwarding requests to next hops.
     pub relay_timeout: Duration,
+
+    /// Human-readable device alias of the local node.
+    pub local_alias: String,
 }
 
 impl Default for MeshRouterConfig {
@@ -174,6 +177,7 @@ impl Default for MeshRouterConfig {
             stream_buffer_chunks: DEFAULT_STREAM_BUFFER_CHUNKS,
             stream_chunk_size: DEFAULT_STREAM_CHUNK_SIZE,
             relay_timeout: Duration::from_secs(DEFAULT_RELAY_TIMEOUT_SECS),
+            local_alias: "LanFlare Node".to_string(),
         }
     }
 }
@@ -270,6 +274,7 @@ pub struct MeshRouter {
     registry: RwLock<Option<Arc<crate::discovery::registry::PeerRegistry>>>,
     interceptor: RwLock<Option<Arc<dyn MeshNetworkInterceptor>>>,
     mailbox: Arc<RelayMailbox>,
+    diagnostics: Arc<crate::mesh::diagnostics::MeshDiagnostics>,
 }
 
 impl MeshRouter {
@@ -296,6 +301,10 @@ impl MeshRouter {
             .build()
             .unwrap_or_default();
 
+        let diagnostics = Arc::new(crate::mesh::diagnostics::MeshDiagnostics::new(
+            &config.local_alias,
+        ));
+
         Self {
             config,
             local_fingerprint: canonical_fp,
@@ -310,7 +319,43 @@ impl MeshRouter {
             registry: RwLock::new(None),
             interceptor: RwLock::new(None),
             mailbox: Arc::new(RelayMailbox::default()),
+            diagnostics,
         }
+    }
+
+    /// Returns a reference to the diagnostics engine.
+    pub fn diagnostics(&self) -> &Arc<crate::mesh::diagnostics::MeshDiagnostics> {
+        &self.diagnostics
+    }
+
+    /// Returns a reference to the reqwest HTTP client.
+    pub fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    /// Returns a reference to the network interceptor lock.
+    pub fn interceptor(&self) -> &RwLock<Option<Arc<dyn MeshNetworkInterceptor>>> {
+        &self.interceptor
+    }
+
+    /// Initiates a multi-hop traceroute to `target_fp`.
+    pub async fn traceroute(
+        &self,
+        target_fp: &str,
+    ) -> Result<lanflare_proto::mesh::MeshTracerouteResponse, crate::mesh::diagnostics::DiagnosticsError> {
+        self.diagnostics.traceroute(self, target_fp).await
+    }
+
+    /// Runs a memory-to-memory throughput speedtest streaming `num_chunks` chunks to `target_fp`.
+    pub async fn run_speedtest(
+        &self,
+        target_fp: &str,
+        num_chunks: u32,
+        chunk_size: usize,
+    ) -> Result<lanflare_proto::mesh::SpeedtestResultDto, crate::mesh::diagnostics::DiagnosticsError> {
+        self.diagnostics
+            .run_speedtest(self, target_fp, num_chunks, chunk_size)
+            .await
     }
 
     /// Returns a reference to the custodial relay mailbox.
@@ -861,6 +906,12 @@ impl MeshRouter {
             }
             (&Method::POST, "/api/lanflare/v1/mesh/mailbox/fetch") => {
                 self.mailbox.handle_fetch_endpoint(req).await
+            }
+            (&Method::POST, "/api/lanflare/v1/mesh/trace") => {
+                self.diagnostics.handle_trace_endpoint(req, self).await
+            }
+            (&Method::POST, "/api/lanflare/v1/mesh/benchmark") => {
+                self.diagnostics.handle_benchmark_endpoint(req, self).await
             }
             _ => empty_box_response(StatusCode::NOT_FOUND),
         }

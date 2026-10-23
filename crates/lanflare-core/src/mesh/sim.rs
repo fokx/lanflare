@@ -483,6 +483,7 @@ impl SimulatedMeshCluster {
         let config = MeshRouterConfig {
             local_fingerprint: canonical_fp.clone(),
             relay_enabled,
+            local_alias: alias.to_string(),
             ..Default::default()
         };
 

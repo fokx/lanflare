@@ -325,6 +325,155 @@ pub struct MailboxItemDto {
     pub expires_at_ms: u64,
 }
 
+/// Single hop record captured during multi-hop mesh traceroute probing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TracerouteHop {
+    /// Canonical uppercase SHA-256 fingerprint of the node.
+    pub node_fp: String,
+
+    /// Device alias of the node.
+    pub alias: String,
+
+    /// Hop round-trip latency measurement in milliseconds.
+    pub rtt_ms: u32,
+
+    /// Timestamp when probe entered this hop (ms since UNIX epoch).
+    pub ingress_timestamp_ms: u64,
+}
+
+/// Request payload for initiating or forwarding a multi-hop mesh traceroute (`POST /api/lanflare/v1/mesh/trace`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshTracerouteRequest {
+    /// Unique identifier for this traceroute run.
+    pub trace_id: String,
+
+    /// SHA-256 fingerprint of the initiating node.
+    pub origin_fp: String,
+
+    /// SHA-256 fingerprint of the destination target node.
+    pub target_fp: String,
+
+    /// Remaining Time-To-Live hop bound.
+    pub ttl: u8,
+
+    /// Accumulated sequence of hops traversed so far.
+    pub hops: Vec<TracerouteHop>,
+
+    /// Initiating timestamp in milliseconds since UNIX epoch.
+    pub timestamp_ms: u64,
+}
+
+impl MeshTracerouteRequest {
+    /// Constructs a new traceroute request.
+    pub fn new(
+        trace_id: impl Into<String>,
+        origin_fp: impl Into<String>,
+        target_fp: impl Into<String>,
+        ttl: u8,
+        timestamp_ms: u64,
+    ) -> Self {
+        Self {
+            trace_id: trace_id.into(),
+            origin_fp: origin_fp.into().to_ascii_uppercase(),
+            target_fp: target_fp.into().to_ascii_uppercase(),
+            ttl,
+            hops: Vec::new(),
+            timestamp_ms,
+        }
+    }
+}
+
+/// Response payload returned by `POST /api/lanflare/v1/mesh/trace`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeshTracerouteResponse {
+    /// Unique identifier for this traceroute run.
+    pub trace_id: String,
+
+    /// SHA-256 fingerprint of the initiating node.
+    pub origin_fp: String,
+
+    /// SHA-256 fingerprint of the destination target node.
+    pub target_fp: String,
+
+    /// Whether the destination target was reached successfully.
+    pub success: bool,
+
+    /// Total hops traversed.
+    pub total_hops: usize,
+
+    /// Total measured round-trip time in milliseconds.
+    pub total_rtt_ms: u32,
+
+    /// Complete hop-by-hop breakdown.
+    pub hops: Vec<TracerouteHop>,
+
+    /// Optional error message (e.g. "Destination unreachable" or "TTL expired").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// In-memory streaming chunk for throughput / speedtest benchmarking (`POST /api/lanflare/v1/mesh/benchmark`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeedtestChunkDto {
+    /// Unique benchmark run identifier.
+    pub test_id: String,
+
+    /// Canonical uppercase SHA-256 fingerprint of the sender.
+    pub origin_fp: String,
+
+    /// Canonical uppercase SHA-256 fingerprint of the target destination.
+    pub target_fp: String,
+
+    /// Sequence index of this chunk (0-indexed).
+    pub seq_no: u32,
+
+    /// Total number of chunks in this benchmark test.
+    pub total_chunks: u32,
+
+    /// Size of this chunk in bytes.
+    pub chunk_size_bytes: usize,
+
+    /// Whether this is the final chunk in the test.
+    pub is_last: bool,
+
+    /// Timestamp when chunk was transmitted (ms since UNIX epoch).
+    pub client_timestamp_ms: u64,
+
+    /// Synthetic payload buffer streamed in memory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub payload: Vec<u8>,
+}
+
+/// Final throughput and latency benchmark report returned by speedtest.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeedtestResultDto {
+    /// Unique benchmark run identifier.
+    pub test_id: String,
+
+    /// Initiating node fingerprint.
+    pub origin_fp: String,
+
+    /// Target node fingerprint.
+    pub target_fp: String,
+
+    /// Total benchmark elapsed time in milliseconds.
+    pub duration_ms: u64,
+
+    /// Total bytes transferred across the test.
+    pub total_bytes: usize,
+
+    /// Calculated throughput in Megabits per second (Mbps).
+    pub throughput_mbps: f64,
+
+    /// Total chunks successfully received.
+    pub chunks_received: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,5 +628,69 @@ mod tests {
         let json_fetch_resp = serde_json::to_string(&fetch_resp).unwrap();
         let de_fetch_resp: MailboxFetchResponse = serde_json::from_str(&json_fetch_resp).unwrap();
         assert_eq!(fetch_resp, de_fetch_resp);
+
+        // Traceroute DTOs
+        let hop1 = TracerouteHop {
+            node_fp: "NODE_A".into(),
+            alias: "Device A".into(),
+            rtt_ms: 0,
+            ingress_timestamp_ms: 1770000000000,
+        };
+        let hop2 = TracerouteHop {
+            node_fp: "RELAY_B".into(),
+            alias: "Bridge Relay B".into(),
+            rtt_ms: 5,
+            ingress_timestamp_ms: 1770000000005,
+        };
+        let mut trace_req = MeshTracerouteRequest::new("trace-1", "NODE_A", "NODE_C", 5, 1770000000000);
+        trace_req.hops.push(hop1.clone());
+        trace_req.hops.push(hop2.clone());
+
+        let json_trace_req = serde_json::to_string(&trace_req).unwrap();
+        let de_trace_req: MeshTracerouteRequest = serde_json::from_str(&json_trace_req).unwrap();
+        assert_eq!(trace_req, de_trace_req);
+
+        let trace_resp = MeshTracerouteResponse {
+            trace_id: "trace-1".into(),
+            origin_fp: "NODE_A".into(),
+            target_fp: "NODE_C".into(),
+            success: true,
+            total_hops: 2,
+            total_rtt_ms: 12,
+            hops: vec![hop1, hop2],
+            error: None,
+        };
+        let json_trace_resp = serde_json::to_string(&trace_resp).unwrap();
+        let de_trace_resp: MeshTracerouteResponse = serde_json::from_str(&json_trace_resp).unwrap();
+        assert_eq!(trace_resp, de_trace_resp);
+
+        // Speedtest DTOs
+        let speed_chunk = SpeedtestChunkDto {
+            test_id: "test-speed-1".into(),
+            origin_fp: "NODE_A".into(),
+            target_fp: "NODE_C".into(),
+            seq_no: 0,
+            total_chunks: 10,
+            chunk_size_bytes: 65536,
+            is_last: false,
+            client_timestamp_ms: 1770000000000,
+            payload: vec![0xAA; 100],
+        };
+        let json_chunk = serde_json::to_string(&speed_chunk).unwrap();
+        let de_chunk: SpeedtestChunkDto = serde_json::from_str(&json_chunk).unwrap();
+        assert_eq!(speed_chunk, de_chunk);
+
+        let speed_res = SpeedtestResultDto {
+            test_id: "test-speed-1".into(),
+            origin_fp: "NODE_A".into(),
+            target_fp: "NODE_C".into(),
+            duration_ms: 250,
+            total_bytes: 655360,
+            throughput_mbps: 20.97,
+            chunks_received: 10,
+        };
+        let json_speed_res = serde_json::to_string(&speed_res).unwrap();
+        let de_speed_res: SpeedtestResultDto = serde_json::from_str(&json_speed_res).unwrap();
+        assert_eq!(speed_res, de_speed_res);
     }
 }

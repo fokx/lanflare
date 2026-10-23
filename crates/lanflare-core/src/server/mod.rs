@@ -197,6 +197,7 @@ pub async fn start_server_all(
         chat_engine,
         None,
         None,
+        None,
     )
     .await
 }
@@ -214,6 +215,7 @@ pub async fn start_server_toolbox(
     chat_engine: Option<Arc<crate::chat::engine::ChatEngine>>,
     device_ring: Option<Arc<crate::toolbox::clipboard::DeviceRing>>,
     federated_search: Option<Arc<crate::toolbox::search::FederatedSearchEngine>>,
+    collab_manager: Option<Arc<crate::toolbox::collab::CollabManager>>,
 ) -> anyhow::Result<ServerHandle> {
     let cancel_token = CancellationToken::new();
     let config_holder = config.into();
@@ -262,6 +264,7 @@ pub async fn start_server_toolbox(
         resume_manager: resume_manager.clone(),
         device_ring: device_ring.clone(),
         federated_search: federated_search.clone(),
+        collab_manager,
     };
 
     let cancel = cancel_token.clone();

@@ -87,6 +87,13 @@ pub async fn route_request(
                 return Ok(to_box_body(empty_response(StatusCode::NOT_FOUND)));
             }
         }
+        if path.starts_with("/api/lanflare/v1/toolbox/collab") {
+            if let Some(collab_manager) = &state.collab_manager {
+                return Ok(collab_manager.handle_hyper_request(req, Some(client)).await);
+            } else {
+                return Ok(to_box_body(empty_response(StatusCode::NOT_FOUND)));
+            }
+        }
         return Ok(to_box_body(empty_response(StatusCode::NOT_FOUND)));
     }
 

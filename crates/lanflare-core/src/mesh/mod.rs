@@ -8,6 +8,7 @@ pub mod mailbox;
 pub mod router;
 pub mod sim;
 
+pub use diagnostics::{DiagnosticsError, MeshDiagnostics};
 pub use graph::{
     MeshGraphError, MeshLink, MeshNode, MeshTopologyGraph, ResolvedRoute, DEFAULT_LINK_EXPIRY_MS,
     DEFAULT_NODE_EXPIRY_MS,

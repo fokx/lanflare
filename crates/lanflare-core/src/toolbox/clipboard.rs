@@ -972,6 +972,7 @@ pub mod tests {
             None,
             Some(ring_a.clone()),
             None,
+            None,
         )
         .await
         .unwrap();

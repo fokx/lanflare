@@ -594,6 +594,190 @@ impl MeshFileCatalogDto {
     }
 }
 
+/// Unique identifier for an atom in the collaborative CRDT scratchpad.
+///
+/// Combines a logical Lamport timestamp, the author's SHA-256 fingerprint,
+/// and a monotonically increasing session counter for total, deterministic ordering.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AtomId {
+    /// Lamport clock value when this atom was created.
+    pub lamport: u64,
+    /// Canonical uppercase SHA-256 fingerprint of the authoring device.
+    pub author_fp: String,
+    /// Monotonic per-session or per-author sequence counter.
+    pub counter: u64,
+}
+
+impl AtomId {
+    /// Constructs a new `AtomId`.
+    pub fn new(lamport: u64, author_fp: impl Into<String>, counter: u64) -> Self {
+        Self {
+            lamport,
+            author_fp: author_fp.into().to_ascii_uppercase(),
+            counter,
+        }
+    }
+}
+
+impl Ord for AtomId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.lamport
+            .cmp(&other.lamport)
+            .then_with(|| self.author_fp.cmp(&other.author_fp))
+            .then_with(|| self.counter.cmp(&other.counter))
+    }
+}
+
+impl PartialOrd for AtomId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Operation variants for CRDT scratchpad edits.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ScratchpadOpDto {
+    /// Inserts a character atom directly after the atom referenced by `after_id` (or start of document if None).
+    Insert {
+        atom_id: AtomId,
+        after_id: Option<AtomId>,
+        value: char,
+    },
+    /// Marks the specified atom as deleted (tombstone).
+    Delete {
+        atom_id: AtomId,
+    },
+}
+
+/// Edit envelope gossiped across peers or relayed through overlay mesh.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScratchpadEditDto {
+    /// Unique document identifier (e.g. UUID).
+    pub doc_id: String,
+    /// Unique edit operation identifier.
+    pub edit_id: String,
+    /// Canonical uppercase SHA-256 fingerprint of the editor.
+    pub author_fp: String,
+    /// Logical Lamport timestamp of this edit.
+    pub lamport: u64,
+    /// Operation payload.
+    pub op: ScratchpadOpDto,
+    /// Wall clock timestamp of edit creation (milliseconds since UNIX epoch).
+    pub timestamp_ms: u64,
+}
+
+impl ScratchpadEditDto {
+    /// Constructs an insert edit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert(
+        doc_id: impl Into<String>,
+        edit_id: impl Into<String>,
+        author_fp: impl Into<String>,
+        lamport: u64,
+        atom_id: AtomId,
+        after_id: Option<AtomId>,
+        value: char,
+        timestamp_ms: u64,
+    ) -> Self {
+        let canonical_author = author_fp.into().to_ascii_uppercase();
+        Self {
+            doc_id: doc_id.into(),
+            edit_id: edit_id.into(),
+            author_fp: canonical_author,
+            lamport,
+            op: ScratchpadOpDto::Insert {
+                atom_id,
+                after_id,
+                value,
+            },
+            timestamp_ms,
+        }
+    }
+
+    /// Constructs a delete edit.
+    pub fn delete(
+        doc_id: impl Into<String>,
+        edit_id: impl Into<String>,
+        author_fp: impl Into<String>,
+        lamport: u64,
+        atom_id: AtomId,
+        timestamp_ms: u64,
+    ) -> Self {
+        let canonical_author = author_fp.into().to_ascii_uppercase();
+        Self {
+            doc_id: doc_id.into(),
+            edit_id: edit_id.into(),
+            author_fp: canonical_author,
+            lamport,
+            op: ScratchpadOpDto::Delete { atom_id },
+            timestamp_ms,
+        }
+    }
+}
+
+/// Replicated character atom representing a single symbol or tombstone in the CRDT sequence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScratchpadAtomDto {
+    /// Unique identifier for this atom.
+    pub id: AtomId,
+    /// Identifier of the preceding atom at the time of creation (None = document head).
+    pub after_id: Option<AtomId>,
+    /// Character symbol.
+    pub value: char,
+    /// Whether this atom has been deleted (tombstone).
+    pub deleted: bool,
+    /// Lamport timestamp for ordering.
+    pub lamport: u64,
+}
+
+/// Full document snapshot or synchronization payload for catching up peers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScratchpadSyncDto {
+    /// Unique document identifier.
+    pub doc_id: String,
+    /// Document title or filename (e.g. "scratchpad.md").
+    pub title: String,
+    /// Complete ordered atom sequence (including tombstones).
+    pub atoms: Vec<ScratchpadAtomDto>,
+    /// Highest Lamport clock observed for this document.
+    pub lamport: u64,
+    /// Timestamp of last modification in milliseconds since UNIX epoch.
+    pub last_modified_ms: u64,
+}
+
+impl ScratchpadSyncDto {
+    /// Constructs a new sync payload.
+    pub fn new(
+        doc_id: impl Into<String>,
+        title: impl Into<String>,
+        atoms: Vec<ScratchpadAtomDto>,
+        lamport: u64,
+        last_modified_ms: u64,
+    ) -> Self {
+        Self {
+            doc_id: doc_id.into(),
+            title: title.into(),
+            atoms,
+            lamport,
+            last_modified_ms,
+        }
+    }
+
+    /// Extracts the visible text string from the atom sequence.
+    pub fn to_text(&self) -> String {
+        self.atoms
+            .iter()
+            .filter(|a| !a.deleted)
+            .map(|a| a.value)
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -751,5 +935,66 @@ mod tests {
         let json = serde_json::to_string(&catalog).unwrap();
         let decoded: MeshFileCatalogDto = serde_json::from_str(&json).unwrap();
         assert_eq!(catalog, decoded);
+    }
+
+    #[test]
+    fn test_scratchpad_crdt_dtos_serde() {
+        let id1 = AtomId::new(1, "1111111111111111111111111111111111111111111111111111111111111111", 0);
+        let id2 = AtomId::new(2, "2222222222222222222222222222222222222222222222222222222222222222", 1);
+        assert!(id2 > id1);
+
+        let insert_edit = ScratchpadEditDto::insert(
+            "doc-123",
+            "edit-1",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            1,
+            id1.clone(),
+            None,
+            'H',
+            1770000000000,
+        );
+        let json_edit = serde_json::to_string(&insert_edit).unwrap();
+        let de_edit: ScratchpadEditDto = serde_json::from_str(&json_edit).unwrap();
+        assert_eq!(insert_edit, de_edit);
+
+        let delete_edit = ScratchpadEditDto::delete(
+            "doc-123",
+            "edit-2",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            2,
+            id1.clone(),
+            1770000001000,
+        );
+        let json_del = serde_json::to_string(&delete_edit).unwrap();
+        let de_del: ScratchpadEditDto = serde_json::from_str(&json_del).unwrap();
+        assert_eq!(delete_edit, de_del);
+
+        let atom1 = ScratchpadAtomDto {
+            id: id1.clone(),
+            after_id: None,
+            value: 'H',
+            deleted: false,
+            lamport: 1,
+        };
+        let atom2 = ScratchpadAtomDto {
+            id: id2.clone(),
+            after_id: Some(id1),
+            value: 'i',
+            deleted: false,
+            lamport: 2,
+        };
+
+        let sync_dto = ScratchpadSyncDto::new(
+            "doc-123",
+            "scratchpad.md",
+            vec![atom1, atom2],
+            2,
+            1770000002000,
+        );
+        assert_eq!(sync_dto.to_text(), "Hi");
+
+        let json_sync = serde_json::to_string(&sync_dto).unwrap();
+        let de_sync: ScratchpadSyncDto = serde_json::from_str(&json_sync).unwrap();
+        assert_eq!(sync_dto, de_sync);
     }
 }

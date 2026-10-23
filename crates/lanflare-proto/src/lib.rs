@@ -24,12 +24,14 @@ pub use mesh::{
     DEFAULT_HOP_PENALTY_MS, DEFAULT_STREAM_CHUNK_SIZE, E2eeEnvelope, MAX_MESH_TTL,
     MailboxDepositRequest, MailboxDepositResponse, MailboxFetchRequest, MailboxFetchResponse,
     MailboxItemDto, MeshGossipPacket, MeshLinkMetric, MeshNodeAnnouncement,
-    MeshRouteAdvertisement, MeshStreamHeader, RoutedEnvelope,
+    MeshRouteAdvertisement, MeshStreamHeader, MeshTracerouteRequest, MeshTracerouteResponse,
+    RoutedEnvelope, SpeedtestChunkDto, SpeedtestResultDto, TracerouteHop,
 };
 pub use toolbox::{
-    ClipboardEventDto, ClipboardPayloadDto, ClipboardResponseDto, DeviceRingRosterDto,
+    AtomId, ClipboardEventDto, ClipboardPayloadDto, ClipboardResponseDto, DeviceRingRosterDto,
     EncryptedClipboardDto, FileSearchQueryDto, FileSearchResultDto, MeshFileCatalogDto,
-    RingDeviceDto, RingKeyDistributionDto, SearchHitDto,
+    RingDeviceDto, RingKeyDistributionDto, ScratchpadAtomDto, ScratchpadEditDto, ScratchpadOpDto,
+    ScratchpadSyncDto, SearchHitDto,
 };
 pub use transfer::{
     FileDto, FileMetadataDto, PrepareDownloadResponseDtoV2, PrepareUploadRequestDtoV2,

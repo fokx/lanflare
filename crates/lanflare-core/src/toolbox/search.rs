@@ -878,6 +878,7 @@ mod tests {
             None,
             None,
             Some(search_engine_b),
+            None,
         )
         .await
         .unwrap();
@@ -998,6 +999,7 @@ mod tests {
             None,
             None,
             Some(search_engine),
+            None,
         )
         .await
         .unwrap();
