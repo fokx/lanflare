@@ -22,6 +22,7 @@ use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode};
 use lanflare_proto::mesh::{
+    MailboxDepositRequest, MailboxDepositResponse, MailboxFetchRequest, MailboxFetchResponse,
     MeshGossipPacket, MeshLinkMetric, MeshNodeAnnouncement, MeshRouteAdvertisement,
     MeshStreamHeader, RoutedEnvelope, DEFAULT_STREAM_CHUNK_SIZE, MAX_MESH_TTL,
 };
@@ -30,6 +31,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
 use crate::mesh::graph::{MeshLink, MeshNode, MeshTopologyGraph};
+use crate::mesh::mailbox::RelayMailbox;
 use crate::server::dufs::{empty_box_response, full_box_body, json_response, ServerResponseBody};
 use crate::server::router::ClientConnectionInfo;
 
@@ -267,6 +269,7 @@ pub struct MeshRouter {
     stream_sink: RwLock<Option<StreamChunkSink>>,
     registry: RwLock<Option<Arc<crate::discovery::registry::PeerRegistry>>>,
     interceptor: RwLock<Option<Arc<dyn MeshNetworkInterceptor>>>,
+    mailbox: Arc<RelayMailbox>,
 }
 
 impl MeshRouter {
@@ -306,7 +309,13 @@ impl MeshRouter {
             stream_sink: RwLock::new(None),
             registry: RwLock::new(None),
             interceptor: RwLock::new(None),
+            mailbox: Arc::new(RelayMailbox::default()),
         }
+    }
+
+    /// Returns a reference to the custodial relay mailbox.
+    pub fn mailbox(&self) -> &Arc<RelayMailbox> {
+        &self.mailbox
     }
 
     /// Returns the canonical local node fingerprint.
@@ -847,8 +856,46 @@ impl MeshRouter {
             (&Method::GET, "/api/lanflare/v1/mesh/topology") => self.handle_topology_endpoint().await,
             (&Method::POST, "/api/lanflare/v1/mesh/forward") => self.handle_forward_endpoint(req).await,
             (&Method::POST, "/api/lanflare/v1/mesh/stream") => self.handle_stream_endpoint(req).await,
+            (&Method::POST, "/api/lanflare/v1/mesh/mailbox/deposit") => {
+                self.mailbox.handle_deposit_endpoint(req).await
+            }
+            (&Method::POST, "/api/lanflare/v1/mesh/mailbox/fetch") => {
+                self.mailbox.handle_fetch_endpoint(req).await
+            }
             _ => empty_box_response(StatusCode::NOT_FOUND),
         }
+    }
+
+    /// Deposits an envelope into a remote relay node's custodial mailbox.
+    pub async fn deposit_to_relay_mailbox(
+        &self,
+        relay_fp: &str,
+        deposit_req: &MailboxDepositRequest,
+    ) -> Result<MailboxDepositResponse, RouterError> {
+        let base_url = self
+            .resolve_endpoint(relay_fp)
+            .await
+            .ok_or_else(|| RouterError::UnresolvedEndpoint(relay_fp.to_string()))?;
+
+        RelayMailbox::deposit_to_relay_http(&self.client, &base_url, deposit_req)
+            .await
+            .map_err(|e| RouterError::Network(e.to_string()))
+    }
+
+    /// Fetches pending envelopes from a remote relay node's custodial mailbox.
+    pub async fn fetch_from_relay_mailbox(
+        &self,
+        relay_fp: &str,
+        fetch_req: &MailboxFetchRequest,
+    ) -> Result<MailboxFetchResponse, RouterError> {
+        let base_url = self
+            .resolve_endpoint(relay_fp)
+            .await
+            .ok_or_else(|| RouterError::UnresolvedEndpoint(relay_fp.to_string()))?;
+
+        RelayMailbox::fetch_from_relay_http(&self.client, &base_url, fetch_req)
+            .await
+            .map_err(|e| RouterError::Network(e.to_string()))
     }
 
     async fn handle_topology_endpoint(&self) -> Response<ServerResponseBody> {

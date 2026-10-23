@@ -1,8 +1,8 @@
 # Operational Progress & Architecture Decision Record (ADR)
 
 ## Current Phase & Milestone
-- **Current Milestone**: Phase 9 in progress; Sub-phases 9.1 & 9.2 Complete.
-- **Overall Status**: Ready for **Sub-phase 9.3: Custodial Mesh Relay Mailbox for Asynchronous Offline Delivery (`lanflare-core::mesh::mailbox`)**.
+- **Current Milestone**: Phase 9 Complete; Ready for **Phase 10: Multi-Functional LAN Toolbox (Clipboard Ring, Federated Search, Scratchpad & Diagnostics)**.
+- **Overall Status**: Ready for **Sub-phase 10.1: "My Devices" Self-Trust Ring & Universal Mesh Clipboard Sync (`lanflare-core::toolbox::clipboard`)**.
 
 ---
 
@@ -254,6 +254,21 @@
       - `test_four_peer_group_partition_and_anti_entropy_catchup`: verified 4-peer group where Peer D is offline while Peers A, B, and C author and exchange 20 messages; bringing Peer D online catches up all 20 missing messages and decapsulates epoch key in 1 sync round; verifies identical topological ordering and 100% plaintext decryption match.
       - `test_group_sync_over_multi_hop_mesh_relay`: verified 3-node multi-subnet mesh (`Node A -> Relay B -> Node C`); verified physical subnet partition between A and C; Node C synchronizes group state with Node A over 2-hop mesh relay; verifies full message retrieval, topological ordering, and decryption on Node C with zero plaintext exposure on Relay B.
   - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --test group_sync_e2e`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (156 tests passing).
+- [x] Implement Custodial Mesh Relay Mailbox for Asynchronous Offline Delivery in `lanflare-core::mesh::mailbox` (Sub-phase 9.3):
+  - Defined protocol DTOs in `lanflare-proto::mesh`: `MailboxDepositRequest`, `MailboxDepositResponse`, `MailboxFetchRequest`, `MailboxFetchResponse`, and `MailboxItemDto` with canonical signing bytes and serde roundtrip tests.
+  - Implemented `RelayMailbox` in `lanflare-core::mesh::mailbox` (`MailboxConfig`, `MailboxStats`, `MailboxError`):
+    - Strict per-peer byte quotas (`max_bytes_per_peer`, default 5 MB) and per-peer item limits (`max_items_per_peer`, default 500) rejecting excess deposits with HTTP 413 Payload Too Large without starving other peers.
+    - Global mailbox capacity quota (`max_total_bytes`, default 50 MB) rejecting overflows with HTTP 429 Too Many Requests.
+    - Bounded time-to-live (`default_ttl_secs`, `max_ttl_secs`), opportunistic and periodic sweep eviction (`evict_expired`), and explicit item acknowledgement/draining (`ack_deposit_ids`, `auto_ack`).
+    - Cryptographic recipient verification (`verify_fetch_request`) requiring X.509 signature over canonical timestamped bytes (`recipient_fp:timestamp_ms`) and certificate fingerprint match.
+  - Mounted Hyper router endpoints: `POST /api/lanflare/v1/mesh/mailbox/deposit` and `POST /api/lanflare/v1/mesh/mailbox/fetch` in `MeshRouter::handle_hyper_request`.
+  - Integrated custodial store-and-forward routing with `MeshRouter` (`deposit_to_relay_mailbox`, `fetch_from_relay_mailbox`) and `ChatEngine`:
+    - Outbox dispatcher checks for available candidate relay mailboxes when the recipient is offline, deposits the E2EE envelope, and marks the message as `MessageDeliveryState::Relayed`.
+    - Added `fetch_mailbox_from_peer` and unified `handle_e2ee_envelope` in `ChatEngine` to ingest fetched custodial envelopes, decrypt payloads, update store, and return delivery receipts.
+  - Comprehensive unit test suite in `crates/lanflare-core/src/mesh/mailbox.rs`:
+    - `test_asynchronous_never_simultaneously_online_delivery`: verified Node A deposits E2EE message on Relay B while Node C is offline; Node A goes offline; Relay B cannot read plaintext; Node C comes online and fetches/decrypts bit-for-bit payload; subsequent fetch yields 0 items.
+    - `test_mailbox_quota_enforcement_and_ttl_eviction`: verified per-peer quota rejection (HTTP 413), peer non-starvation, total capacity quota rejection (HTTP 429), and TTL eviction freeing quota for new deposits.
+  - Verified 100% test pass rate across workspace via `cargo test -p lanflare-core --lib mesh::mailbox`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --all` (158 tests passing).
 
 ---
 
@@ -554,6 +569,16 @@
     - **Non-Member Rejection**: Sync requests from peers not listed as authorized participants in `roster.is_member` are rejected at the boundary with `SyncError::NotAMember` (HTTP 403 Forbidden).
     - **Multi-Hop Overlay Mesh Group Sync**: If direct HTTP is blocked across subnets, `ChatEngine::sync_group` encapsulates `GroupSyncRequestDto` inside an `E2eeEnvelope` and routes it across intermediate mesh relays to the destination node. The remote node processes the sync request and routes `GroupSyncResponseDto` back across the mesh. Intermediate relays inspect only outer routing metadata without access to group messages or epoch keys.
 
+- **ADR-037: Custodial Mesh Relay Mailbox for Asynchronous Offline Store-and-Forward Delivery**
+  - *Context*: In ad-hoc multi-hop mesh and mobile local networks, sender and recipient devices are often never online at the exact same physical time (e.g. sender goes offline before recipient powers on, or roaming across subnets). Direct HTTP delivery and live mesh forwarding fail when the counter-party is offline.
+  - *Decision*: Implement `RelayMailbox` (`lanflare-core::mesh::mailbox`) mounted at `POST /api/lanflare/v1/mesh/mailbox/deposit` and `POST /api/lanflare/v1/mesh/mailbox/fetch`, allowing senders to deposit bounded E2EE envelopes on mutually reachable relay nodes.
+  - *Invariants*:
+    - **Zero Plaintext Exposure**: Relays store only opaque `E2eeEnvelope`s (RSA-OAEP encrypted symmetric keys + ChaCha20-Poly1305 AEAD ciphertext). Intermediate relays lack the recipient's private key and cannot decrypt or tamper with message bodies or attachment metadata.
+    - **Strict Quota Bounds & Starvation Defense**: Per-peer storage is capped at `max_bytes_per_peer` (default 5 MB) and `max_items_per_peer` (default 500). Excess deposits are rejected immediately with HTTP 413 Payload Too Large without starving other peers. Total mailbox capacity is capped at `max_total_bytes` (default 50 MB), rejecting overflows with HTTP 429 Too Many Requests.
+    - **Cryptographic Fetch Authentication**: Retrieval via `POST /api/lanflare/v1/mesh/mailbox/fetch` requires a digital signature over canonical timestamped bytes (`recipient_fp:timestamp_ms`) verifiable by the recipient's X.509 certificate. Requests with stale timestamps (> 5 min) or invalid signatures are rejected with HTTP 401 Unauthorized, preventing rogue metadata snooping or unauthorized envelope draining.
+    - **TTL Eviction & Explicit/Auto Acknowledgement**: Envelopes carry a TTL (`expires_at_ms`). Expired items are pruned opportunistically on deposit/fetch and during periodic sweeps (`evict_expired`), returning reclaimed bytes to peer and total quotas. Setting `auto_ack = true` or supplying `ack_deposit_ids` automatically deletes retrieved envelopes from the mailbox.
+    - **Outbox Relayed State Progression**: When `OutboxDispatcher` deposits an envelope into a custodial relay mailbox, the message transitions to `MessageDeliveryState::Relayed` in `ChatStore`. When the recipient comes online, fetches the mailbox, and replies with `DeliveryReceiptDto`, the message transitions monotonically to `MessageDeliveryState::Delivered`.
+
 ---
 
 ## Known Debt & Blockers
@@ -562,20 +587,21 @@
 ---
 
 ## Next Session Target
-- **Target**: **Sub-phase 9.3: Custodial Mesh Relay Mailbox for Asynchronous Offline Delivery (`lanflare-core::mesh::mailbox`)**
+- **Target**: **Sub-phase 10.1: "My Devices" Self-Trust Ring & Universal Mesh Clipboard Sync (`lanflare-core::toolbox::clipboard`)**
 - **Action Items**:
-  1. Implement `RelayMailbox` in `lanflare-core::mesh::mailbox` with deposit and fetch operations:
-     - `POST /api/lanflare/v1/mesh/mailbox/deposit`
-     - `POST /api/lanflare/v1/mesh/mailbox/fetch`
-  2. Implement bounded per-recipient and total ring-buffer quotas (`max_mailbox_bytes_per_peer`, `ttl_seconds`) and automatic expiration.
-  3. Wire custodial E2EE envelope store-and-forward routing into `MeshRouter` and `ChatEngine` outbox dispatch when counter-parties are never online simultaneously.
+  1. Define clipboard protocol DTOs in `lanflare-proto::toolbox`:
+     - `ClipboardPayloadDto` (`Text`, `Image`, `Files`), `ClipboardEventDto`, and `DeviceRingRosterDto`.
+  2. Implement `DeviceRing` pairing, shared ring secret distribution, and E2EE clipboard broadcast in `lanflare-core::toolbox::clipboard`:
+     - `POST /api/lanflare/v1/toolbox/clipboard`
+  3. Implement echo-loop suppression using SHA-256 content hashing, monotonic device sequence numbers, and origin device filtering.
   4. Implement unit and integration tests:
-     - `mesh::mailbox::tests::test_asynchronous_never_simultaneously_online_delivery`
-     - `mesh::mailbox::tests::test_mailbox_quota_enforcement_and_ttl_eviction`
+     - `toolbox::clipboard::tests::test_device_ring_e2ee_clipboard_sync_and_echo_suppression`
+     - `toolbox::clipboard::tests::test_unauthorized_peer_clipboard_rejection`
   5. Verification command:
      ```bash
-     cargo test -p lanflare-core --lib mesh::mailbox
+     cargo test -p lanflare-core --lib toolbox::clipboard
      ```
+
 
 
 

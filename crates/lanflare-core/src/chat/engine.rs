@@ -28,7 +28,9 @@ use lanflare_proto::chat::{
     GroupMember, GroupSyncRequestDto, GroupSyncResponseDto, MessageDeliveryState, ReadReceiptDto,
     ResumeTransferDto, TrustRequestDto, DEFAULT_POW_DIFFICULTY_BITS, DEFAULT_TIME_BUCKET_SECS,
 };
-use lanflare_proto::mesh::{RoutedEnvelope, MAX_MESH_TTL};
+use lanflare_proto::mesh::{
+    E2eeEnvelope, MailboxDepositRequest, RoutedEnvelope, MAX_MESH_TTL,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{broadcast, RwLock};
@@ -47,6 +49,7 @@ use crate::chat::trust::{
 use crate::crypto::cert::TlsIdentity;
 use crate::crypto::e2ee::{open_envelope, seal_envelope, sign_with_identity, E2eeError};
 use crate::discovery::registry::PeerRegistry;
+use crate::mesh::mailbox::{create_signed_fetch_request, RelayMailbox};
 use crate::mesh::router::MeshRouter;
 use crate::server::dufs::{empty_box_response, full_box_body, json_response, ServerResponseBody};
 use crate::server::handlers::percent_decode;
@@ -211,6 +214,7 @@ pub struct ChatEngine {
     media_dir: PathBuf,
     registry: Arc<PeerRegistry>,
     mesh_router: RwLock<Option<Arc<MeshRouter>>>,
+    peer_certificates: RwLock<HashMap<String, String>>,
     event_tx: broadcast::Sender<ChatEngineEvent>,
     http_client: reqwest::Client,
 }
@@ -258,6 +262,7 @@ impl ChatEngine {
             media_dir: config.media_dir,
             registry: registry.clone(),
             mesh_router: RwLock::new(None),
+            peer_certificates: RwLock::new(HashMap::new()),
             event_tx,
             http_client,
         });
@@ -932,150 +937,243 @@ impl ChatEngine {
                 }
         }
 
-        // 2. Multi-hop mesh relay routing if MeshRouter is attached and route exists
+        // 2. Multi-hop mesh relay routing or custodial mailbox deposit if MeshRouter is attached
         if let Some(mesh) = self.mesh_router.read().await.as_ref() {
-            let (has_route, cert_pem_opt) = {
+            let cert_pem_opt = self.get_peer_certificate(&target_fp).await;
+            let has_route = {
                 let graph = mesh.graph().read().await;
-                let route = graph.resolve_route(&target_fp);
-                let cert = graph.get_node(&target_fp).and_then(|n| n.cert_pem.clone());
-                (route.is_some(), cert)
+                graph.resolve_route(&target_fp).is_some()
             };
 
             if has_route
-                && let Some(cert_pem) = cert_pem_opt
+                && let Some(cert_pem) = &cert_pem_opt
             {
                 let payload_bytes = match &item.payload {
+                    OutboxPayload::Message(m) => serde_json::to_vec(m),
+                    OutboxPayload::DeliveryReceipt(r) => serde_json::to_vec(r),
+                    OutboxPayload::ReadReceipt(r) => serde_json::to_vec(r),
+                }
+                .map_err(|e| OutboxDispatchError::NetworkError(e.to_string()))?;
+
+                let mut e2ee = seal_envelope(&self.identity, &target_fp, cert_pem, &payload_bytes)
+                    .map_err(|e| OutboxDispatchError::NetworkError(e.to_string()))?;
+                e2ee.sender_cert_pem = Some(self.identity.cert_pem.clone());
+
+                let routed = RoutedEnvelope {
+                    packet_id: uuid::Uuid::new_v4().to_string(),
+                    src_fp: self.identity.fingerprint.clone(),
+                    dst_fp: target_fp.clone(),
+                    ttl: MAX_MESH_TTL,
+                    route_path: vec![self.identity.fingerprint.clone()],
+                    payload: e2ee,
+                };
+
+                match mesh.forward_envelope(routed).await {
+                    Ok(_) => return Ok(()),
+                    Err(e) => return Err(OutboxDispatchError::NetworkError(e.to_string())),
+                }
+            }
+
+            // 3. Custodial mesh relay mailbox deposit if recipient is offline but a relay is reachable
+            if let Some(cert_pem) = &cert_pem_opt {
+                let graph = mesh.graph().read().await;
+                let candidate_relays = graph
+                    .nodes()
+                    .filter(|n| {
+                        n.fingerprint != self.identity.fingerprint
+                            && n.fingerprint != target_fp
+                            && (n.relay_enabled || n.capabilities.contains(&"mailbox".to_string()))
+                            && graph.resolve_route(&n.fingerprint).is_some()
+                    })
+                    .map(|n| n.fingerprint.clone())
+                    .collect::<Vec<String>>();
+                drop(graph);
+
+                for relay_fp in candidate_relays {
+                    let payload_bytes = match &item.payload {
                         OutboxPayload::Message(m) => serde_json::to_vec(m),
                         OutboxPayload::DeliveryReceipt(r) => serde_json::to_vec(r),
                         OutboxPayload::ReadReceipt(r) => serde_json::to_vec(r),
                     }
                     .map_err(|e| OutboxDispatchError::NetworkError(e.to_string()))?;
 
-                    let e2ee = seal_envelope(&self.identity, &target_fp, &cert_pem, &payload_bytes)
+                    let mut e2ee = seal_envelope(&self.identity, &target_fp, cert_pem, &payload_bytes)
                         .map_err(|e| OutboxDispatchError::NetworkError(e.to_string()))?;
+                    e2ee.sender_cert_pem = Some(self.identity.cert_pem.clone());
 
-                    let routed = RoutedEnvelope {
-                        packet_id: uuid::Uuid::new_v4().to_string(),
-                        src_fp: self.identity.fingerprint.clone(),
-                        dst_fp: target_fp.clone(),
-                        ttl: MAX_MESH_TTL,
-                        route_path: vec![self.identity.fingerprint.clone()],
-                        payload: e2ee,
+                    let deposit_req = MailboxDepositRequest {
+                        deposit_id: Some(item.id.clone()),
+                        envelope: e2ee,
+                        ttl_seconds: None,
                     };
 
-                    match mesh.forward_envelope(routed).await {
-                        Ok(_) => return Ok(()),
-                        Err(e) => return Err(OutboxDispatchError::NetworkError(e.to_string())),
+                    if mesh.deposit_to_relay_mailbox(&relay_fp, &deposit_req).await.is_ok() {
+                        let _ = self
+                            .store
+                            .update_message_delivery_state(
+                                item.payload.item_id(),
+                                MessageDeliveryState::Relayed,
+                            )
+                            .await;
+                        return Ok(());
                     }
                 }
             }
+        }
 
-        // 3. Peer currently unreachable on both direct LAN and mesh
+        // 4. Peer currently unreachable on both direct LAN, mesh route, and custodial relay
         Err(OutboxDispatchError::PeerUnreachable(format!(
             "Recipient {target_fp} is currently offline"
         )))
     }
 
-    /// Handles an incoming routed envelope delivered locally from the overlay mesh router.
-    async fn handle_routed_envelope(&self, routed: RoutedEnvelope) {
-        let sender_cert_opt = if let Some(mesh) = self.mesh_router.read().await.as_ref() {
-            mesh.graph().read().await.get_node(&routed.src_fp).and_then(|n| n.cert_pem.clone())
-        } else {
-            None
-        };
+    /// Registers or updates a known peer's X.509 certificate PEM.
+    pub async fn register_peer_certificate(&self, fingerprint: &str, cert_pem: &str) {
+        let mut certs = self.peer_certificates.write().await;
+        certs.insert(fingerprint.to_ascii_uppercase(), cert_pem.to_string());
+    }
 
-        if let Ok(decrypted) = open_envelope(&self.identity, sender_cert_opt.as_deref(), &routed.payload) {
-            // 1. Try ChatMessageDto
-            if let Ok(msg) = serde_json::from_slice::<ChatMessageDto>(&decrypted) {
-                if let Ok(delivery) = self.handle_chat_message(msg, None).await {
-                    // Return delivery receipt back across mesh
-                    let _ = self.outbox.enqueue_delivery_receipt(delivery).await;
-                    let _ = self.outbox.flush_all().await;
-                }
-                return;
-            }
+    /// Resolves a known peer's X.509 certificate PEM from cache or mesh topology graph.
+    pub async fn get_peer_certificate(&self, fingerprint: &str) -> Option<String> {
+        let canonical = fingerprint.to_ascii_uppercase();
+        if let Some(cert) = self.peer_certificates.read().await.get(&canonical) {
+            return Some(cert.clone());
+        }
+        if let Some(mesh) = self.mesh_router.read().await.as_ref() {
+            return mesh
+                .graph()
+                .read()
+                .await
+                .get_node(&canonical)
+                .and_then(|n| n.cert_pem.clone());
+        }
+        None
+    }
 
-            // 2. Try TrustRequestDto
-            if let Ok(req) = serde_json::from_slice::<TrustRequestDto>(&decrypted) {
-                let _ = self.handle_trust_request(req, None).await;
-                return;
-            }
+    /// Fetches and ingests pending envelopes from a remote relay mailbox via HTTP.
+    pub async fn fetch_mailbox_from_peer(&self, peer_base_url: &str) -> Result<usize, ChatEngineError> {
+        let fetch_req = create_signed_fetch_request(&self.identity, vec![], None, true)
+            .map_err(|e| ChatEngineError::BadRequest(e.to_string()))?;
 
-            // 3. Try DeliveryReceiptDto
-            if let Ok(delivery) = serde_json::from_slice::<DeliveryReceiptDto>(&decrypted) {
-                let _ = self.store.apply_delivery_receipt(&delivery).await;
-                let _ = self
-                    .event_tx
-                    .send(ChatEngineEvent::DeliveryReceiptReceived(delivery));
-                return;
-            }
+        let fetch_resp = RelayMailbox::fetch_from_relay_http(&self.http_client, peer_base_url, &fetch_req)
+            .await
+            .map_err(|e| ChatEngineError::BadRequest(e.to_string()))?;
 
-            // 4. Try ReadReceiptDto
-            if let Ok(read) = serde_json::from_slice::<ReadReceiptDto>(&decrypted) {
-                let _ = self.store.apply_read_receipt(&read).await;
-                let _ = self
-                    .event_tx
-                    .send(ChatEngineEvent::ReadReceiptReceived(read));
-                return;
-            }
-
-            // 5. Try GroupSyncRequestDto
-            if let Ok(sync_req) = serde_json::from_slice::<GroupSyncRequestDto>(&decrypted) {
-                if let Ok(sync_resp) = self.group_sync.handle_sync_request(sync_req).await {
-                    let resp_bytes = serde_json::to_vec(&sync_resp).unwrap_or_default();
-                    if let Some(mesh) = self.mesh_router.read().await.as_ref() {
-                        let mut target_cert_opt = mesh
-                            .graph()
-                            .read()
-                            .await
-                            .get_node(&routed.src_fp)
-                            .and_then(|n| n.cert_pem.clone());
-
-                        if target_cert_opt.is_none()
-                            && let Some(group) = self.group_sync.get_group(&sync_resp.group_id).await
-                        {
-                            let state = group.read().await;
-                            target_cert_opt = state
-                                .roster()
-                                .get_member(&routed.src_fp)
-                                .map(|m| m.cert_pem.clone());
-                        }
-
-                        if let Some(cert_pem) = target_cert_opt
-                            && let Ok(e2ee) = seal_envelope(
-                                &self.identity,
-                                &routed.src_fp,
-                                &cert_pem,
-                                &resp_bytes,
-                            )
-                        {
-                            let resp_routed = RoutedEnvelope {
-                                packet_id: uuid::Uuid::new_v4().to_string(),
-                                src_fp: self.identity.fingerprint.clone(),
-                                dst_fp: routed.src_fp.clone(),
-                                ttl: MAX_MESH_TTL,
-                                route_path: vec![self.identity.fingerprint.clone()],
-                                payload: e2ee,
-                            };
-                            let _ = mesh.forward_envelope(resp_routed).await;
-                        }
-                    }
-                }
-                return;
-            }
-
-            // 6. Try GroupSyncResponseDto
-            if let Ok(sync_resp) = serde_json::from_slice::<GroupSyncResponseDto>(&decrypted) {
-                let group_id = sync_resp.group_id.clone();
-                if let Ok(stats) = self.group_sync.apply_sync_response(sync_resp).await {
-                    let _ = self.event_tx.send(ChatEngineEvent::GroupSynced {
-                        group_id,
-                        peer_fp: routed.src_fp.clone(),
-                        stats,
-                    });
-                }
+        let mut processed = 0;
+        for item in fetch_resp.items {
+            if let Ok(handled) = self.handle_e2ee_envelope(item.envelope).await
+                && handled
+            {
+                processed += 1;
             }
         }
+
+        Ok(processed)
+    }
+
+    /// Handles an incoming E2EE envelope (from a routed mesh envelope or custodial mailbox fetch).
+    pub async fn handle_e2ee_envelope(&self, envelope: E2eeEnvelope) -> Result<bool, ChatEngineError> {
+        let sender_cert_opt = self.get_peer_certificate(&envelope.sender_fp).await;
+
+        let decrypted = open_envelope(
+            &self.identity,
+            sender_cert_opt.as_deref().or(envelope.sender_cert_pem.as_deref()),
+            &envelope,
+        )?;
+
+        // 1. Try ChatMessageDto
+        if let Ok(msg) = serde_json::from_slice::<ChatMessageDto>(&decrypted) {
+            if let Ok(delivery) = self.handle_chat_message(msg, None).await {
+                // Return delivery receipt back across mesh
+                let _ = self.outbox.enqueue_delivery_receipt(delivery).await;
+                let _ = self.outbox.flush_all().await;
+            }
+            return Ok(true);
+        }
+
+        // 2. Try TrustRequestDto
+        if let Ok(req) = serde_json::from_slice::<TrustRequestDto>(&decrypted) {
+            let _ = self.handle_trust_request(req, None).await;
+            return Ok(true);
+        }
+
+        // 3. Try DeliveryReceiptDto
+        if let Ok(delivery) = serde_json::from_slice::<DeliveryReceiptDto>(&decrypted) {
+            let _ = self.store.apply_delivery_receipt(&delivery).await;
+            let _ = self
+                .event_tx
+                .send(ChatEngineEvent::DeliveryReceiptReceived(delivery));
+            return Ok(true);
+        }
+
+        // 4. Try ReadReceiptDto
+        if let Ok(read) = serde_json::from_slice::<ReadReceiptDto>(&decrypted) {
+            let _ = self.store.apply_read_receipt(&read).await;
+            let _ = self
+                .event_tx
+                .send(ChatEngineEvent::ReadReceiptReceived(read));
+            return Ok(true);
+        }
+
+        // 5. Try GroupSyncRequestDto
+        if let Ok(sync_req) = serde_json::from_slice::<GroupSyncRequestDto>(&decrypted) {
+            if let Ok(sync_resp) = self.group_sync.handle_sync_request(sync_req).await {
+                let resp_bytes = serde_json::to_vec(&sync_resp).unwrap_or_default();
+                if let Some(mesh) = self.mesh_router.read().await.as_ref() {
+                    let mut target_cert_opt = self.get_peer_certificate(&envelope.sender_fp).await;
+
+                    if target_cert_opt.is_none()
+                        && let Some(group) = self.group_sync.get_group(&sync_resp.group_id).await
+                    {
+                        let state = group.read().await;
+                        target_cert_opt = state
+                            .roster()
+                            .get_member(&envelope.sender_fp)
+                            .map(|m| m.cert_pem.clone());
+                    }
+
+                    if let Some(cert_pem) = target_cert_opt
+                        && let Ok(e2ee) = seal_envelope(
+                            &self.identity,
+                            &envelope.sender_fp,
+                            &cert_pem,
+                            &resp_bytes,
+                        )
+                    {
+                        let resp_routed = RoutedEnvelope {
+                            packet_id: uuid::Uuid::new_v4().to_string(),
+                            src_fp: self.identity.fingerprint.clone(),
+                            dst_fp: envelope.sender_fp.clone(),
+                            ttl: MAX_MESH_TTL,
+                            route_path: vec![self.identity.fingerprint.clone()],
+                            payload: e2ee,
+                        };
+                        let _ = mesh.forward_envelope(resp_routed).await;
+                    }
+                }
+            }
+            return Ok(true);
+        }
+
+        // 6. Try GroupSyncResponseDto
+        if let Ok(sync_resp) = serde_json::from_slice::<GroupSyncResponseDto>(&decrypted) {
+            let group_id = sync_resp.group_id.clone();
+            if let Ok(stats) = self.group_sync.apply_sync_response(sync_resp).await {
+                let _ = self.event_tx.send(ChatEngineEvent::GroupSynced {
+                    group_id,
+                    peer_fp: envelope.sender_fp.clone(),
+                    stats,
+                });
+            }
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+
+    /// Handles an incoming routed envelope delivered locally from the overlay mesh router.
+    async fn handle_routed_envelope(&self, routed: RoutedEnvelope) {
+        let _ = self.handle_e2ee_envelope(routed.payload).await;
     }
 
     // --- Hyper Request Dispatcher ---
